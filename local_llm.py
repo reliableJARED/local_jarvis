@@ -1,363 +1,460 @@
+#!/usr/bin/env python3
+"""
+YAAM - Yet Another Assistant Model
+A voice-activated AI assistant combining Whisper VAD, Qwen Chat, and Kokoro TTS.
+"""
+
+import time
+import threading
+import queue
+from typing import Optional, Callable
+import numpy as np
+import sounddevice as sd
 import torch
-import os
-import urllib.request
-import socket
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from collections import deque
 
-class QwenChat:
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False):
-        """Initialize the Qwen chat model with automatic online/offline detection."""
-        
-        self.model_name = model_name
-        self.force_offline = force_offline
-        # token tracking
-        self.token_stats = {
-            'total_input_tokens': 0,
-            'total_output_tokens': 0,
-            'total_tokens': 0,
-            'conversation_count': 0
-        }
-        
-        # Determine if we should use online or offline mode
-        if force_offline:
-            print("Forced offline mode")
-            use_online = False
-        else:
-            use_online = self._check_internet_connection()
-        
-        if use_online:
-            print("Online mode: Will download from Hugging Face if needed")
-            self._load_model_online(model_name)
-        else:
-            print("Offline mode: Using local files only")
-            if model_path is None:
-                model_path = self._find_cached_model()
-            self._load_model_offline(model_path)
-        
-        # Initialize conversation with system prompt
-        self.messages = []
-        self._add_system_prompt()
-        print("Model loaded successfully!")
-    
-    def _add_system_prompt(self):
-        """Add the initial system prompt."""
-        system_content = """IMPORTANT INFORMATION:
-<short_term_memory>
-  <visual>
-    <scene> A man is seated in a black office chair in a cozy living room, wearing a red and black plaid shirt. He is holding a can of soda in his lap. The room features a vaulted ceiling with exposed wooden beams, a fireplace, and a sliding glass door that leads to another room. A dark brown or black leather couch is visible in the background, along with a coffee table with a lamp and a stack of blankets. The walls are a cream or beige color, and the floor is covered in beige carpeting.</scene>
-    <people_count>1</people_count>
-    <faces>['unrecognized_person']</faces>
-  </visual>
-  <audio>
-    <sounds>['unknown_sound']</sounds>
-    <speech_detected>False</speech_detected>
-    <analysis>This is the sound of a car alarm going off.</analysis>
-  </audio>
-  <multimodal_data_id>
-    <id>20250617_221036_322</id>
-  </multimodal_data_id>
-  <context>
-    <location>"HOME"</location>
-    <time>"2025-06-17_22:10:45"</time>
-    <activity>"person_present"</activity>
-  </context>
-</short_term_memory> 
-YOU ARE A ROBOT.
-This Information provides context for your conversation.
-ALWAYS speak in the first person, treat this information as if you experience it directly"""
-        
-        self.messages = [{"role": "system", "content": system_content}]
-    
-    def update_token_stats(self, input_tokens, output_tokens):
-        """Update token usage statistics."""
-        self.token_stats['total_input_tokens'] += input_tokens
-        self.token_stats['total_output_tokens'] += output_tokens
-        self.token_stats['total_tokens'] += (input_tokens + output_tokens)
-        self.token_stats['conversation_count'] += 1
+# Import our core classes
+from whispervad import WhisperVAD
+from qwen_ import QwenChat
+from kokoro_ import Kokoro
 
-    def print_token_stats(self):
-        """Print current token usage statistics."""
-        stats = self.token_stats
-        print(f"\n--- Token Usage Statistics ---")
-        print(f"Context Window: 32,768 tokens (Qwen2.5) extensive inputs exceeding 32,768 tokens, need to utilize YaRN - NOT IMPLEMENTED ")
-        print(f"Conversations: {stats['conversation_count']}")
-        print(f"Input tokens: {stats['total_input_tokens']}")
-        print(f"Output tokens: {stats['total_output_tokens']}")
-        print(f"Total tokens: {stats['total_tokens']}")
-        if stats['conversation_count'] > 0:
-            print(f"Avg tokens per conversation: {stats['total_tokens'] / stats['conversation_count']:.1f}")
-        print(f"----------------------------\n")
 
-    def _check_internet_connection(self, timeout=5):
-        """Check if internet connection is available."""
-        try:
-            socket.create_connection(("huggingface.co", 443), timeout)
-            print("Internet connection detected")
-            return True
-        except (socket.timeout, socket.error, OSError):
-            print("No internet connection detected")
-            return False
+class YetAnotherAssistantModel:
+    """
+    Voice-activated AI assistant that listens, thinks, and speaks.
     
-    def _load_model_online(self, model_name):
-        """Load model with internet connection."""
-        print("Loading model and tokenizer...")
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype="auto",
-                device_map="auto"
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            
-        except Exception as e:
-            print(f"Error loading model online: {e}")
-            print("Falling back to offline mode...")
-            model_path = self._find_cached_model()
-            self._load_model_offline(model_path)
+    Flow:
+    1. Listen for speech using custom VAD loop
+    2. When speech detected and silence follows, transcribe
+    3. Send transcript to Qwen for processing
+    4. Convert Qwen's response to speech using Kokoro
+    5. Play the response and return to listening
+    """
     
-    def _load_model_offline(self, model_path):
-        """Load model from local files only."""
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(
-                f"Model not found at {model_path}.\n"
-                f"Please either:\n"
-                f"1. Connect to internet to download the model automatically\n"
-                f"2. Download the model manually using: python {__file__} download\n"
-                f"3. Specify the correct local model path"
-            )
+    def __init__(self, 
+                 whisper_model: str = "openai/whisper-small",
+                 qwen_model: str = "Qwen/Qwen2.5-7B-Instruct",
+                 kokoro_voice: str = "af_sky",
+                 kokoro_speed: float = 1.0,
+                 silence_duration: float = 2.0,
+                 vad_threshold: float = 0.5,
+                 debug_mode: bool = True):
+        """
+        Initialize YAAM with all components.
         
-        print(f"Loading model from: {model_path}")
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype="auto",
-                device_map="auto",
-                local_files_only=True
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
-                local_files_only=True
-            )
-        except Exception as e:
-            print(f"Failed to load model from local files: {e}")
-            raise
-    
-    def _find_cached_model(self):
-        """Try to find cached model in common Hugging Face cache locations."""
-        import platform
+        Args:
+            whisper_model: Whisper model for speech recognition
+            qwen_model: Qwen model for text processing
+            kokoro_voice: Kokoro voice for text-to-speech
+            kokoro_speed: Speech speed multiplier
+            silence_duration: Seconds of silence before processing
+            vad_threshold: Voice activity detection threshold
+            debug_mode: Enable debug output
+        """
         
-        # Common cache locations
-        if platform.system() == "Windows":
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-        else:
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        self.debug_mode = debug_mode
+        self.kokoro_voice = kokoro_voice
+        self.kokoro_speed = kokoro_speed
+        self.silence_duration = silence_duration
+        self.vad_threshold = vad_threshold
+        self.sample_rate = 16000
+        self.chunk_size = 1024
         
-        print(f"Searching for cached models in: {cache_dir}")
+        # State management
+        self._is_running = False
+        self._is_listening = False
+        self._is_processing = False
+        self._is_speaking = False
         
-        # Also check for custom downloaded models in current directory
-        local_paths = [
-            "./Qwen2.5-7B-Instruct",
-            "./qwen2.5-7b-instruct",
-            f"./{self.model_name.split('/')[-1]}"
-        ]
+        # Audio processing
+        self.audio_queue = queue.Queue()
+        self.audio_buffer = deque(maxlen=int(self.sample_rate * 3))  # 3 second buffer
+        self.speech_audio = deque()
+        self.is_speaking_detected = False
+        self.last_speech_time = time.time()
         
-        for path in local_paths:
-            if os.path.exists(path) and self._validate_model_files(path):
-                print(f"Found valid local model at: {path}")
-                return path
+        # Threading
+        self._audio_thread = None
+        self._processing_thread = None
+        self._stream = None
         
-        # Look for Qwen model folders in HF cache
-        model_patterns = [
-            "models--Qwen--Qwen2.5-7B-Instruct",
-            f"models--{self.model_name.replace('/', '--')}"
-        ]
+        # Initialize components
+        self._log("🤖 Initializing YAAM components...")
         
-        for pattern in model_patterns:
-            model_dir = os.path.join(cache_dir, pattern)
-            
-            if os.path.exists(model_dir):
-                snapshots_dir = os.path.join(model_dir, "snapshots")
-                
-                if os.path.exists(snapshots_dir):
-                    snapshots = os.listdir(snapshots_dir)
-                    
-                    for snapshot in snapshots:
-                        snapshot_path = os.path.join(snapshots_dir, snapshot)
-                        
-                        if self._validate_model_files(snapshot_path):
-                            print(f"Found valid cached model at: {snapshot_path}")
-                            return snapshot_path
-        
-        raise FileNotFoundError(
-            f"Could not find a valid cached model for '{self.model_name}'.\n"
-            f"Options:\n"
-            f"1. Download model: python {__file__} download\n"
-            f"2. Connect to internet and let the script download automatically"
+        # Initialize WhisperVAD (we'll use its models but not its loop)
+        self._log("🎤 Loading Whisper models...")
+        self.whisper_vad = WhisperVAD(
+            model_name=whisper_model,
+            silence_duration=silence_duration,
+            vad_threshold=vad_threshold
         )
+        self.whisper_vad.initialize()
+        
+        # Initialize Qwen Chat
+        self._log("🧠 Loading Qwen Chat...")
+        self.qwen_chat = QwenChat(model_name=qwen_model)
+        
+        # Initialize Kokoro TTS
+        self._log("🗣️  Loading Kokoro TTS...")
+        self.kokoro_tts = Kokoro(lang_code='a')
+        
+        self._log("✅ YAAM initialized successfully!")
+        self._log(f"   🎤 Speech: {whisper_model}")
+        self._log(f"   🧠 Brain: {qwen_model}")
+        self._log(f"   🗣️  Voice: {kokoro_voice}")
     
-    def _validate_model_files(self, model_path):
-        """Check if a model directory has the required files."""
-        if not os.path.exists(model_path):
-            return False
-        
-        required_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
-        model_files = [f for f in os.listdir(model_path) if f.endswith(('.bin', '.safetensors'))]
-        
-        for file in required_files:
-            if not os.path.exists(os.path.join(model_path, file)):
-                return False
-        
-        return len(model_files) > 0
+    def _log(self, message: str):
+        """Log debug messages if debug mode is enabled."""
+        if self.debug_mode:
+            print(f"[YAAM] {message}")
     
-    def generate_response(self, user_input, max_new_tokens=512):
-        """Generate a response using the simplified Qwen pattern."""
-        
-        # Add user message to conversation
-        self.messages.append({"role": "user", "content": user_input})
-        
-        # Apply chat template
-        text = self.tokenizer.apply_chat_template(
-            self.messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        
-        # Tokenize and generate
-        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-        
-        input_tokens = model_inputs.input_ids.shape[1]
-        print(f"Input tokens: {input_tokens}")
-        
-        generated_ids = self.model.generate(
-            **model_inputs,
-            max_new_tokens=max_new_tokens
-        )
-        
-        # Extract only the new tokens
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-        ]
-        response = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
-        # Count tokens and update stats
-        output_tokens = len(generated_ids[0])
-        print(f"Output tokens: {output_tokens}")
-        self.update_token_stats(input_tokens, output_tokens)
-        
-        # Add assistant response to conversation
-        self.messages.append({"role": "assistant", "content": response})
-        
-        return response
+    def _audio_callback(self, indata, frames, time_info, status):
+        """Handle incoming audio data."""
+        if self._is_listening and not self._is_processing and not self._is_speaking:
+            audio_data = indata.flatten()
+            self.audio_queue.put(audio_data.copy())
     
-    def clear_history(self):
-        """Clear the conversation history but keep system prompt."""
-        print("Conversation history cleared.")
-        self._add_system_prompt()
-    
-    def save_conversation(self, filename="conversation.txt"):
-        """Save the conversation to a file."""
-        with open(filename, "w", encoding="utf-8") as f:
-            for message in self.messages:
-                role = message["role"].upper()
-                content = message["content"]
-                f.write(f"{role}: {content}\n\n")
-        print(f"Conversation saved to {filename}")
-    
-    def chat_loop(self):
-        """Start an interactive chat session."""
-        print("\n" + "="*50)
-        print("Qwen2.5-7B-Instruct Chat Interface")
-        print("Commands: 'quit' to exit, 'clear' to clear history, 'save' to save conversation")
-        print("="*50 + "\n")
+    def _detect_speech(self, audio_chunk):
+        """Detect speech using VAD model."""
+        audio_tensor = torch.from_numpy(audio_chunk).float()
         
-        while True:
+        # VAD expects 512 samples
+        if len(audio_tensor) != 512:
+            if len(audio_tensor) > 512:
+                audio_tensor = audio_tensor[:512]
+            else:
+                padded = torch.zeros(512)
+                padded[:len(audio_tensor)] = audio_tensor
+                audio_tensor = padded
+        
+        speech_prob = self.whisper_vad.vad_model(audio_tensor, self.sample_rate)
+        
+        if hasattr(speech_prob, 'item'):
+            speech_prob = speech_prob.item()
+        elif isinstance(speech_prob, torch.Tensor):
+            speech_prob = speech_prob.cpu().numpy()
+            if speech_prob.ndim > 0:
+                speech_prob = speech_prob[0]
+        
+        return speech_prob > self.vad_threshold
+    
+    def _audio_processing_loop(self):
+        """Main audio processing loop that runs in a separate thread."""
+        self._log("👂 Audio processing loop started")
+        
+        while self._is_running:
             try:
-                user_input = input("\nYou: ").strip()
+                if self._is_listening and not self.audio_queue.empty():
+                    audio_chunk = self.audio_queue.get(timeout=0.1)
+                    self.audio_buffer.extend(audio_chunk)
+                    
+                    # Check for speech when we have enough audio
+                    if len(self.audio_buffer) >= 512:
+                        recent_audio = np.array(list(self.audio_buffer)[-512:])
+                        has_speech = self._detect_speech(recent_audio)
+                        
+                        if has_speech:
+                            self.last_speech_time = time.time()
+                            
+                            if not self.is_speaking_detected:
+                                self.is_speaking_detected = True
+                                self._log("🎤 Speech detected - recording...")
+                                self.speech_audio.clear()
+                            
+                            self.speech_audio.extend(audio_chunk)
+                        
+                        elif self.is_speaking_detected:
+                            silence_duration = time.time() - self.last_speech_time
+                            
+                            if silence_duration >= self.silence_duration:
+                                self._log("🛑 Speech ended - processing...")
+                                
+                                if len(self.speech_audio) > 0:
+                                    # Copy speech audio for processing
+                                    speech_array = np.array(list(self.speech_audio))
+                                    
+                                    # Stop listening while processing
+                                    self._pause_listening()
+                                    
+                                    # Process in separate thread to avoid blocking
+                                    processing_thread = threading.Thread(
+                                        target=self._process_speech,
+                                        args=(speech_array,),
+                                        daemon=True
+                                    )
+                                    processing_thread.start()
+                                
+                                self.is_speaking_detected = False
+                                self.speech_audio.clear()
                 
-                if user_input.lower() in ['quit', 'exit', 'q']:
-                    print("Goodbye!")
-                    break
-                elif user_input.lower() == 'clear':
-                    self.clear_history()
-                    continue
-                elif user_input.lower() == 'save':
-                    filename = input("Enter filename (default: conversation.txt): ").strip()
-                    if not filename:
-                        filename = "conversation.txt"
-                    self.save_conversation(filename)
-                    continue
-                elif not user_input:
-                    print("Please enter a message.")
-                    continue
+                time.sleep(0.01)
                 
-                print("\nThinking...")
-                response = self.generate_response(user_input)
-                print(f"\nQwen: {response}")
-
-                self.print_token_stats()
-                
-            except KeyboardInterrupt:
-                print("\n\nChat interrupted. Goodbye!")
-                break
+            except queue.Empty:
+                continue
             except Exception as e:
-                print(f"\nError: {e}")
-                print("Please try again.")
-
-
-def download_model(model_name="Qwen/Qwen2.5-7B-Instruct", save_path=None):
-    """Helper function to download the model for offline use."""
-    if save_path is None:
-        save_path = f"./{model_name.split('/')[-1]}"
+                if self._is_running:  # Only log errors if we're supposed to be running
+                    self._log(f"❌ Audio processing error: {e}")
+        
+        self._log("🛑 Audio processing loop ended")
     
-    print(f"Downloading {model_name} for offline use...")
-    print(f"Save location: {save_path}")
+    def _process_speech(self, speech_array):
+        """Process detected speech."""
+        try:
+            self._is_processing = True
+            self._log("🧠 Transcribing and processing...")
+            
+            # Transcribe using WhisperVAD
+            transcription = self.whisper_vad.transcribe_audio(speech_array)
+            
+            if transcription and transcription.strip():
+                self._log(f"📝 Transcribed: '{transcription}'")
+                
+                # Get response from Qwen
+                self._log("🤔 Asking Qwen...")
+                response = self.qwen_chat.generate_response(transcription)
+                
+                if response and response.strip():
+                    self._log(f"💭 Qwen responded: '{response[:100]}...'")
+                    
+                    # Generate and play speech
+                    self._speak_response(response)
+                else:
+                    self._log("🤷 Qwen provided no response")
+            else:
+                self._log("🔇 No valid transcription")
+            
+        except Exception as e:
+            self._log(f"❌ Error processing speech: {e}")
+        finally:
+            self._is_processing = False
+            # Resume listening after processing
+            if self._is_running:
+                self._resume_listening()
     
-    try:
-        print("Downloading model and tokenizer...")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    def _clean_text_for_speech(self, text: str) -> str:
+        """Clean text to make it suitable for TTS."""
+        # Remove or replace problematic characters
+        text = text.replace('\n', ' ')  # Replace newlines with spaces
+        text = text.replace('\r', ' ')  # Replace carriage returns
+        text = text.replace('\t', ' ')  # Replace tabs
         
-        model.save_pretrained(save_path)
-        tokenizer.save_pretrained(save_path)
+        # Replace multiple spaces with single space
+        import re
+        text = re.sub(r'\s+', ' ', text)
         
-        print(f"Model downloaded successfully to: {save_path}")
+        # Remove quotes that might cause issues
+        text = text.replace('"', '')
+        text = text.replace("'", '')
         
-    except Exception as e:
-        print(f"Error downloading model: {e}")
+        # Strip leading/trailing whitespace
+        text = text.strip()
+        
+        return text
+    
+    def _speak_response(self, response: str):
+        """Convert response to speech and play it."""
+        try:
+            self._is_speaking = True
+            
+            # Clean the text for TTS
+            cleaned_response = self._clean_text_for_speech(response)
+            self._log(f"🗣️  Speaking response: '{cleaned_response[:100]}...'")
+            
+            # Generate and play speech
+            success = self.kokoro_tts.speak(
+                cleaned_response,
+                voice=self.kokoro_voice,
+                speed=self.kokoro_speed,
+                play_audio=True,
+                save_to_file=None
+            )
+            
+            if success:
+                self._log("✅ Response spoken successfully")
+            else:
+                self._log("❌ Failed to speak response")
+                
+        except Exception as e:
+            self._log(f"❌ Error speaking response: {e}")
+        finally:
+            self._is_speaking = False
+    
+    def _pause_listening(self):
+        """Pause listening without stopping the audio stream."""
+        self._is_listening = False
+        self._log("⏸️  Paused listening")
+    
+    def _resume_listening(self):
+        """Resume listening."""
+        if self._is_running and not self._is_processing and not self._is_speaking:
+            self._is_listening = True
+            self._log("▶️  Resumed listening...")
+    
+    def start(self):
+        """Start the YAAM assistant."""
+        if self._is_running:
+            self._log("⚠️  YAAM is already running")
+            return
+        
+        self._log("🚀 Starting YAAM assistant...")
+        
+        self._is_running = True
+        self._is_listening = True
+        
+        # Start audio stream
+        self._stream = sd.InputStream(
+            callback=self._audio_callback,
+            channels=1,
+            samplerate=self.sample_rate,
+            blocksize=self.chunk_size,
+            dtype=np.float32
+        )
+        self._stream.start()
+        
+        # Start audio processing thread
+        self._audio_thread = threading.Thread(
+            target=self._audio_processing_loop,
+            daemon=True
+        )
+        self._audio_thread.start()
+        
+        self._log("🎯 YAAM is ready! Say something...")
+        
+        try:
+            # Keep the main thread alive and handle keyboard interrupt
+            while self._is_running:
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            self._log("🛑 Keyboard interrupt received")
+        finally:
+            self.stop()
+    
+    def stop(self):
+        """Stop the YAAM assistant."""
+        if not self._is_running:
+            return
+        
+        self._log("🛑 Stopping YAAM...")
+        
+        self._is_running = False
+        self._is_listening = False
+        
+        # Stop audio stream
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+        
+        # Wait for threads to finish
+        if self._audio_thread and self._audio_thread.is_alive():
+            self._audio_thread.join(timeout=2.0)
+        
+        self._log("✅ YAAM stopped successfully")
+    
+    def get_status(self):
+        """Get current status of the assistant."""
+        return {
+            'running': self._is_running,
+            'listening': self._is_listening,
+            'processing': self._is_processing,
+            'speaking': self._is_speaking
+        }
+    
+    def change_voice(self, voice: str):
+        """Change the Kokoro voice."""
+        voices = self.kokoro_tts.get_available_voices()
+        if voice in voices['all']:
+            self.kokoro_voice = voice
+            self._log(f"🎵 Voice changed to: {voice}")
+        else:
+            self._log(f"❌ Invalid voice: {voice}")
+            self._log(f"Available voices: {voices['all']}")
+    
+    def set_speech_speed(self, speed: float):
+        """Set the speech speed."""
+        if 0.5 <= speed <= 2.0:
+            self.kokoro_speed = speed
+            self._log(f"⚡ Speech speed set to: {speed}x")
+        else:
+            self._log(f"❌ Invalid speed: {speed}. Must be between 0.5 and 2.0")
+    
+    def test_components(self):
+        """Test all components individually."""
+        self._log("🧪 Testing YAAM components...")
+        
+        # Test Kokoro TTS
+        self._log("🗣️  Testing Kokoro TTS...")
+        try:
+            success = self.kokoro_tts.speak(
+                "Mic check one two, one two.... ok that worked, one more moment.",
+                voice=self.kokoro_voice,
+                play_audio=True
+            )
+            if success:
+                self._log("✅ Kokoro TTS test passed")
+            else:
+                self._log("❌ Kokoro TTS test failed")
+        except Exception as e:
+            self._log(f"❌ Kokoro TTS test error: {e}")
+        
+        # Test Qwen Chat
+        self._log("🧠 Testing Qwen Chat...")
+        try:
+            response = self.qwen_chat.generate_response("You just did a mic check, user can hear you via text-to-speech introduce yourself briefly in a fun way.")
+            if response:
+                self._log(f"✅ Qwen Chat test passed: '{response[:50]}...'")
+                
+                # Test TTS with Qwen response
+                self._log("🗣️  Testing TTS with Qwen response...")
+                self.kokoro_tts.speak(response, voice=self.kokoro_voice, play_audio=True)
+            else:
+                self._log("❌ Qwen Chat test failed - no response")
+        except Exception as e:
+            self._log(f"❌ Qwen Chat test error: {e}")
+        
+        self._log("🧪 Component testing complete")
 
 
 def main():
-    """Main function to run the chat interface."""
-    import sys
-    
-    # Handle command line arguments
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "download":
-            model_name = sys.argv[2] if len(sys.argv) > 2 else "Qwen/Qwen2.5-7B-Instruct"
-            download_model(model_name)
-            return
-        elif sys.argv[1] == "offline":
-            force_offline = True
-        else:
-            force_offline = False
-    else:
-        force_offline = False
+    """Main function to run YAAM."""
+    print("🤖 YAAM - Yet Another Assistant Model")
+    print("=" * 50)
+    print("A voice-activated AI assistant")
+    print("Say something and I'll respond!")
+    print("Press Ctrl+C to exit")
+    print("=" * 50)
     
     try:
-        model_name = "Qwen/Qwen2.5-7B-Instruct"
-        print(f"Initializing {model_name}...")
-        
-        chat = QwenChat(
-            model_name=model_name,
-            force_offline=force_offline
+        # Create YAAM instance
+        assistant = YetAnotherAssistantModel(
+            whisper_model="openai/whisper-small",
+            qwen_model="Qwen/Qwen2.5-7B-Instruct",
+            kokoro_voice="af_sky",
+            kokoro_speed=1.0,
+            silence_duration=2.0,
+            debug_mode=True
         )
-        chat.chat_loop()
         
+        # Test components first
+        print("\n🧪 Running component tests...")
+        assistant.test_components()
+        
+        print("\n🚀 Starting voice assistant...")
+        print("💡 Tips:")
+        print("   • Speak clearly and wait for the response")
+        print("   • There will be a brief pause while I think")
+        print("   • I'll resume listening after each response")
+        print("   • Press Ctrl+C to exit anytime")
+        print("")
+        
+        # Start the assistant (this will run continuously)
+        assistant.start()
+        
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
     except Exception as e:
-        print(f"Error: {e}")
-        print("\nTroubleshooting:")
-        print("1. To force offline mode: python qwen_chat.py offline")
-        print("2. To download model: python qwen_chat.py download")
+        print(f"\n❌ Error running YAAM: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
