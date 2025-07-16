@@ -82,9 +82,10 @@ class JarvisCallback(VoiceAssistantCallback):
     
     def on_speaker_change(self, old_speaker: Optional[str], new_speaker: str):
         """Handle speaker changes"""
-        if old_speaker is not None:
+        if ((old_speaker is not None) and (new_speaker != self.jarvis.jarvis_voice_id)):
             if self.jarvis.config.debug_mode:
                 print(f"👥 Speaker change: {old_speaker} → {new_speaker}")
+                self.jarvis.active_speakers = new_speaker
         else:
             if self.jarvis.config.debug_mode:
                 print(f"👤 New speaker: {new_speaker}")
@@ -98,11 +99,20 @@ class Jarvis:
     
     def __init__(self, config: Optional[JarvisConfig] = None):
         """Initialize Jarvis with configuration"""
-        self.tts = Kokoro(lang_code='a')  # American English
+        self.tts = Kokoro(
+            lang_code='a', #American english
+            voice="af_sky", #default female american voice
+            save_audio_as_wav=False,  # Use temporary files
+            play_audio_immediately=False  # Don't auto-play for demo control
+        )
+        self.tts.set_speech_audio_ready_callback(self.on_audio_ready)
+        self.tts.set_speech_audio_playback_complete_callback(self.on_playback_complete)
+
         self.config = config or JarvisConfig()
         self.state = JarvisState.IDLE
         self.in_conversation = False     # Flag for continuous conversation mode
-        self.primary_speaker = None
+        self.primary_speaker = None #This is who we Jarvis is talking to
+        self.jarvis_voice_id = None #this is set when program does a voice sample to start.
         self.command_buffer = []
         self.wake_word_detected_time = None
         self.thinking_start_time = None
@@ -152,6 +162,13 @@ class Jarvis:
         # Start command processing thread
         command_thread = threading.Thread(target=self._command_processing_loop, daemon=True)
         command_thread.start()
+
+        #Voice Sample to get own voice:
+        self.tts.generate_speech_async(self.self_voice_sample_text(), speed=1.0)
+        self.tts.wait_for_generation()
+        self.tts.speak()
+
+
         
         try:
             while not self.should_stop:
@@ -163,6 +180,8 @@ class Jarvis:
         """Stop Jarvis voice assistant"""
         self.should_stop = True
         self.speech_processor.stop()
+        self.tts.cleanup()
+
         print("system stopped.")
     
     def _monitoring_loop(self):
@@ -255,6 +274,8 @@ class Jarvis:
                     print(f"Interrupt detected - stopping current processing")
                     self._set_state_internal(JarvisState.IDLE)
                     self._reset_command_state_internal()
+                    self.tts.stop_playback()
+
                     # Clear any pending commands
                     with self.command_queue_lock:
                         self.command_queue.clear()
@@ -264,7 +285,8 @@ class Jarvis:
             if self.state == JarvisState.IDLE and (not self.in_conversation or not self.config.continuous_conversation):
                 if self._contains_wake_word(text_lower):
                     print(f"Wake word detected")
-                    self._start_conversation_internal(speaker_id)
+                    self._set_state_internal(JarvisState.LISTENING)
+                    #self._start_conversation_internal(speaker_id)
                     # Don't process commands from live transcript - wait for final
                     return
             
@@ -301,11 +323,24 @@ class Jarvis:
                     print(f"Continuous conversation command: {command_clean}")
                     # Don't process from live transcript - wait for final
                     return
-            
+    
+    
+    def set_self_voice_id(self,speaker_id):
+        self.jarvis_voice_id = speaker_id
+
+    def self_voice_sample_text(self):
+        return "I need to calibrate my voice. The quick brown fox jumps over the lazy dog"
+                
+    
     def _process_final_transcript(self, segment: TranscriptSegment):
         """Process final transcript for commands - NON-BLOCKING VERSION"""
         # Create unique identifier for this segment to avoid duplicate processing
         segment_id = f"{segment.speaker_id}_{segment.start_time}_{segment.text}"
+
+        #Ignore system voice
+        if segment.speaker_id == self.jarvis_voice_id:
+            print(f"🔄 Skipping that's just me saying: {segment.text}")
+            return
         
         # Quick duplicate check
         if segment_id in self._processed_segments:
@@ -330,8 +365,8 @@ class Jarvis:
             current_primary_speaker = self.primary_speaker
         
 
-        # CASE 1: Wake word detected in IDLE state (not in conversation or continuous mode disabled)
-        if (current_state == JarvisState.IDLE and 
+        # CASE 1: Wake word detected in IDLE state or After speaker switch (not in conversation or continuous mode disabled)
+        if ((current_state == JarvisState.IDLE or current_state == JarvisState.LISTENING) and 
             (not current_in_conversation or not self.config.continuous_conversation) and
             self._contains_wake_word(text_lower)):
             
@@ -379,9 +414,19 @@ class Jarvis:
         
         # CASE 4: Any other state or speaker - log and ignore
         else:
+            if segment.text.lower() == self.self_voice_sample_text():
+                print("that was calibration transcript")
+                self.set_self_voice_id(segment.speaker_id)
+
             print(f"Ignoring transcript - State: {current_state.value}, Speaker: {segment.speaker_id}, Primary: {current_primary_speaker}")
     
-    
+    #Kokoro callbacks
+    def on_audio_ready(self,audio_data):
+            print(f" Audio ready callback: {audio_data.file_path}")
+        
+    def on_playback_complete(self):
+            print("Playback complete callback triggered!")
+
     def _contains_wake_word(self, text: str) -> bool:
         """Check if text contains the wake word"""
         # Use word boundaries to avoid partial matches
@@ -449,8 +494,10 @@ class Jarvis:
             with self.state_lock:
                 if self.state == JarvisState.THINKING:
                     
-                    if self.tts.speak(response, voice="af_sky", speed=1.0, play_audio=True):
-                        print("\n✅ Demo completed successfully!")
+                    #text to speech generation in kokoro 
+                    self.tts.generate_speech_async(response, speed=1.0)
+                    self.tts.wait_for_generation()
+                    self.tts.speak()
 
                     print(f"\nJarvis: {response}\n")
                     
@@ -539,6 +586,7 @@ def main():
         print(f"Error running Jarvis: {e}")
     finally:
         jarvis.stop()
+        
 
 
 if __name__ == "__main__":

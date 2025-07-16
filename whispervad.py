@@ -218,11 +218,28 @@ def list_audio_devices():
     print(sd.query_devices())
 
 
+def check_dependencies():
+    """Check if dependencies are installed"""
+    try:
+        import torch
+        import sounddevice
+        import transformers
+        import numpy
+        print("✓ All dependencies are installed")
+        return True
+    except ImportError as e:
+        print(f"✗ Missing dependency: {e}")
+        return False
+
 
 # Example usage
 def main():
     """Simple example"""
-
+    # Check dependencies
+    if not check_dependencies():
+        print("Please install missing dependencies")
+        return
+    
     # List audio devices
     list_audio_devices()
     print()

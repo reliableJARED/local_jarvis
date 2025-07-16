@@ -96,7 +96,8 @@ class AudioCapture:
             channels=self.channels,
             samplerate=self.sample_rate,
             blocksize=self.chunk_size,
-            dtype=np.float32
+            dtype=np.float32,
+            device=sd.default.device[0]  # Explicitly use input device
         )
         self.stream.start()
     
