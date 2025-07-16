@@ -117,26 +117,19 @@ class Jarvis:
         self.command_queue_lock = threading.Lock()
         
         # Initialize components
-        print("🤖 Initializing Jarvis...")
+        print("Initializing Jarvis...")
         self._init_speech_processor()
         self._init_llm()
-        
-        print(f"🎯 Wake word: '{self.config.wake_word}'")
-        print(f"🛑 Interrupt phrase: '{self.config.interrupt_phrase}'")
-        print(f"💬 Continuous conversation: {self.config.continuous_conversation}")
-        if self.config.continuous_conversation:
-            print(f"⏰ Conversation timeout: {self.config.conversation_timeout}s")
-        print("✅ Jarvis ready!")
     
     def _init_speech_processor(self):
         """Initialize speech processing components"""
-        print("🎤 Loading speech processor...")
+        print("Loading speech processor...")
         self.callback = JarvisCallback(self)
         self.speech_processor = VoiceAssistantSpeechProcessor(self.callback)
     
     def _init_llm(self):
         """Initialize the language model"""
-        print("🧠 Loading language model...")
+        print("Loading language model...")
         self.llm = QwenChat()
         
         # Add Jarvis-specific system prompt
@@ -147,13 +140,6 @@ class Jarvis:
     
     def start(self):
         """Start Jarvis voice assistant"""
-        print("\n" + "="*60)
-        print("🤖 JARVIS VOICE ASSISTANT STARTED")
-        print("="*60)
-        print(f"Say '{self.config.wake_word}' followed by your command")
-        print(f"Say '{self.config.interrupt_phrase}' to interrupt responses")
-        print("Press Ctrl+C to stop")
-        print("="*60 + "\n")
         
         self.should_stop = False
         self.speech_processor.start()
@@ -170,14 +156,13 @@ class Jarvis:
             while not self.should_stop:
                 time.sleep(0.1)
         except KeyboardInterrupt:
-            print("\n🛑 Stopping Jarvis...")
             self.stop()
     
     def stop(self):
         """Stop Jarvis voice assistant"""
         self.should_stop = True
         self.speech_processor.stop()
-        print("👋 Jarvis stopped. Goodbye!")
+        print("system stopped.")
     
     def _monitoring_loop(self):
         """Background monitoring for timeouts and state management"""
@@ -191,7 +176,7 @@ class Jarvis:
                         self.wake_word_detected_time and
                         current_time - self.wake_word_detected_time > self.config.wake_word_timeout):
                         
-                        print("⏰ Wake word timeout - returning to idle")
+                        print("Wake word timeout - returning to idle")
                         self._set_state_internal(JarvisState.IDLE)
                         self._reset_command_state_internal()
                     
@@ -200,7 +185,7 @@ class Jarvis:
                         self.thinking_start_time and
                         current_time - self.thinking_start_time > self.config.response_timeout):
                         
-                        print("⏰ Thinking timeout - returning to idle")
+                        print("Thinking timeout - returning to idle")
                         self._set_state_internal(JarvisState.IDLE)
                         self._reset_command_state_internal()
                     
@@ -210,13 +195,13 @@ class Jarvis:
                         self.last_speech_time and
                         current_time - self.last_speech_time > self.config.conversation_timeout):
                         
-                        print("💤 Conversation timeout - requiring wake word again")
+                        print("Conversation timeout - requiring wake word again")
                         self._end_conversation_internal()
                 
                 time.sleep(1.0)
                 
             except Exception as e:
-                print(f"❌ Error in monitoring loop: {e}")
+                print(f"Error in monitoring loop: {e}")
                 time.sleep(1.0)
     
     def _command_processing_loop(self):
@@ -236,7 +221,7 @@ class Jarvis:
                     time.sleep(0.1)
                     
             except Exception as e:
-                print(f"❌ Error in command processing loop: {e}")
+                print(f"Error in command processing loop: {e}")
                 time.sleep(1.0)
     
     def _set_state(self, new_state: JarvisState):
@@ -257,8 +242,6 @@ class Jarvis:
         # Update last speech time for conversation timeout tracking
         with self.state_lock:
             self.last_speech_time = time.time()
-            if self.config.debug_mode and self.in_conversation:
-                print(f"🗣️ Speech activity - conversation timer reset")
     
     def _process_live_transcript(self, text: str, speaker_id: str):
         """Process real-time transcript for wake words and interrupts"""
@@ -268,7 +251,7 @@ class Jarvis:
             # Check for interrupt phrase during thinking
             if self.state == JarvisState.THINKING:
                 if self._contains_interrupt_phrase(text_lower):
-                    print(f"🛑 Interrupt detected - stopping current processing")
+                    print(f"Interrupt detected - stopping current processing")
                     self._set_state_internal(JarvisState.IDLE)
                     self._reset_command_state_internal()
                     # Clear any pending commands
@@ -279,7 +262,7 @@ class Jarvis:
             # Check for wake word in idle state OR if not in conversation
             if self.state == JarvisState.IDLE and (not self.in_conversation or not self.config.continuous_conversation):
                 if self._contains_wake_word(text_lower):
-                    print(f"🎯 Wake word detected in live transcript!")
+                    print(f"Wake word detected")
                     self._start_conversation_internal(speaker_id)
                     # Don't process commands from live transcript - wait for final
                     return
@@ -289,8 +272,8 @@ class Jarvis:
                 self._contains_wake_word(text_lower) and 
                 speaker_id != self.primary_speaker):
                 
-                print(f"🔄 Wake word detected by different speaker - switching primary speaker")
-                print(f"   Previous: {self.primary_speaker} → New: {speaker_id}")
+                print(f"Wake word detected by different speaker - switching primary speaker")
+                print(f"Previous: {self.primary_speaker} → New: {speaker_id}")
                 
                 # Reset primary speaker and restart conversation state
                 self.primary_speaker = speaker_id
@@ -303,8 +286,6 @@ class Jarvis:
                 with self.command_queue_lock:
                     self.command_queue.clear()
                 
-                if self.config.debug_mode:
-                    print(f"💬 Primary speaker changed to {speaker_id}")
                 return
             
             # Handle commands in continuous conversation mode (no wake word needed)
@@ -316,7 +297,7 @@ class Jarvis:
                 # Any speech from primary speaker is treated as a command
                 command_clean = text.strip()
                 if self._is_valid_command(command_clean):
-                    print(f"💬 Continuous conversation command: {command_clean}")
+                    print(f"Continuous conversation command: {command_clean}")
                     # Don't process from live transcript - wait for final
                     return
             
@@ -347,15 +328,13 @@ class Jarvis:
             current_in_conversation = self.in_conversation
             current_primary_speaker = self.primary_speaker
         
-        if self.config.debug_mode:
-            print(f"🔍 Processing final transcript - State: {current_state.value}, In conversation: {current_in_conversation}")
-        
+
         # CASE 1: Wake word detected in IDLE state (not in conversation or continuous mode disabled)
         if (current_state == JarvisState.IDLE and 
             (not current_in_conversation or not self.config.continuous_conversation) and
             self._contains_wake_word(text_lower)):
             
-            print(f"🎯 Wake word detected in final transcript!")
+            print(f"Wake word detected in final transcript!")
             
             # Start conversation if not already started
             with self.state_lock:
@@ -365,11 +344,11 @@ class Jarvis:
             # Extract and queue the command part
             command_clean = self._clean_command(segment.text)
             if self._is_valid_command(command_clean):
-                print(f"📨 Processing wake word + command: '{command_clean}'")
+                print(f"Processing wake word + command: '{command_clean}'")
                 with self.command_queue_lock:
                     self.command_queue.append(command_clean)
             else:
-                print(f"⏳ Wake word detected, waiting for command...")
+                print(f"Wake word detected, waiting for command...")
             return
         
         # CASE 2: Continuous conversation mode - any speech from primary speaker is a command
@@ -380,11 +359,11 @@ class Jarvis:
             
             command_clean = segment.text.strip()
             if self._is_valid_command(command_clean):
-                print(f"💬 Continuous conversation command: '{command_clean}'")
+                print(f"Continuous conversation command: '{command_clean}'")
                 with self.command_queue_lock:
                     self.command_queue.append(command_clean)
             else:
-                print(f"⚠️ Invalid command in continuous mode: '{command_clean}'")
+                print(f" Invalid command in continuous mode: '{command_clean}'")
             return
         
         # CASE 3: Already in LISTENING state - this is the most common case after wake word
@@ -393,17 +372,13 @@ class Jarvis:
             command_clean = self._clean_command(segment.text)
             
             if self._is_valid_command(command_clean):
-                print(f"📨 Processing final command: '{command_clean}'")
+                print(f"Processing final command: '{command_clean}'")
                 with self.command_queue_lock:
                     self.command_queue.append(command_clean)
-            else:
-                if self.config.debug_mode:
-                    print(f"⚠️ Invalid final command: '{command_clean}'")
         
         # CASE 4: Any other state or speaker - log and ignore
         else:
-            if self.config.debug_mode:
-                print(f"🚫 Ignoring transcript - State: {current_state.value}, Speaker: {segment.speaker_id}, Primary: {current_primary_speaker}")
+            print(f"Ignoring transcript - State: {current_state.value}, Speaker: {segment.speaker_id}, Primary: {current_primary_speaker}")
     
     
     def _contains_wake_word(self, text: str) -> bool:
@@ -457,13 +432,12 @@ class Jarvis:
             if self.state == JarvisState.LISTENING or self.state == JarvisState.IDLE:  # Accept from both states
                 self._set_state_internal(JarvisState.THINKING)
                 self.thinking_start_time = time.time()
-                print("🧠 Thinking...")
+                print("Thinking...")
                 # Clear command buffer since we're processing a command
                 self.command_buffer.clear()
             else:
                 # Command was queued but state changed inappropriately, ignore it
-                if self.config.debug_mode:
-                    print(f"🚫 Ignoring queued command due to inappropriate state {self.state.value}: {command}")
+                print(f"Ignoring queued command due to inappropriate state {self.state.value}: {command}")
                 return
         
         try:
@@ -473,7 +447,7 @@ class Jarvis:
             # Check if we weren't interrupted
             with self.state_lock:
                 if self.state == JarvisState.THINKING:
-                    print(f"\n🤖 Jarvis: {response}\n")
+                    print(f"\nJarvis: {response}\n")
                     
                     # Print token stats if in debug mode
                     if self.config.debug_mode:
@@ -486,12 +460,12 @@ class Jarvis:
                     # Keep conversation active if continuous mode is enabled
                     if self.config.continuous_conversation:
                         if self.config.debug_mode:
-                            print(f"💬 Conversation continues... (timeout in {self.config.conversation_timeout}s)")
+                            print(f"Conversation continues... (timeout in {self.config.conversation_timeout}s)")
                 else:
-                    print("🛑 Response cancelled due to interrupt")
+                    print("Response cancelled due to interrupt")
             
         except Exception as e:
-            print(f"❌ Error processing command: {e}")
+            print(f"Error processing command: {e}")
             with self.state_lock:
                 self._set_state_internal(JarvisState.IDLE)
                 self._reset_command_state_internal()
@@ -504,9 +478,8 @@ class Jarvis:
         self.last_speech_time = time.time()
         self.primary_speaker = speaker_id
         self.command_buffer.clear()
-        
-        if self.config.debug_mode:
-            print(f"💬 Conversation started with {speaker_id}")
+
+        print(f"Conversation started with {speaker_id}")
     
     def _end_conversation_internal(self):
         """End the current conversation and return to wake word required mode - internal version"""
@@ -514,9 +487,8 @@ class Jarvis:
         self.primary_speaker = None
         self._set_state_internal(JarvisState.IDLE)
         self._reset_command_state_internal()
-        
-        if self.config.debug_mode:
-            print(f"💤 Conversation ended - wake word required")
+
+        print(f"Conversation ended - sleeping until wake word detected")
     
     def _reset_command_state_internal(self):
         """Reset command-related state variables - internal version"""
@@ -559,7 +531,7 @@ def main():
     try:
         jarvis.start()
     except Exception as e:
-        print(f"❌ Error running Jarvis: {e}")
+        print(f"Error running Jarvis: {e}")
     finally:
         jarvis.stop()
 
