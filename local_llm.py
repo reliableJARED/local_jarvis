@@ -82,6 +82,8 @@ class JarvisCallback(VoiceAssistantCallback):
     
     def on_speaker_change(self, old_speaker: Optional[str], new_speaker: str):
         """Handle speaker changes"""
+        print(f"spk change: {(new_speaker != self.jarvis.jarvis_voice_id)}")
+        print(self.jarvis.jarvis_voice_id)
         if ((old_speaker is not None) and (new_speaker != self.jarvis.jarvis_voice_id)):
             if self.jarvis.config.debug_mode:
                 print(f"👥 Speaker change: {old_speaker} → {new_speaker}")
@@ -326,6 +328,7 @@ class Jarvis:
     
     
     def set_self_voice_id(self,speaker_id):
+        print(f"set my voice ID as: {speaker_id}")
         self.jarvis_voice_id = speaker_id
 
     def self_voice_sample_text(self):
@@ -434,8 +437,10 @@ class Jarvis:
         return bool(re.search(pattern, text))
     
     def _contains_interrupt_phrase(self, text: str) -> bool:
-        """Check if text contains the interrupt phrase"""
-        return self.config.interrupt_phrase.lower() in text
+        """Check if text has interrupt phrase but does not start with the interrupt phrase"""
+        if self.config.interrupt_phrase.lower() in text:
+            if not text.lower().startswith(self.config.interrupt_phrase.lower()):
+                return True
     
     def _clean_command(self, text: str) -> str:
         """Clean command text by removing wake word and extra whitespace"""
@@ -572,7 +577,7 @@ def main():
     # Custom configuration example
     config = JarvisConfig(
         wake_word="jarvis",
-        interrupt_phrase="enough jarvis",
+        interrupt_phrase="jarvis",
         wake_word_timeout=30.0,
         debug_mode=True
     )
