@@ -1,460 +1,567 @@
-#!/usr/bin/env python3
 """
-YAAM - Yet Another Assistant Model
-A voice-activated AI assistant combining Whisper VAD, Qwen Chat, and Kokoro TTS.
+Jarvis Voice Assistant - Fixed thread management version
+Combines speech processing with LLM capabilities for natural conversation
 """
 
 import time
 import threading
-import queue
-from typing import Optional, Callable
-import numpy as np
-import sounddevice as sd
-import torch
-from collections import deque
+import re
+from enum import Enum
+from typing import Optional, List
+from dataclasses import dataclass
 
-# Import our core classes
-from whispervad import WhisperVAD
+# Import our custom modules (assuming they're in the same directory)
+from whispervad_ import (
+    VoiceAssistantSpeechProcessor, 
+    VoiceAssistantCallback, 
+    TranscriptSegment,
+    SpeechEvent
+)
 from qwen_ import QwenChat
-from kokoro_ import Kokoro
 
 
-class YetAnotherAssistantModel:
-    """
-    Voice-activated AI assistant that listens, thinks, and speaks.
+class JarvisState(Enum):
+    """States for the Jarvis assistant"""
+    IDLE = "idle"                    # Waiting for wake word
+    LISTENING = "listening"          # Actively listening for command after wake word
+    THINKING = "thinking"            # Processing command with LLM
+    RESPONDING = "responding"        # Speaking response (if TTS implemented)
+
+
+@dataclass
+class JarvisConfig:
+    """Configuration for Jarvis assistant"""
+    wake_word: str = "jarvis"
+    interrupt_phrase: str = "enough jarvis"
+    wake_word_timeout: float = 30.0      # Seconds to wait for command after wake word
+    response_timeout: float = 60.0       # Maximum thinking time
+    conversation_timeout: float = 45.0   # Seconds of silence before requiring wake word again
+    min_command_length: int = 3          # Minimum words in command
+    debug_mode: bool = True              # Print debug information
+    continuous_conversation: bool = True  # Allow conversation without wake word after initial detection
+
+
+class JarvisCallback(VoiceAssistantCallback):
+    """Enhanced callback that integrates with Jarvis assistant"""
     
-    Flow:
-    1. Listen for speech using custom VAD loop
-    2. When speech detected and silence follows, transcribe
-    3. Send transcript to Qwen for processing
-    4. Convert Qwen's response to speech using Kokoro
-    5. Play the response and return to listening
+    def __init__(self, jarvis_instance):
+        super().__init__()
+        self.jarvis = jarvis_instance
+    
+    def on_speech_start(self, event: SpeechEvent):
+        """Handle speech start events"""
+        if self.jarvis.config.debug_mode:
+            print(f"🎤 Speech detected at {event.timestamp:.1f}")
+        
+        # Notify Jarvis of speech activity
+        self.jarvis._on_speech_detected()
+    
+    def on_speech_end(self, event: SpeechEvent):
+        """Handle speech end events"""
+        if self.jarvis.config.debug_mode:
+            print(f"🔇 Speech ended at {event.timestamp:.1f}")
+    
+    def on_transcript_update(self, segment: TranscriptSegment):
+        """Handle real-time transcript updates"""
+        if self.jarvis.config.debug_mode:
+            print(f"📝 [{segment.speaker_id}] (live): {segment.text}")
+        
+        # Check for wake word or interrupt phrase in live transcript
+        self.jarvis._process_live_transcript(segment.text, segment.speaker_id)
+    
+    def on_transcript_final(self, segment: TranscriptSegment):
+        """Handle final transcript"""
+        if self.jarvis.config.debug_mode:
+            print(f"✅ [{segment.speaker_id}] (final): {segment.text}")
+        
+        self.current_conversation.append(segment)
+        self.active_speakers.add(segment.speaker_id)
+        
+        # Process final transcript for commands
+        self.jarvis._process_final_transcript(segment)
+    
+    def on_speaker_change(self, old_speaker: Optional[str], new_speaker: str):
+        """Handle speaker changes"""
+        if old_speaker is not None:
+            if self.jarvis.config.debug_mode:
+                print(f"👥 Speaker change: {old_speaker} → {new_speaker}")
+        else:
+            if self.jarvis.config.debug_mode:
+                print(f"👤 New speaker: {new_speaker}")
+
+
+class Jarvis:
+    """
+    Main Jarvis Voice Assistant class
+    Integrates speech processing with LLM for complete voice interaction
     """
     
-    def __init__(self, 
-                 whisper_model: str = "openai/whisper-small",
-                 qwen_model: str = "Qwen/Qwen2.5-7B-Instruct",
-                 kokoro_voice: str = "af_sky",
-                 kokoro_speed: float = 1.0,
-                 silence_duration: float = 2.0,
-                 vad_threshold: float = 0.5,
-                 debug_mode: bool = True):
-        """
-        Initialize YAAM with all components.
+    def __init__(self, config: Optional[JarvisConfig] = None):
+        """Initialize Jarvis with configuration"""
+        self.config = config or JarvisConfig()
+        self.state = JarvisState.IDLE
+        self.in_conversation = False     # Flag for continuous conversation mode
+        self.primary_speaker = None
+        self.command_buffer = []
+        self.wake_word_detected_time = None
+        self.thinking_start_time = None
+        self.last_speech_time = None     # Track last speech activity for conversation timeout
+        self._processed_segments = set() # Track processed final segments to avoid duplicates
         
-        Args:
-            whisper_model: Whisper model for speech recognition
-            qwen_model: Qwen model for text processing
-            kokoro_voice: Kokoro voice for text-to-speech
-            kokoro_speed: Speech speed multiplier
-            silence_duration: Seconds of silence before processing
-            vad_threshold: Voice activity detection threshold
-            debug_mode: Enable debug output
-        """
+        # Thread synchronization
+        self.state_lock = threading.Lock()
+        self.should_stop = False
         
-        self.debug_mode = debug_mode
-        self.kokoro_voice = kokoro_voice
-        self.kokoro_speed = kokoro_speed
-        self.silence_duration = silence_duration
-        self.vad_threshold = vad_threshold
-        self.sample_rate = 16000
-        self.chunk_size = 1024
-        
-        # State management
-        self._is_running = False
-        self._is_listening = False
-        self._is_processing = False
-        self._is_speaking = False
-        
-        # Audio processing
-        self.audio_queue = queue.Queue()
-        self.audio_buffer = deque(maxlen=int(self.sample_rate * 3))  # 3 second buffer
-        self.speech_audio = deque()
-        self.is_speaking_detected = False
-        self.last_speech_time = time.time()
-        
-        # Threading
-        self._audio_thread = None
-        self._processing_thread = None
-        self._stream = None
+        # Command processing queue to avoid blocking
+        self.command_queue = []
+        self.command_queue_lock = threading.Lock()
         
         # Initialize components
-        self._log("🤖 Initializing YAAM components...")
+        print("🤖 Initializing Jarvis...")
+        self._init_speech_processor()
+        self._init_llm()
         
-        # Initialize WhisperVAD (we'll use its models but not its loop)
-        self._log("🎤 Loading Whisper models...")
-        self.whisper_vad = WhisperVAD(
-            model_name=whisper_model,
-            silence_duration=silence_duration,
-            vad_threshold=vad_threshold
-        )
-        self.whisper_vad.initialize()
-        
-        # Initialize Qwen Chat
-        self._log("🧠 Loading Qwen Chat...")
-        self.qwen_chat = QwenChat(model_name=qwen_model)
-        
-        # Initialize Kokoro TTS
-        self._log("🗣️  Loading Kokoro TTS...")
-        self.kokoro_tts = Kokoro(lang_code='a')
-        
-        self._log("✅ YAAM initialized successfully!")
-        self._log(f"   🎤 Speech: {whisper_model}")
-        self._log(f"   🧠 Brain: {qwen_model}")
-        self._log(f"   🗣️  Voice: {kokoro_voice}")
+        print(f"🎯 Wake word: '{self.config.wake_word}'")
+        print(f"🛑 Interrupt phrase: '{self.config.interrupt_phrase}'")
+        print(f"💬 Continuous conversation: {self.config.continuous_conversation}")
+        if self.config.continuous_conversation:
+            print(f"⏰ Conversation timeout: {self.config.conversation_timeout}s")
+        print("✅ Jarvis ready!")
     
-    def _log(self, message: str):
-        """Log debug messages if debug mode is enabled."""
-        if self.debug_mode:
-            print(f"[YAAM] {message}")
+    def _init_speech_processor(self):
+        """Initialize speech processing components"""
+        print("🎤 Loading speech processor...")
+        self.callback = JarvisCallback(self)
+        self.speech_processor = VoiceAssistantSpeechProcessor(self.callback)
     
-    def _audio_callback(self, indata, frames, time_info, status):
-        """Handle incoming audio data."""
-        if self._is_listening and not self._is_processing and not self._is_speaking:
-            audio_data = indata.flatten()
-            self.audio_queue.put(audio_data.copy())
-    
-    def _detect_speech(self, audio_chunk):
-        """Detect speech using VAD model."""
-        audio_tensor = torch.from_numpy(audio_chunk).float()
+    def _init_llm(self):
+        """Initialize the language model"""
+        print("🧠 Loading language model...")
+        self.llm = QwenChat()
         
-        # VAD expects 512 samples
-        if len(audio_tensor) != 512:
-            if len(audio_tensor) > 512:
-                audio_tensor = audio_tensor[:512]
-            else:
-                padded = torch.zeros(512)
-                padded[:len(audio_tensor)] = audio_tensor
-                audio_tensor = padded
+        # Add Jarvis-specific system prompt
+        jarvis_prompt = """You are Jarvis, an intelligent voice assistant."""
         
-        speech_prob = self.whisper_vad.vad_model(audio_tensor, self.sample_rate)
-        
-        if hasattr(speech_prob, 'item'):
-            speech_prob = speech_prob.item()
-        elif isinstance(speech_prob, torch.Tensor):
-            speech_prob = speech_prob.cpu().numpy()
-            if speech_prob.ndim > 0:
-                speech_prob = speech_prob[0]
-        
-        return speech_prob > self.vad_threshold
-    
-    def _audio_processing_loop(self):
-        """Main audio processing loop that runs in a separate thread."""
-        self._log("👂 Audio processing loop started")
-        
-        while self._is_running:
-            try:
-                if self._is_listening and not self.audio_queue.empty():
-                    audio_chunk = self.audio_queue.get(timeout=0.1)
-                    self.audio_buffer.extend(audio_chunk)
-                    
-                    # Check for speech when we have enough audio
-                    if len(self.audio_buffer) >= 512:
-                        recent_audio = np.array(list(self.audio_buffer)[-512:])
-                        has_speech = self._detect_speech(recent_audio)
-                        
-                        if has_speech:
-                            self.last_speech_time = time.time()
-                            
-                            if not self.is_speaking_detected:
-                                self.is_speaking_detected = True
-                                self._log("🎤 Speech detected - recording...")
-                                self.speech_audio.clear()
-                            
-                            self.speech_audio.extend(audio_chunk)
-                        
-                        elif self.is_speaking_detected:
-                            silence_duration = time.time() - self.last_speech_time
-                            
-                            if silence_duration >= self.silence_duration:
-                                self._log("🛑 Speech ended - processing...")
-                                
-                                if len(self.speech_audio) > 0:
-                                    # Copy speech audio for processing
-                                    speech_array = np.array(list(self.speech_audio))
-                                    
-                                    # Stop listening while processing
-                                    self._pause_listening()
-                                    
-                                    # Process in separate thread to avoid blocking
-                                    processing_thread = threading.Thread(
-                                        target=self._process_speech,
-                                        args=(speech_array,),
-                                        daemon=True
-                                    )
-                                    processing_thread.start()
-                                
-                                self.is_speaking_detected = False
-                                self.speech_audio.clear()
-                
-                time.sleep(0.01)
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                if self._is_running:  # Only log errors if we're supposed to be running
-                    self._log(f"❌ Audio processing error: {e}")
-        
-        self._log("🛑 Audio processing loop ended")
-    
-    def _process_speech(self, speech_array):
-        """Process detected speech."""
-        try:
-            self._is_processing = True
-            self._log("🧠 Transcribing and processing...")
-            
-            # Transcribe using WhisperVAD
-            transcription = self.whisper_vad.transcribe_audio(speech_array)
-            
-            if transcription and transcription.strip():
-                self._log(f"📝 Transcribed: '{transcription}'")
-                
-                # Get response from Qwen
-                self._log("🤔 Asking Qwen...")
-                response = self.qwen_chat.generate_response(transcription)
-                
-                if response and response.strip():
-                    self._log(f"💭 Qwen responded: '{response[:100]}...'")
-                    
-                    # Generate and play speech
-                    self._speak_response(response)
-                else:
-                    self._log("🤷 Qwen provided no response")
-            else:
-                self._log("🔇 No valid transcription")
-            
-        except Exception as e:
-            self._log(f"❌ Error processing speech: {e}")
-        finally:
-            self._is_processing = False
-            # Resume listening after processing
-            if self._is_running:
-                self._resume_listening()
-    
-    def _clean_text_for_speech(self, text: str) -> str:
-        """Clean text to make it suitable for TTS."""
-        # Remove or replace problematic characters
-        text = text.replace('\n', ' ')  # Replace newlines with spaces
-        text = text.replace('\r', ' ')  # Replace carriage returns
-        text = text.replace('\t', ' ')  # Replace tabs
-        
-        # Replace multiple spaces with single space
-        import re
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Remove quotes that might cause issues
-        text = text.replace('"', '')
-        text = text.replace("'", '')
-        
-        # Strip leading/trailing whitespace
-        text = text.strip()
-        
-        return text
-    
-    def _speak_response(self, response: str):
-        """Convert response to speech and play it."""
-        try:
-            self._is_speaking = True
-            
-            # Clean the text for TTS
-            cleaned_response = self._clean_text_for_speech(response)
-            self._log(f"🗣️  Speaking response: '{cleaned_response[:100]}...'")
-            
-            # Generate and play speech
-            success = self.kokoro_tts.speak(
-                cleaned_response,
-                voice=self.kokoro_voice,
-                speed=self.kokoro_speed,
-                play_audio=True,
-                save_to_file=None
-            )
-            
-            if success:
-                self._log("✅ Response spoken successfully")
-            else:
-                self._log("❌ Failed to speak response")
-                
-        except Exception as e:
-            self._log(f"❌ Error speaking response: {e}")
-        finally:
-            self._is_speaking = False
-    
-    def _pause_listening(self):
-        """Pause listening without stopping the audio stream."""
-        self._is_listening = False
-        self._log("⏸️  Paused listening")
-    
-    def _resume_listening(self):
-        """Resume listening."""
-        if self._is_running and not self._is_processing and not self._is_speaking:
-            self._is_listening = True
-            self._log("▶️  Resumed listening...")
+        # Update system prompt
+        self.llm.messages[0]["content"] = jarvis_prompt
     
     def start(self):
-        """Start the YAAM assistant."""
-        if self._is_running:
-            self._log("⚠️  YAAM is already running")
-            return
+        """Start Jarvis voice assistant"""
+        print("\n" + "="*60)
+        print("🤖 JARVIS VOICE ASSISTANT STARTED")
+        print("="*60)
+        print(f"Say '{self.config.wake_word}' followed by your command")
+        print(f"Say '{self.config.interrupt_phrase}' to interrupt responses")
+        print("Press Ctrl+C to stop")
+        print("="*60 + "\n")
         
-        self._log("🚀 Starting YAAM assistant...")
+        self.should_stop = False
+        self.speech_processor.start()
         
-        self._is_running = True
-        self._is_listening = True
+        # Start monitoring thread
+        monitoring_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
+        monitoring_thread.start()
         
-        # Start audio stream
-        self._stream = sd.InputStream(
-            callback=self._audio_callback,
-            channels=1,
-            samplerate=self.sample_rate,
-            blocksize=self.chunk_size,
-            dtype=np.float32
-        )
-        self._stream.start()
-        
-        # Start audio processing thread
-        self._audio_thread = threading.Thread(
-            target=self._audio_processing_loop,
-            daemon=True
-        )
-        self._audio_thread.start()
-        
-        self._log("🎯 YAAM is ready! Say something...")
+        # Start command processing thread
+        command_thread = threading.Thread(target=self._command_processing_loop, daemon=True)
+        command_thread.start()
         
         try:
-            # Keep the main thread alive and handle keyboard interrupt
-            while self._is_running:
+            while not self.should_stop:
                 time.sleep(0.1)
         except KeyboardInterrupt:
-            self._log("🛑 Keyboard interrupt received")
-        finally:
+            print("\n🛑 Stopping Jarvis...")
             self.stop()
     
     def stop(self):
-        """Stop the YAAM assistant."""
-        if not self._is_running:
+        """Stop Jarvis voice assistant"""
+        self.should_stop = True
+        self.speech_processor.stop()
+        print("👋 Jarvis stopped. Goodbye!")
+    
+    def _monitoring_loop(self):
+        """Background monitoring for timeouts and state management"""
+        while not self.should_stop:
+            try:
+                current_time = time.time()
+                
+                with self.state_lock:
+                    # Check for wake word timeout
+                    if (self.state == JarvisState.LISTENING and 
+                        self.wake_word_detected_time and
+                        current_time - self.wake_word_detected_time > self.config.wake_word_timeout):
+                        
+                        print("⏰ Wake word timeout - returning to idle")
+                        self._set_state_internal(JarvisState.IDLE)
+                        self._reset_command_state_internal()
+                    
+                    # Check for thinking timeout
+                    if (self.state == JarvisState.THINKING and
+                        self.thinking_start_time and
+                        current_time - self.thinking_start_time > self.config.response_timeout):
+                        
+                        print("⏰ Thinking timeout - returning to idle")
+                        self._set_state_internal(JarvisState.IDLE)
+                        self._reset_command_state_internal()
+                    
+                    # Check for conversation timeout (continuous conversation mode)
+                    if (self.config.continuous_conversation and 
+                        self.in_conversation and 
+                        self.last_speech_time and
+                        current_time - self.last_speech_time > self.config.conversation_timeout):
+                        
+                        print("💤 Conversation timeout - requiring wake word again")
+                        self._end_conversation_internal()
+                
+                time.sleep(1.0)
+                
+            except Exception as e:
+                print(f"❌ Error in monitoring loop: {e}")
+                time.sleep(1.0)
+    
+    def _command_processing_loop(self):
+        """Background command processing to avoid blocking main thread"""
+        while not self.should_stop:
+            try:
+                # Check for commands to process
+                command_to_process = None
+                
+                with self.command_queue_lock:
+                    if self.command_queue:
+                        command_to_process = self.command_queue.pop(0)
+                
+                if command_to_process:
+                    self._execute_command_internal(command_to_process)
+                else:
+                    time.sleep(0.1)
+                    
+            except Exception as e:
+                print(f"❌ Error in command processing loop: {e}")
+                time.sleep(1.0)
+    
+    def _set_state(self, new_state: JarvisState):
+        """Thread-safe state change"""
+        with self.state_lock:
+            self._set_state_internal(new_state)
+    
+    def _set_state_internal(self, new_state: JarvisState):
+        """Internal state change (assumes lock is held)"""
+        if self.state != new_state:
+            old_state = self.state
+            self.state = new_state
+            if self.config.debug_mode:
+                print(f"🔄 State: {old_state.value} → {new_state.value}")
+    
+    def _on_speech_detected(self):
+        """Handle speech detection events"""
+        # Update last speech time for conversation timeout tracking
+        with self.state_lock:
+            self.last_speech_time = time.time()
+            if self.config.debug_mode and self.in_conversation:
+                print(f"🗣️ Speech activity - conversation timer reset")
+    
+    def _process_live_transcript(self, text: str, speaker_id: str):
+        """Process real-time transcript for wake words and interrupts"""
+        text_lower = text.lower().strip()
+        
+        with self.state_lock:
+            # Check for interrupt phrase during thinking
+            if self.state == JarvisState.THINKING:
+                if self._contains_interrupt_phrase(text_lower):
+                    print(f"🛑 Interrupt detected - stopping current processing")
+                    self._set_state_internal(JarvisState.IDLE)
+                    self._reset_command_state_internal()
+                    # Clear any pending commands
+                    with self.command_queue_lock:
+                        self.command_queue.clear()
+                return
+            
+            # Check for wake word in idle state OR if not in conversation
+            if self.state == JarvisState.IDLE and (not self.in_conversation or not self.config.continuous_conversation):
+                if self._contains_wake_word(text_lower):
+                    print(f"🎯 Wake word detected in live transcript!")
+                    self._start_conversation_internal(speaker_id)
+                    # Don't process commands from live transcript - wait for final
+                    return
+            
+            # NEW: Check for wake word during active conversation to reset primary speaker
+            elif (self.in_conversation and 
+                self._contains_wake_word(text_lower) and 
+                speaker_id != self.primary_speaker):
+                
+                print(f"🔄 Wake word detected by different speaker - switching primary speaker")
+                print(f"   Previous: {self.primary_speaker} → New: {speaker_id}")
+                
+                # Reset primary speaker and restart conversation state
+                self.primary_speaker = speaker_id
+                self._set_state_internal(JarvisState.LISTENING)
+                self.wake_word_detected_time = time.time()
+                self.last_speech_time = time.time()
+                self.command_buffer.clear()
+                
+                # Clear any pending commands from previous speaker
+                with self.command_queue_lock:
+                    self.command_queue.clear()
+                
+                if self.config.debug_mode:
+                    print(f"💬 Primary speaker changed to {speaker_id}")
+                return
+            
+            # Handle commands in continuous conversation mode (no wake word needed)
+            elif (self.state == JarvisState.IDLE and 
+                self.in_conversation and 
+                self.config.continuous_conversation and
+                speaker_id == self.primary_speaker):
+                
+                # Any speech from primary speaker is treated as a command
+                command_clean = text.strip()
+                if self._is_valid_command(command_clean):
+                    print(f"💬 Continuous conversation command: {command_clean}")
+                    # Don't process from live transcript - wait for final
+                    return
+            
+    def _process_final_transcript(self, segment: TranscriptSegment):
+        """Process final transcript for commands - NON-BLOCKING VERSION"""
+        # Create unique identifier for this segment to avoid duplicate processing
+        segment_id = f"{segment.speaker_id}_{segment.start_time}_{segment.text}"
+        
+        # Quick duplicate check
+        if segment_id in self._processed_segments:
+            if self.config.debug_mode:
+                print(f"🔄 Skipping already processed segment: {segment.text}")
             return
         
-        self._log("🛑 Stopping YAAM...")
+        # Mark as processed
+        self._processed_segments.add(segment_id)
         
-        self._is_running = False
-        self._is_listening = False
+        # Clean up old processed segments (keep only recent ones)
+        if len(self._processed_segments) > 100:
+            segments_list = list(self._processed_segments)
+            self._processed_segments = set(segments_list[-50:])
         
-        # Stop audio stream
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
+        text_lower = segment.text.lower().strip()
         
-        # Wait for threads to finish
-        if self._audio_thread and self._audio_thread.is_alive():
-            self._audio_thread.join(timeout=2.0)
+        # Capture current state safely
+        with self.state_lock:
+            current_state = self.state
+            current_in_conversation = self.in_conversation
+            current_primary_speaker = self.primary_speaker
         
-        self._log("✅ YAAM stopped successfully")
-    
-    def get_status(self):
-        """Get current status of the assistant."""
-        return {
-            'running': self._is_running,
-            'listening': self._is_listening,
-            'processing': self._is_processing,
-            'speaking': self._is_speaking
-        }
-    
-    def change_voice(self, voice: str):
-        """Change the Kokoro voice."""
-        voices = self.kokoro_tts.get_available_voices()
-        if voice in voices['all']:
-            self.kokoro_voice = voice
-            self._log(f"🎵 Voice changed to: {voice}")
-        else:
-            self._log(f"❌ Invalid voice: {voice}")
-            self._log(f"Available voices: {voices['all']}")
-    
-    def set_speech_speed(self, speed: float):
-        """Set the speech speed."""
-        if 0.5 <= speed <= 2.0:
-            self.kokoro_speed = speed
-            self._log(f"⚡ Speech speed set to: {speed}x")
-        else:
-            self._log(f"❌ Invalid speed: {speed}. Must be between 0.5 and 2.0")
-    
-    def test_components(self):
-        """Test all components individually."""
-        self._log("🧪 Testing YAAM components...")
+        if self.config.debug_mode:
+            print(f"🔍 Processing final transcript - State: {current_state.value}, In conversation: {current_in_conversation}")
         
-        # Test Kokoro TTS
-        self._log("🗣️  Testing Kokoro TTS...")
-        try:
-            success = self.kokoro_tts.speak(
-                "Mic check one two, one two.... ok that worked, one more moment.",
-                voice=self.kokoro_voice,
-                play_audio=True
-            )
-            if success:
-                self._log("✅ Kokoro TTS test passed")
+        # CASE 1: Wake word detected in IDLE state (not in conversation or continuous mode disabled)
+        if (current_state == JarvisState.IDLE and 
+            (not current_in_conversation or not self.config.continuous_conversation) and
+            self._contains_wake_word(text_lower)):
+            
+            print(f"🎯 Wake word detected in final transcript!")
+            
+            # Start conversation if not already started
+            with self.state_lock:
+                if not self.in_conversation:
+                    self._start_conversation_internal(segment.speaker_id)
+            
+            # Extract and queue the command part
+            command_clean = self._clean_command(segment.text)
+            if self._is_valid_command(command_clean):
+                print(f"📨 Processing wake word + command: '{command_clean}'")
+                with self.command_queue_lock:
+                    self.command_queue.append(command_clean)
             else:
-                self._log("❌ Kokoro TTS test failed")
-        except Exception as e:
-            self._log(f"❌ Kokoro TTS test error: {e}")
+                print(f"⏳ Wake word detected, waiting for command...")
+            return
         
-        # Test Qwen Chat
-        self._log("🧠 Testing Qwen Chat...")
-        try:
-            response = self.qwen_chat.generate_response("You just did a mic check, user can hear you via text-to-speech introduce yourself briefly in a fun way.")
-            if response:
-                self._log(f"✅ Qwen Chat test passed: '{response[:50]}...'")
-                
-                # Test TTS with Qwen response
-                self._log("🗣️  Testing TTS with Qwen response...")
-                self.kokoro_tts.speak(response, voice=self.kokoro_voice, play_audio=True)
+        # CASE 2: Continuous conversation mode - any speech from primary speaker is a command
+        elif (current_state == JarvisState.IDLE and 
+              current_in_conversation and 
+              self.config.continuous_conversation and
+              segment.speaker_id == current_primary_speaker):
+            
+            command_clean = segment.text.strip()
+            if self._is_valid_command(command_clean):
+                print(f"💬 Continuous conversation command: '{command_clean}'")
+                with self.command_queue_lock:
+                    self.command_queue.append(command_clean)
             else:
-                self._log("❌ Qwen Chat test failed - no response")
-        except Exception as e:
-            self._log(f"❌ Qwen Chat test error: {e}")
+                print(f"⚠️ Invalid command in continuous mode: '{command_clean}'")
+            return
         
-        self._log("🧪 Component testing complete")
+        # CASE 3: Already in LISTENING state - this is the most common case after wake word
+        elif current_state == JarvisState.LISTENING and segment.speaker_id == current_primary_speaker:
+            # For final transcript in listening state, use the full command directly
+            command_clean = self._clean_command(segment.text)
+            
+            if self._is_valid_command(command_clean):
+                print(f"📨 Processing final command: '{command_clean}'")
+                with self.command_queue_lock:
+                    self.command_queue.append(command_clean)
+            else:
+                if self.config.debug_mode:
+                    print(f"⚠️ Invalid final command: '{command_clean}'")
+        
+        # CASE 4: Any other state or speaker - log and ignore
+        else:
+            if self.config.debug_mode:
+                print(f"🚫 Ignoring transcript - State: {current_state.value}, Speaker: {segment.speaker_id}, Primary: {current_primary_speaker}")
+    
+    
+    def _contains_wake_word(self, text: str) -> bool:
+        """Check if text contains the wake word"""
+        # Use word boundaries to avoid partial matches
+        pattern = r'\b' + re.escape(self.config.wake_word.lower()) + r'\b'
+        return bool(re.search(pattern, text))
+    
+    def _contains_interrupt_phrase(self, text: str) -> bool:
+        """Check if text contains the interrupt phrase"""
+        return self.config.interrupt_phrase.lower() in text
+    
+    def _clean_command(self, text: str) -> str:
+        """Clean command text by removing wake word and extra whitespace"""
+        # Remove wake word from the beginning
+        text_lower = text.lower()
+        wake_word_lower = self.config.wake_word.lower()
+        
+        # Find and remove wake word with potential punctuation
+        if text_lower.startswith(wake_word_lower):
+            text = text[len(wake_word_lower):].strip()
+        else:
+            # Remove wake word if it appears anywhere in the text
+            pattern = r'\b' + re.escape(wake_word_lower) + r'\b'
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
+        
+        # Remove leading punctuation that might be left after wake word removal
+        text = re.sub(r'^[,.\s]+', '', text).strip()
+        
+        # Clean up extra whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+    
+    def _is_valid_command(self, command: str) -> bool:
+        """Check if command is valid for processing"""
+        if not command:
+            return False
+        
+        words = command.split()
+        if len(words) < self.config.min_command_length:
+            return False
+        
+        # Add other validation rules here if needed
+        return True
+    
+    def _execute_command_internal(self, command: str):
+        """Execute a voice command using the LLM - internal version"""
+        # Set state to thinking
+        with self.state_lock:
+            if self.state == JarvisState.LISTENING or self.state == JarvisState.IDLE:  # Accept from both states
+                self._set_state_internal(JarvisState.THINKING)
+                self.thinking_start_time = time.time()
+                print("🧠 Thinking...")
+                # Clear command buffer since we're processing a command
+                self.command_buffer.clear()
+            else:
+                # Command was queued but state changed inappropriately, ignore it
+                if self.config.debug_mode:
+                    print(f"🚫 Ignoring queued command due to inappropriate state {self.state.value}: {command}")
+                return
+        
+        try:
+            # Get response from LLM
+            response = self.llm.generate_response(command)
+            
+            # Check if we weren't interrupted
+            with self.state_lock:
+                if self.state == JarvisState.THINKING:
+                    print(f"\n🤖 Jarvis: {response}\n")
+                    
+                    # Print token stats if in debug mode
+                    if self.config.debug_mode:
+                        self.llm.print_token_stats()
+                    
+                    # Return to idle state (conversation continues if enabled)
+                    self._set_state_internal(JarvisState.IDLE)
+                    self._reset_command_state_internal()
+                    
+                    # Keep conversation active if continuous mode is enabled
+                    if self.config.continuous_conversation:
+                        if self.config.debug_mode:
+                            print(f"💬 Conversation continues... (timeout in {self.config.conversation_timeout}s)")
+                else:
+                    print("🛑 Response cancelled due to interrupt")
+            
+        except Exception as e:
+            print(f"❌ Error processing command: {e}")
+            with self.state_lock:
+                self._set_state_internal(JarvisState.IDLE)
+                self._reset_command_state_internal()
+    
+    def _start_conversation_internal(self, speaker_id: str):
+        """Start a conversation with a specific speaker - internal version"""
+        self.in_conversation = True
+        self._set_state_internal(JarvisState.LISTENING)
+        self.wake_word_detected_time = time.time()
+        self.last_speech_time = time.time()
+        self.primary_speaker = speaker_id
+        self.command_buffer.clear()
+        
+        if self.config.debug_mode:
+            print(f"💬 Conversation started with {speaker_id}")
+    
+    def _end_conversation_internal(self):
+        """End the current conversation and return to wake word required mode - internal version"""
+        self.in_conversation = False
+        self.primary_speaker = None
+        self._set_state_internal(JarvisState.IDLE)
+        self._reset_command_state_internal()
+        
+        if self.config.debug_mode:
+            print(f"💤 Conversation ended - wake word required")
+    
+    def _reset_command_state_internal(self):
+        """Reset command-related state variables - internal version"""
+        
+        self.command_buffer.clear()
+        self.wake_word_detected_time = None
+        self.thinking_start_time = None
+        # Note: in_conversation and last_speech_time are NOT reset here
+        # They persist until conversation timeout
+    
+    def get_status(self) -> dict:
+        """Get current status of Jarvis"""
+        with self.state_lock:
+            return {
+                'state': self.state.value,
+                'in_conversation': self.in_conversation,
+                'primary_speaker': self.primary_speaker,
+                'active_speakers': list(self.callback.active_speakers),
+                'conversation_count': len(self.callback.current_conversation),
+                'token_stats': self.llm.token_stats,
+                'last_speech_time': self.last_speech_time,
+                'processed_segments_count': len(self._processed_segments),
+                'command_queue_size': len(self.command_queue)
+            }
 
 
 def main():
-    """Main function to run YAAM."""
-    print("🤖 YAAM - Yet Another Assistant Model")
-    print("=" * 50)
-    print("A voice-activated AI assistant")
-    print("Say something and I'll respond!")
-    print("Press Ctrl+C to exit")
-    print("=" * 50)
+    """Main function to run Jarvis"""
+    # Custom configuration example
+    config = JarvisConfig(
+        wake_word="jarvis",
+        interrupt_phrase="enough jarvis",
+        wake_word_timeout=30.0,
+        debug_mode=True
+    )
+    
+    # Initialize and start Jarvis
+    jarvis = Jarvis(config)
     
     try:
-        # Create YAAM instance
-        assistant = YetAnotherAssistantModel(
-            whisper_model="openai/whisper-small",
-            qwen_model="Qwen/Qwen2.5-7B-Instruct",
-            kokoro_voice="af_sky",
-            kokoro_speed=1.0,
-            silence_duration=2.0,
-            debug_mode=True
-        )
-        
-        # Test components first
-        print("\n🧪 Running component tests...")
-        assistant.test_components()
-        
-        print("\n🚀 Starting voice assistant...")
-        print("💡 Tips:")
-        print("   • Speak clearly and wait for the response")
-        print("   • There will be a brief pause while I think")
-        print("   • I'll resume listening after each response")
-        print("   • Press Ctrl+C to exit anytime")
-        print("")
-        
-        # Start the assistant (this will run continuously)
-        assistant.start()
-        
-    except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+        jarvis.start()
     except Exception as e:
-        print(f"\n❌ Error running YAAM: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error running Jarvis: {e}")
+    finally:
+        jarvis.stop()
 
 
 if __name__ == "__main__":
