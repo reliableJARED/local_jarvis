@@ -18,7 +18,7 @@ from whispervad_ import (
     SpeechEvent
 )
 from qwen_ import QwenChat
-
+from kokoro_ import Kokoro
 
 class JarvisState(Enum):
     """States for the Jarvis assistant"""
@@ -98,6 +98,7 @@ class Jarvis:
     
     def __init__(self, config: Optional[JarvisConfig] = None):
         """Initialize Jarvis with configuration"""
+        self.tts = Kokoro(lang_code='a')  # American English
         self.config = config or JarvisConfig()
         self.state = JarvisState.IDLE
         self.in_conversation = False     # Flag for continuous conversation mode
@@ -447,6 +448,10 @@ class Jarvis:
             # Check if we weren't interrupted
             with self.state_lock:
                 if self.state == JarvisState.THINKING:
+                    
+                    if self.tts.speak(response, voice="af_sky", speed=1.0, play_audio=True):
+                        print("\n✅ Demo completed successfully!")
+
                     print(f"\nJarvis: {response}\n")
                     
                     # Print token stats if in debug mode
