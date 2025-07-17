@@ -730,15 +730,36 @@ class VoiceActivityDetector:
         """Load the Silero VAD ONNX model using the official package"""
         try:
             from silero_vad import load_silero_vad
-            # Load ONNX model for offline operation
-            model = load_silero_vad(onnx=True)
-            return model
+            import os
+            
+            # First try normal loading
+            try:
+                model = load_silero_vad(onnx=True)
+                return model
+            except Exception as e:
+                print(f"Normal loading failed: {e}")
+                print("Attempting offline mode...")
+                
+                # Force offline mode for Hugging Face components
+                os.environ['HF_HUB_OFFLINE'] = '1'
+                os.environ['TRANSFORMERS_OFFLINE'] = '1'
+                os.environ['HF_DATASETS_OFFLINE'] = '1'
+                
+                try:
+                    # Try loading again with offline mode
+                    model = load_silero_vad(onnx=True)
+                    return model
+                except Exception as offline_error:
+                    raise RuntimeError(
+                        f"Failed to load VAD model both online and offline. "
+                        f"Online error: {e}. Offline error: {offline_error}. "
+                        f"Make sure to run the model once with internet connection to cache it."
+                    )
+                    
         except ImportError:
             raise ImportError(
                 "silero-vad package not found. Install with: pip install silero-vad"
             )
-        except Exception as e:
-            raise RuntimeError(f"Failed to load VAD model: {e}")
     
     def _reset_states(self):
         """Reset the internal states of the VAD model"""
@@ -796,7 +817,7 @@ class VoiceActivityDetector:
         """
         self._reset_states()
         self.vad_history.clear()
-        
+
 class WordBoundaryDetector:
     """Detects word boundaries in audio streams"""
     
@@ -909,12 +930,58 @@ class WordBoundaryDetector:
         return False
 
 class SpeechTranscriber:
-    """Handles speech transcription using Whisper"""
+    """Handles speech transcription using Whisper with offline support"""
     
     def __init__(self, model_name="openai/whisper-small"):
-        self.processor = AutoProcessor.from_pretrained(model_name)
-        self.model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name)
         self.sample_rate = 16000
+        self.model_name = model_name
+        
+        # Load model and processor with offline fallback
+        self.processor, self.model = self._load_models()
+    
+    def _load_models(self):
+        """Load Whisper models with offline support"""
+        import os
+        
+        # Set offline mode environment variables BEFORE importing/loading
+        os.environ['HF_HUB_OFFLINE'] = '1'
+        os.environ['TRANSFORMERS_OFFLINE'] = '1'
+        os.environ['HF_DATASETS_OFFLINE'] = '1'
+        
+        try:
+            print(f"Loading Whisper model '{self.model_name}' in offline mode...")
+            processor = AutoProcessor.from_pretrained(
+                self.model_name,
+                local_files_only=True
+            )
+            model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                self.model_name,
+                local_files_only=True
+            )
+            print("Whisper model loaded successfully in offline mode!")
+            return processor, model
+            
+        except Exception as e:
+            print(f"Offline loading failed: {e}")
+            print("Attempting online loading...")
+            
+            # Try removing offline flags and attempt online loading
+            os.environ.pop('HF_HUB_OFFLINE', None)
+            os.environ.pop('TRANSFORMERS_OFFLINE', None)
+            os.environ.pop('HF_DATASETS_OFFLINE', None)
+            
+            try:
+                processor = AutoProcessor.from_pretrained(self.model_name)
+                model = AutoModelForSpeechSeq2Seq.from_pretrained(self.model_name)
+                print("Whisper model loaded successfully online!")
+                return processor, model
+                
+            except Exception as online_error:
+                raise RuntimeError(
+                    f"Failed to load Whisper model both offline and online. "
+                    f"Offline error: {e}. Online error: {online_error}. "
+                    f"Make sure to run the model once with internet connection to cache it."
+                )
     
     def transcribe(self, audio_data: np.ndarray) -> str:
         """Transcribe audio data to text"""
