@@ -1,4 +1,3 @@
-
 """
 Enhanced modular speech processing system with word boundary detection for dynamic live transcripts
 Also uses speaker diarization to recognize voices
@@ -21,7 +20,7 @@ import os
 from sklearn.cluster import DBSCAN, KMeans
 from sklearn.metrics import silhouette_score
 from scipy.spatial.distance import cosine, pdist, squareform
-
+import sys
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -106,13 +105,30 @@ class SpeakerCluster:
         if not self.embeddings:
             return
         
-        if len(self.confidence_scores) == len(self.embeddings):
-            weights = np.array(self.confidence_scores)
-            weights = weights / np.sum(weights)
-            weighted_embeddings = [emb * weight for emb, weight in zip(self.embeddings, weights)]
-            self.centroid = np.mean(weighted_embeddings, axis=0)
-        else:
-            self.centroid = np.mean(self.embeddings, axis=0)
+        try:
+            # Ensure embeddings are numpy arrays
+            embeddings_array = [np.array(emb) if not isinstance(emb, np.ndarray) else emb 
+                            for emb in self.embeddings]
+            
+            if len(self.confidence_scores) == len(embeddings_array):
+                weights = np.array(self.confidence_scores)
+                if np.sum(weights) > 0:  # Avoid division by zero
+                    weights = weights / np.sum(weights)
+                    weighted_embeddings = [emb * weight for emb, weight in zip(embeddings_array, weights)]
+                    self.centroid = np.mean(weighted_embeddings, axis=0)
+                else:
+                    self.centroid = np.mean(embeddings_array, axis=0)
+            else:
+                self.centroid = np.mean(embeddings_array, axis=0)
+        except Exception as e:
+            print(f"Error updating centroid: {e}")
+            # Fallback: just use simple mean if weighting fails
+            try:
+                embeddings_array = [np.array(emb) if not isinstance(emb, np.ndarray) else emb 
+                                for emb in self.embeddings]
+                self.centroid = np.mean(embeddings_array, axis=0)
+            except:
+                self.centroid = np.array([])
 
 @dataclass
 class ClusteredSpeakerProfile:
@@ -190,7 +206,7 @@ class SpeakerIdentifier:
     
     def __init__(self, speaker_db_path: str = "clustered_speaker_profiles.pkl",
                  auto_save_interval: int = 30,
-                 clustering_interval: int = 60,  # 1 minutes
+                 clustering_interval: int = 300,  # 5 minutes
                  min_samples_for_clustering: int = 10):
         
         self.speaker_db_path = speaker_db_path
@@ -947,19 +963,136 @@ class VoiceAssistantSpeechProcessor:
         self.realtime_transcript_thread = threading.Thread(target=self._realtime_transcription_loop, daemon=True)
         self.realtime_transcript_thread.start()
     
-    def stop(self):
-        """Stop the speech processing system"""
+    def stop(self, force_kill=False, timeout=1.0):
+        """
+        Stop the speech processing system
+        
+        Args:
+            force_kill (bool): If True, forcefully terminate threads that don't stop gracefully
+            timeout (float): How long to wait for graceful shutdown before force killing
+        """
+        print("Stopping speech processor...")
+        
+        # Set stop flag
         self.should_stop = True
-        self.audio_capture.stop()
+        
+        # Stop audio capture immediately
+        try:
+            self.audio_capture.stop()
+        except Exception as e:
+            print(f"Error stopping audio capture: {e}")
         
         # Clean up speaker identifier (saves profiles)
-        self.speaker_id.cleanup()
-
-        if self.processing_thread:
-            self.processing_thread.join(timeout=1.0)
-        if self.realtime_transcript_thread:
-            self.realtime_transcript_thread.join(timeout=1.0)
+        try:
+            self.speaker_id.cleanup()
+        except Exception as e:
+            print(f"Error cleaning up speaker identifier: {e}")
+        
+        # List of threads to manage
+        threads_to_stop = []
+        if self.processing_thread and self.processing_thread.is_alive():
+            threads_to_stop.append(("processing_thread", self.processing_thread))
+        if self.realtime_transcript_thread and self.realtime_transcript_thread.is_alive():
+            threads_to_stop.append(("realtime_transcript_thread", self.realtime_transcript_thread))
+        
+        # Also check speaker identifier threads
+        if hasattr(self.speaker_id, '_auto_save_thread') and self.speaker_id._auto_save_thread.is_alive():
+            threads_to_stop.append(("speaker_auto_save_thread", self.speaker_id._auto_save_thread))
+        if hasattr(self.speaker_id, '_clustering_thread') and self.speaker_id._clustering_thread.is_alive():
+            threads_to_stop.append(("speaker_clustering_thread", self.speaker_id._clustering_thread))
+        
+        if not threads_to_stop:
+            print("No active threads to stop.")
+            return
+        
+        print(f"Stopping {len(threads_to_stop)} threads...")
+        
+        # First attempt: Graceful shutdown
+        for thread_name, thread in threads_to_stop:
+            print(f"Waiting for {thread_name} to stop gracefully...")
+            thread.join(timeout=timeout)
+        
+        # Check which threads are still alive
+        still_alive = [(name, thread) for name, thread in threads_to_stop if thread.is_alive()]
+        
+        if not still_alive:
+            print("All threads stopped gracefully.")
+            return
+        
+        # If force_kill is requested or any threads are still alive
+        if force_kill or still_alive:
+            print(f"Force killing {len(still_alive)} remaining threads...")
+            
+            for thread_name, thread in still_alive:
+                try:
+                    self._force_kill_thread(thread, thread_name)
+                except Exception as e:
+                    print(f"Error force killing {thread_name}: {e}")
+        
+        print("Speech processor stopped.")
     
+    def _force_kill_thread(self, thread, thread_name="unknown"):
+        """
+        Force kill a thread using ctypes (platform dependent)
+        WARNING: This is potentially dangerous and should be used as last resort
+        """
+        if not thread.is_alive():
+            return
+        
+        print(f"Force killing thread: {thread_name}")
+        
+        try:
+            # Get thread ID
+            thread_id = thread.ident
+            if thread_id is None:
+                print(f"Could not get thread ID for {thread_name}")
+                return
+            
+            # Platform-specific thread termination
+            if sys.platform == "win32":
+                # Windows
+                import ctypes.wintypes
+                kernel32 = ctypes.windll.kernel32
+                
+                # Open thread handle
+                THREAD_TERMINATE = 0x0001
+                thread_handle = kernel32.OpenThread(THREAD_TERMINATE, False, thread_id)
+                
+                if thread_handle:
+                    # Terminate thread
+                    kernel32.TerminateThread(thread_handle, 0)
+                    kernel32.CloseHandle(thread_handle)
+                    print(f"Thread {thread_name} terminated (Windows)")
+                else:
+                    print(f"Could not open thread handle for {thread_name}")
+            
+            elif sys.platform.startswith("linux") or sys.platform == "darwin":
+                # Linux/macOS - use pthread_cancel
+                import ctypes.util
+                
+                # Load pthread library
+                pthread_lib_name = ctypes.util.find_library("pthread")
+                if pthread_lib_name:
+                    pthread = ctypes.CDLL(pthread_lib_name)
+                    
+                    # Cancel thread
+                    result = pthread.pthread_cancel(ctypes.c_ulong(thread_id))
+                    if result == 0:
+                        print(f"Thread {thread_name} cancelled (Unix)")
+                    else:
+                        print(f"Failed to cancel thread {thread_name}: {result}")
+                else:
+                    print("Could not find pthread library")
+            
+            else:
+                print(f"Unsupported platform for force killing: {sys.platform}")
+        
+        except Exception as e:
+            print(f"Error in force kill for {thread_name}: {e}")
+        
+        # Give a moment for cleanup
+        time.sleep(0.1)
+
     def _process_audio(self):
         """Main audio processing loop"""
         audio_buffer = deque(maxlen=int(16000 * 0.5))  # 0.5 second buffer

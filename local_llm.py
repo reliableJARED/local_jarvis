@@ -36,7 +36,7 @@ class JarvisConfig:
     wake_word_timeout: float = 30.0      # Seconds to wait for command after wake word
     response_timeout: float = 60.0       # Maximum thinking time
     conversation_timeout: float = 45.0   # Seconds of silence before requiring wake word again
-    min_command_length: int = 3          # Minimum words in command
+    min_command_length: int = 2          # Minimum words in command - below this will not trigger response
     debug_mode: bool = True              # Print debug information
     continuous_conversation: bool = True  # Allow conversation without wake word after initial detection
 
@@ -82,8 +82,6 @@ class JarvisCallback(VoiceAssistantCallback):
     
     def on_speaker_change(self, old_speaker: Optional[str], new_speaker: str):
         """Handle speaker changes"""
-        print(f"spk change: {(new_speaker != self.jarvis.jarvis_voice_id)}")
-        print(self.jarvis.jarvis_voice_id)
         if ((old_speaker is not None) and (new_speaker != self.jarvis.jarvis_voice_id)):
             if self.jarvis.config.debug_mode:
                 print(f"👥 Speaker change: {old_speaker} → {new_speaker}")
@@ -167,10 +165,6 @@ class Jarvis:
 
         #Voice Sample to get own voice:
         self.tts.generate_speech_async(self.self_voice_sample_text(), speed=1.0)
-        self.tts.wait_for_generation()
-        self.tts.speak()
-
-
         
         try:
             while not self.should_stop:
@@ -288,7 +282,6 @@ class Jarvis:
                 if self._contains_wake_word(text_lower):
                     print(f"Wake word detected")
                     self._set_state_internal(JarvisState.LISTENING)
-                    #self._start_conversation_internal(speaker_id)
                     # Don't process commands from live transcript - wait for final
                     return
             
@@ -426,6 +419,7 @@ class Jarvis:
     #Kokoro callbacks
     def on_audio_ready(self,audio_data):
             print(f" Audio ready callback: {audio_data.file_path}")
+            self.tts.speak()
         
     def on_playback_complete(self):
             print("Playback complete callback triggered!")
@@ -471,6 +465,7 @@ class Jarvis:
         
         words = command.split()
         if len(words) < self.config.min_command_length:
+            print("input too short to trigger a response")
             return False
         
         # Add other validation rules here if needed
@@ -500,9 +495,7 @@ class Jarvis:
                 if self.state == JarvisState.THINKING:
                     
                     #text to speech generation in kokoro 
-                    self.tts.generate_speech_async(response, speed=1.0)
-                    self.tts.wait_for_generation()
-                    self.tts.speak()
+                    self.tts.generate_speech_async(response, speed=1.0)        
 
                     print(f"\nJarvis: {response}\n")
                     

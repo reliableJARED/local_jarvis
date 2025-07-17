@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Kokoro-82M Text-to-Speech - Thread-Safe Audio Version
-Modified to prevent conflicts with microphone access in other threads.
+Kokoro-82M Text-to-Speech - Thread-Safe Audio Version with Multi-line Support
+Modified to handle newlines by generating separate speech for each line.
 """
 
 import subprocess
@@ -15,10 +15,10 @@ from pathlib import Path
 from kokoro import KPipeline
 import soundfile as sf
 import torch
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, List
 from dataclasses import dataclass
 import sounddevice as sd
-
+import re
 
 @dataclass
 class AudioData:
@@ -202,6 +202,14 @@ class Kokoro:
         self.pipeline = None
         self.queued_speech_audio: Optional[AudioData] = None
         
+        # Multi-line speech processing
+        self.generating_multi_line_audio: List[str] = []
+        self._multi_line_voice = None
+        self._multi_line_speed = 1.0
+        self._multi_line_output_file = None
+        self._next_line_audio: Optional[AudioData] = None  # Pre-generated next line
+        self._next_line_generation_thread: Optional[threading.Thread] = None
+        
         # Thread-safe audio manager
         self.audio_manager = ThreadSafeAudioManager()
         
@@ -289,11 +297,16 @@ class Kokoro:
             # Stop audio manager playback
             self.audio_manager.stop_playback()
             
-            # Give it time to cleanup gracefully
-            self._playback_thread.join(timeout=3.0)
-            
-            if self._playback_thread.is_alive():
-                print("⚠️  Playback thread didn't terminate gracefully")
+            # Only join if we're not the current playback thread (prevent self-join)
+            current_thread = threading.current_thread()
+            if self._playback_thread != current_thread:
+                # Give it time to cleanup gracefully
+                self._playback_thread.join(timeout=3.0)
+                
+                if self._playback_thread.is_alive():
+                    print("⚠️  Playback thread didn't terminate gracefully")
+            else:
+                print("⚠️  Skipping self-join in playback thread")
             
             self._playback_thread = None
     
@@ -304,10 +317,120 @@ class Kokoro:
     def set_speech_audio_playback_complete_callback(self, callback: Callable[[], None]):
         """Set callback for when speech audio playback completes."""
         self.speech_audio_playback_complete_callback = callback
-    
-    def _generate_speech_thread(self, text: str, voice: str, speed: float, output_file: Optional[str] = None):
+
+    def _split_text_by_newlines(self, text: str) -> List[str]:
         """
-        Thread function for generating speech.
+        Split text by newlines and return list of non-empty lines.
+        
+        Args:
+            text (str): Input text to split
+            
+        Returns:
+            List[str]: List of text lines, empty lines removed
+        """
+        lines = text.split('\n')
+        # Remove empty lines and strip whitespace
+        lines = [line.strip() for line in lines if line.strip()]
+        return lines
+
+    def _process_next_multiline_chunk(self):
+        """Process the next chunk of multi-line text."""
+        if not self.generating_multi_line_audio:
+            return
+        
+        # Get the next line
+        next_line = self.generating_multi_line_audio.pop(0)
+        
+        print(f"📝 Processing multi-line chunk ({len(self.generating_multi_line_audio)} remaining): {next_line[:50]}...")
+        
+        # Generate speech for this line
+        self._generate_single_line_speech(
+            next_line, 
+            self._multi_line_voice, 
+            self._multi_line_speed, 
+            self._multi_line_output_file
+        )
+        
+        # Start generating the next line in background if there are more lines
+        self._start_next_line_generation()
+    
+    def _start_next_line_generation(self):
+        """Start generating the next line in background while current line plays."""
+        if not self.generating_multi_line_audio:
+            return
+        
+        # Don't start if already generating next line
+        if self._next_line_generation_thread and self._next_line_generation_thread.is_alive():
+            return
+        
+        # Get the next line without removing it from queue (peek)
+        next_line = self.generating_multi_line_audio[0]
+        
+        print(f"🔄 Pre-generating next line in background: {next_line[:30]}...")
+        
+        # Start background generation thread
+        self._next_line_generation_thread = threading.Thread(
+            target=self._generate_next_line_background,
+            args=(next_line,),
+            daemon=True
+        )
+        self._next_line_generation_thread.start()
+    
+    def _generate_next_line_background(self, text: str):
+        """Generate the next line in background without triggering callbacks or playback."""
+        try:
+            print(f"🎵 Background generation for: '{text[:50]}...'")
+            
+            # Determine output file path for background generation
+            cleanup_needed = False
+            if self._multi_line_output_file:
+                # For multi-line, append timestamp to avoid overwriting
+                timestamp = int(time.time() * 1000)  # millisecond precision
+                base, ext = os.path.splitext(self._multi_line_output_file)
+                file_path = f"{base}_bg_{timestamp}{ext}"
+                print(f"💾 Background audio will save to: {file_path}")
+            elif self.save_audio_as_wav:
+                # Create WAV file with timestamp
+                timestamp = int(time.time() * 1000)  # millisecond precision
+                file_path = f"kokoro_speech_bg_{timestamp}.wav"
+                print(f"💾 Background audio will save to: {file_path}")
+            else:
+                # Create temporary file
+                temp_fd, file_path = tempfile.mkstemp(suffix='.wav', prefix='kokoro_bg_temp_')
+                os.close(temp_fd)  # Close file descriptor
+                cleanup_needed = True
+                self._temp_files_to_cleanup.append(file_path)  # Track for cleanup
+                print(f"🗂️  Background generation using temporary file: {file_path}")
+            
+            # Generate audio
+            generator = self.pipeline(text, voice=self._multi_line_voice, speed=self._multi_line_speed)
+            
+            # Process and save audio
+            for i, (graphemes, phonemes, audio) in enumerate(generator):
+                print(f"📝 Background - Graphemes: {graphemes}")
+                print(f"🔤 Background - Phonemes: {phonemes}")
+                
+                # Save to file using soundfile
+                sf.write(file_path, audio, 24000)
+                
+                # Store the pre-generated audio data
+                self._next_line_audio = AudioData(
+                    data=audio,
+                    sample_rate=24000,
+                    file_path=file_path,
+                    cleanup_needed=cleanup_needed
+                )
+                
+                print(f"✅ Background speech generation completed and cached")
+                break  # Only process the first chunk
+            
+        except Exception as e:
+            print(f"❌ Error in background speech generation: {e}")
+            self._next_line_audio = None
+    
+    def _generate_single_line_speech(self, text: str, voice: str, speed: float, output_file: Optional[str] = None):
+        """
+        Generate speech for a single line of text.
         
         Args:
             text (str): Text to convert to speech
@@ -316,21 +439,20 @@ class Kokoro:
             output_file (str): If provided, save to this file
         """
         try:
-            print(f"🗣️  Generating speech for: '{text}'")
-            print(f"🎵 Using voice: {voice}")
-            print(f"⚡ Speed: {speed}x")
-            
             # Clean up previous audio data before generating new
             self._cleanup_previous_audio_data()
             
             # Determine output file path
             cleanup_needed = False
             if output_file:
-                file_path = output_file
+                # For multi-line, append timestamp to avoid overwriting
+                timestamp = int(time.time() * 1000)  # millisecond precision
+                base, ext = os.path.splitext(output_file)
+                file_path = f"{base}_{timestamp}{ext}"
                 print(f"💾 Will save audio to: {file_path}")
             elif self.save_audio_as_wav:
                 # Create WAV file with timestamp
-                timestamp = int(time.time())
+                timestamp = int(time.time() * 1000)  # millisecond precision
                 file_path = f"kokoro_speech_{timestamp}.wav"
                 print(f"💾 Will save audio to: {file_path}")
             else:
@@ -372,11 +494,58 @@ class Kokoro:
                 if self.play_audio_immediately:
                     self._start_playback_thread(audio_data)
                 
-                print(f"✅ Speech generation completed")
+                print(f"✅ Speech generation completed for line")
                 break  # Only process the first chunk
             
         except Exception as e:
+            print(f"❌ Error generating speech for line: {e}")
+    
+    def _generate_speech_thread(self, text: str, voice: str, speed: float, output_file: Optional[str] = None):
+        """
+        Thread function for generating speech with multi-line support.
+        
+        Args:
+            text (str): Text to convert to speech
+            voice (str): Voice to use for generation
+            speed (float): Speech speed multiplier
+            output_file (str): If provided, save to this file
+        """
+        try:
+            print(f"Using voice: {voice}")
+            print(f"Speed: {speed}x")
+            
+            # Check if text contains newlines
+            lines = self._split_text_by_newlines(text)
+            
+            if len(lines) > 1:
+                print(f"📄 Multi-line text detected: {len(lines)} lines")
+                
+                # Store multi-line parameters
+                self.generating_multi_line_audio = lines
+                self._multi_line_voice = voice
+                self._multi_line_speed = speed
+                self._multi_line_output_file = output_file
+                
+                # Process the first line
+                self._process_next_multiline_chunk()
+            else:
+                # Single line processing (original behavior)
+                single_text = lines[0] if lines else text
+                self._generate_single_line_speech(single_text, voice, speed, output_file)
+            
+        except Exception as e:
             print(f"❌ Error generating speech: {e}")
+    
+    def _cleanup_multiline_state(self):
+        """Clean up multi-line processing state."""
+        self.generating_multi_line_audio = []
+        self._next_line_audio = None
+        
+        # Clean up background generation thread
+        if self._next_line_generation_thread and self._next_line_generation_thread.is_alive():
+            # Give it a moment to finish, but don't wait too long
+            self._next_line_generation_thread.join(timeout=1.0)
+        self._next_line_generation_thread = None
     
     def _playback_thread_func(self, audio_data: AudioData):
         """
@@ -420,6 +589,60 @@ class Kokoro:
                 except OSError as e:
                     print(f"⚠️  Could not clean up temporary file: {e}")
             
+            # Handle multi-line processing continuation
+            if self.generating_multi_line_audio and not self._stop_playback.is_set():
+                print(f"🔄 Continuing multi-line processing...")
+                
+                # Check if we have pre-generated audio ready
+                if self._next_line_audio:
+                    print("🚀 Using pre-generated next line audio (seamless transition)")
+                    
+                    # Remove the line from queue since we're using the pre-generated version
+                    if self.generating_multi_line_audio:
+                        self.generating_multi_line_audio.pop(0)
+                    
+                    # Use the pre-generated audio
+                    next_audio = self._next_line_audio
+                    self._next_line_audio = None  # Clear the cache
+                    
+                    # Set it as the current queued audio
+                    self.queued_speech_audio = next_audio
+                    self._audio_data_history.append(next_audio)
+                    
+                    # Start playback immediately in a new thread (don't trigger callback from playback thread)
+                    if self.play_audio_immediately:
+                        # Schedule playback to start after this thread completes
+                        def start_next_playback():
+                            time.sleep(0.1)  # Brief delay to let current thread finish
+                            # Trigger callback now that we're ready to use it
+                            if self.speech_audio_ready_callback:
+                                self.speech_audio_ready_callback(next_audio)
+                            # Start playback
+                            self._start_playback_thread(next_audio)
+                            # Start generating the next line in background if there are more
+                            self._start_next_line_generation()
+                        
+                        transition_thread = threading.Thread(target=start_next_playback, daemon=True)
+                        transition_thread.start()
+                    else:
+                        # If not auto-playing, trigger callback and start background generation
+                        if self.speech_audio_ready_callback:
+                            self.speech_audio_ready_callback(next_audio)
+                        self._start_next_line_generation()
+                else:
+                    print("⏳ No pre-generated audio, falling back to sequential generation")
+                    # Fall back to sequential generation
+                    self._generation_thread = threading.Thread(
+                        target=self._process_next_multiline_chunk,
+                        daemon=True
+                    )
+                    self._generation_thread.start()
+            else:
+                # Clear multi-line state when done
+                if not self.generating_multi_line_audio:
+                    print("📄 Multi-line processing completed")
+                    self._cleanup_multiline_state()
+            
             # Call completion callback if set
             if self.speech_audio_playback_complete_callback:
                 self.speech_audio_playback_complete_callback()
@@ -438,9 +661,69 @@ class Kokoro:
             )
             self._playback_thread.start()
     
+    def preprocess_text_for_tts(self, text: str) -> str:
+        """
+        Preprocess text to handle issues that cause Kokoro TTS to stop early.
+        Removes apostrophes, emojis, and other problematic characters.
+        NOTE: Newlines are now handled by multi-line processing, not removed here.
+        
+        Args:
+            text (str): Input text to preprocess
+            
+        Returns:
+            str: Preprocessed text ready for TTS
+        """
+        if not text or not text.strip():
+            return ""
+        
+        print(f"🔍 Original text: {repr(text[:100])}...")
+        
+        # Remove emojis using comprehensive emoji pattern
+        emoji_pattern = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map
+            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+            "\U00002600-\U000027BF"  # miscellaneous symbols
+            "\U0001F900-\U0001F9FF"  # supplemental symbols and pictographs
+            "\U00002700-\U000027BF"  # dingbats
+            "\U0001F170-\U0001F251"  # enclosed characters
+            "]+", 
+            flags=re.UNICODE
+        )
+        text = emoji_pattern.sub('', text)
+        
+
+        # Remove any remaining apostrophes and similar characters
+        text = text.replace("'", "")
+        text = text.replace("'", "")  # curly apostrophe
+        text = text.replace("`", "")  # backtick
+        
+        #Only replace \r, keep \n for multi-line processing
+        text = text.replace('\r', '')
+        
+        #Handle other special characters that might cause issues
+        text = text.replace('—', '-')  # em-dash
+        text = text.replace('–', '-')  # en-dash
+        text = text.replace('’', "'")
+        text = text.replace('*', ".")
+        text = text.replace('…', '...')  # ellipsis
+        text = text.replace('•', '-')   # bullet points
+        
+        #Clean up but preserve newlines
+        text = text.strip()
+        
+        # Don't add ending punctuation if it's multi-line (will be handled per line)
+        if '\n' not in text and text and text[-1] not in '.!?':
+            text += '.'
+        
+        print(f"✅ Preprocessed text: {repr(text[:100])}...")
+        return text
+
     def generate_speech_async(self, text: str, voice: str = False, speed: float = 1.0, output_file: Optional[str] = None):
         """
-        Generate speech asynchronously in a separate thread.
+        Generate speech asynchronously in a separate thread with multi-line support.
         
         Args:
             text (str): Text to convert to speech
@@ -450,14 +733,20 @@ class Kokoro:
         """
         if not voice:
             voice = self.voice
-            
+
         if not self.pipeline:
             print("❌ Pipeline not initialized")
             return
         
-        # Stop any existing generation
+        # Stop any existing generation and clear multi-line state
         if self._generation_thread and self._generation_thread.is_alive():
             print("⚠️  Previous generation still running, starting new one anyway")
+        
+        # Clear any existing multi-line processing
+        self._cleanup_multiline_state()
+        
+        # Clean the text of special characters
+        text = self.preprocess_text_for_tts(text)
         
         # Start generation thread
         self._generation_thread = threading.Thread(
@@ -483,8 +772,11 @@ class Kokoro:
         self._start_playback_thread(target_audio)
     
     def stop_playback(self):
-        """Stop audio playback immediately."""
+        """Stop audio playback immediately and clear multi-line processing."""
         self._force_stop_playback_thread()
+        # Clear multi-line processing when stopped
+        self._cleanup_multiline_state()
+        print("⏹️  Multi-line processing cleared")
     
     def pause_playback(self):
         """Pause audio playback."""
@@ -504,6 +796,10 @@ class Kokoro:
         """Check if speech generation is in progress."""
         return self._generation_thread and self._generation_thread.is_alive()
     
+    def is_multi_line_processing(self) -> bool:
+        """Check if multi-line processing is active."""
+        return bool(self.generating_multi_line_audio)
+    
     def wait_for_generation(self, timeout: Optional[float] = None):
         """Wait for speech generation to complete."""
         if self._generation_thread:
@@ -517,6 +813,9 @@ class Kokoro:
     def cleanup(self):
         """Clean up threads and resources."""
         print("🧹 Cleaning up Kokoro TTS...")
+        
+        # Clear multi-line processing
+        self._cleanup_multiline_state()
         
         # Force stop playback with proper cleanup
         self._force_stop_playback_thread()
@@ -536,70 +835,6 @@ class Kokoro:
         self._temp_files_to_cleanup.clear()
         
         print("✅ Cleanup completed")
-
-
-# Example of how to use microphone in a separate thread
-class MicrophoneRecorder:
-    """
-    Example class showing how to use microphone in a separate thread
-    without conflicting with Kokoro TTS playback.
-    """
-    
-    def __init__(self):
-        self.audio_manager = ThreadSafeAudioManager()
-        self.recording = False
-        self.record_thread = None
-        self._stop_recording = threading.Event()
-    
-    def record_audio(self, duration=5):
-        """Record audio from microphone."""
-        def _record():
-            try:
-                print(f"🎤 Starting microphone recording for {duration} seconds...")
-                
-                # Use input device explicitly
-                recording = sd.rec(
-                    int(duration * 44100),  # samples
-                    samplerate=44100,
-                    channels=1,
-                    device=self.audio_manager.default_input,  # Explicitly use input device
-                    dtype='float32'
-                )
-                
-                # Wait for recording to complete or stop event
-                for i in range(int(duration * 10)):  # Check every 0.1 seconds
-                    if self._stop_recording.is_set():
-                        sd.stop()
-                        break
-                    time.sleep(0.1)
-                
-                sd.wait()  # Wait for recording to complete
-                
-                if not self._stop_recording.is_set():
-                    print("✅ Recording completed")
-                    # Process recorded audio here
-                    print(f"📊 Recorded {len(recording)} samples")
-                else:
-                    print("⏹️  Recording stopped")
-                
-            except Exception as e:
-                print(f"❌ Error recording audio: {e}")
-            finally:
-                self.recording = False
-        
-        if not self.recording:
-            self.recording = True
-            self._stop_recording.clear()
-            self.record_thread = threading.Thread(target=_record, daemon=True)
-            self.record_thread.start()
-    
-    def stop_recording(self):
-        """Stop recording."""
-        self._stop_recording.set()
-        if self.record_thread:
-            self.record_thread.join(timeout=2.0)
-
-
 
 
 class KokoroDependencyManager:
@@ -704,8 +939,8 @@ class KokoroDependencyManager:
 
 
 def main():
-    """Main function to run the threaded TTS demo with pause/resume functionality."""
-    print("🎤 Kokoro-82M Text-to-Speech Threaded Demo")
+    """Main function to run the multi-line TTS demo."""
+    print("🎤 Kokoro-82M Text-to-Speech Multi-line Demo")
     print("=" * 50)
     
     # Check and install dependencies
@@ -713,14 +948,14 @@ def main():
         print("❌ Failed to install dependencies. Exiting.")
         return 1
     
-    print("\n🚀 Starting threaded speech generation...")
+    print("\n🚀 Starting multi-line speech generation demo...")
     
     try:
         # Initialize Kokoro TTS with threading
         tts = Kokoro(
             lang_code='a',
             save_audio_as_wav=False,  # Use temporary files
-            play_audio_immediately=False  # Don't auto-play for demo control
+            play_audio_immediately=True  # Auto-play for demo
         )
         
         # Set up callbacks
@@ -729,6 +964,8 @@ def main():
         
         def on_playback_complete():
             print("🎉 Playback complete callback triggered!")
+            if tts.is_multi_line_processing():
+                print(f"📄 Multi-line processing continues... ({len(tts.generating_multi_line_audio)} lines remaining)")
         
         tts.set_speech_audio_ready_callback(on_audio_ready)
         tts.set_speech_audio_playback_complete_callback(on_playback_complete)
@@ -736,95 +973,115 @@ def main():
         # Show available voices
         tts.print_voices()
         
-        # Test text - longer for better pause/resume demo
-        text = ("This is a comprehensive threaded test of the Kokoro TTS system. "
-                "Audio generation and playback happen in separate threads, allowing for "
-                "real-time control of the speech synthesis process. We can pause, resume, "
-                "and stop playback at any time during the speech generation.")
+        # Demo 1: Single line text (original behavior)
+        print(f"\n🎬 Demo 1: Single line text")
+        single_text = "This is a single line of text that will be processed normally."
+        print(f"📝 Text: {single_text}")
         
-        # Generate speech asynchronously
-        print(f"\n🔄 Starting async generation...")
-        tts.generate_speech_async(text, voice="af_sky", speed=1.0)
-        
-        # Wait for generation to complete
-        print("⏳ Waiting for generation to complete...")
+        tts.generate_speech_async(single_text, voice="af_sky", speed=1.0)
         tts.wait_for_generation()
-        
-        # Demo 1: Normal playback
-        print("\n🎬 Demo 1: Normal playback")
-        print("▶️  Starting playback...")
-        tts.speak()
-        
-        # Let it play for a bit
-        time.sleep(2)
-        
-        # Demo 2: Pause and resume
-        print("\n🎬 Demo 2: Pause and resume functionality")
-        print("⏸️  Pausing playback in 1 second...")
-        time.sleep(1)
-        tts.pause_playback()
-        
-        print("⏳ Paused for 3 seconds...")
-        time.sleep(3)
-        
-        print("▶️  Resuming playback...")
-        tts.resume_playback()
-        
-        # Let it play for a bit more
-        time.sleep(2)
-        
-        # Demo 3: Stop and restart
-        print("\n🎬 Demo 3: Stop and restart playback")
-        print("⏹️  Stopping playback...")
-        tts.stop_playback()
-        
-        print("⏳ Stopped for 2 seconds...")
-        time.sleep(2)
-        
-        print("🔄 Restarting playback from beginning...")
-        tts.speak()  # This will restart from the beginning
-        
-        # Let it play for a bit
-        time.sleep(3)
-        
-        # Demo 4: Generate new audio while playing
-        print("\n🎬 Demo 4: Generate new audio while current is playing")
-        new_text = "This is a new speech sample generated while the previous one was playing."
-        
-        print("🔄 Generating new audio...")
-        tts.generate_speech_async(new_text, voice="am_adam", speed=1.2)
-        
-        # Wait for new generation
-        tts.wait_for_generation()
-        
-        print("⏹️  Stopping current playback...")
-        tts.stop_playback()
-        
-        print("▶️  Playing new audio...")
-        tts.speak()
-        
-        # Demo 5: Status checking
-        print("\n🎬 Demo 5: Status monitoring")
-        time.sleep(1)
-        
-        print(f"📊 Is playing: {tts.is_playing()}")
-        print(f"📊 Is generating: {tts.is_generating()}")
-        
-        # Final demo: Let current playback complete
-        print("\n🎬 Final: Letting playback complete naturally...")
         tts.wait_for_playback()
         
-        print("\n✅ Threaded demo completed successfully!")
+        time.sleep(1)  # Brief pause between demos
         
-        print(f"\n💡 Demo showcased:")
-        print(f"   • ✅ Async speech generation")
-        print(f"   • ✅ Threaded playback")
-        print(f"   • ✅ Pause/resume functionality")
-        print(f"   • ✅ Stop/restart playback")
-        print(f"   • ✅ Status monitoring")
-        print(f"   • ✅ Audio ready callbacks")
-        print(f"   • ✅ Playback complete callbacks")
-        print(f"   • ✅ Multi-voice support")
+        # Demo 2: Multi-line text with overlapped generation
+        print(f"\n🎬 Demo 2: Multi-line text with overlapped generation")
+        multi_text = """Sure, here's a light-hearted joke for you:
+Why don't scientists trust atoms?
+Because they make up everything!"""
+        
+        print(f"📝 Multi-line text:\n{multi_text}")
+        print(f"📄 This will use overlapped generation for seamless transitions")
+        
+        tts.generate_speech_async(multi_text, voice="am_adam", speed=1.1)
+        
+        # Monitor the multi-line processing
+        print("\n📊 Monitoring overlapped multi-line processing...")
+        while tts.is_generating() or tts.is_playing() or tts.is_multi_line_processing():
+            status = []
+            if tts.is_generating():
+                status.append("generating")
+            if tts.is_playing():
+                status.append("playing")
+            if tts.is_multi_line_processing():
+                status.append(f"multi-line ({len(tts.generating_multi_line_audio)} remaining)")
+            if tts._next_line_audio:
+                status.append("next-line-ready")
+            
+            if status:
+                print(f"   Status: {', '.join(status)}")
+            time.sleep(0.5)
+        
+        print("\n✅ Overlapped multi-line demo completed!")
+        
+        # Demo 3: Long lines to showcase overlapped generation benefit
+        print(f"\n🎬 Demo 3: Long lines showcasing overlapped generation")
+        long_multi_text = """This is the first line which is intentionally made quite long to demonstrate how the overlapped generation system works by starting to generate the next line while this current line is still playing, which should result in much shorter pauses between lines.
+This is the second line which is also intentionally long to continue demonstrating the seamless transition capabilities of the overlapped generation system, where the next line should already be ready by the time this line finishes playing.
+This final line completes our demonstration of how overlapped generation creates natural flowing speech with minimal pauses between lines, even when individual lines are quite lengthy and would normally take a long time to generate."""
+        
+        print(f"📝 Starting long lines demo (should have minimal pauses)...")
+        start_time = time.time()
+        
+        tts.generate_speech_async(long_multi_text, voice="af_nova", speed=1.0)
+        
+        # Monitor for seamless transitions
+        previous_status = ""
+        transition_count = 0
+        
+        while tts.is_generating() or tts.is_playing() or tts.is_multi_line_processing():
+            status = []
+            if tts.is_generating():
+                status.append("generating")
+            if tts.is_playing():
+                status.append("playing")
+            if tts.is_multi_line_processing():
+                status.append(f"multi-line ({len(tts.generating_multi_line_audio)} remaining)")
+            if tts._next_line_audio:
+                status.append("next-ready")
+            
+            current_status = ', '.join(status)
+            if current_status != previous_status:
+                if "next-ready" in current_status:
+                    transition_count += 1
+                    print(f"   🚀 Seamless transition #{transition_count}: {current_status}")
+                else:
+                    print(f"   Status: {current_status}")
+                previous_status = current_status
+            time.sleep(0.3)
+        
+        end_time = time.time()
+        print(f"\n✅ Long lines demo completed in {end_time - start_time:.1f} seconds!")
+        print(f"📊 Detected {transition_count} seamless transitions")
+        
+        # Demo 4: Test stopping multi-line processing
+        print(f"\n🎬 Demo 3: Stopping multi-line processing")
+        long_multi_text = """This is the first line that will start playing.
+This is the second line that should be interrupted.
+This is the third line that should never play.
+This is the fourth line that should also never play."""
+        
+        print(f"📝 Starting long multi-line text, will stop after first line...")
+        tts.generate_speech_async(long_multi_text, voice="af_nova", speed=1.0)
+        
+        # Let first line play for a bit
+        time.sleep(2)
+        
+        print("⏹️  Stopping multi-line processing...")
+        tts.stop_playback()
+        
+        time.sleep(1)
+        
+        print(f"📊 Multi-line processing cleared: {not tts.is_multi_line_processing()}")
+        
+        print("\n💡 Overlapped multi-line demo showcased:")
+        print(f"   • ✅ Single line processing (original behavior)")
+        print(f"   • ✅ Multi-line text split by newlines")
+        print(f"   • ✅ Overlapped generation for seamless transitions")
+        print(f"   • ✅ Background pre-generation of next lines")
+        print(f"   • ✅ Minimal pauses even with long lines")
+        print(f"   • ✅ Proper cleanup when stopped")
+        print(f"   • ✅ Status monitoring for overlapped processing")
         
         # Cleanup
         tts.cleanup()
@@ -836,7 +1093,7 @@ def main():
             tts.cleanup()
         return 1
     except Exception as e:
-        print(f"❌ Error in threaded demo: {e}")
+        print(f"❌ Error in multi-line demo: {e}")
         if 'tts' in locals():
             tts.cleanup()
         return 1
