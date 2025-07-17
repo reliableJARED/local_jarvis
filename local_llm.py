@@ -487,8 +487,9 @@ class Jarvis:
                 return
         
         try:
-            # Get response from LLM
-            response = self.llm.generate_response(command)
+            # Get response from LLM.
+            #self.llm.messages is handled inside 
+            response = self.llm.generate_response(command,max_new_tokens=512)
             
             # Check if we weren't interrupted
             with self.state_lock:

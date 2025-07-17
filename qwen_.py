@@ -191,8 +191,12 @@ class QwenChatDependencyManager:
             print(f"Error downloading model: {e}")
 
 
+import json
+import re
+from typing import List, Dict, Any, Optional, Callable
+
 class QwenChat:
-    """Handles chat functionality, conversation management, and token tracking."""
+    """Handles chat functionality, conversation management, token tracking, and tool use."""
     
     def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False):
         """Initialize the chat interface with automatic dependency management."""
@@ -212,6 +216,10 @@ class QwenChat:
             'conversation_count': 0
         }
         
+        # Tool management
+        self.tools = {}
+        self.available_tools = []
+        
         # Initialize conversation with system prompt
         self.messages = []
         self._add_system_prompt()
@@ -219,9 +227,138 @@ class QwenChat:
     def _add_system_prompt(self):
         """Add the initial system prompt."""
         system_content = """You are a robot"""
-        
         self.messages = [{"role": "system", "content": system_content}]
     
+    def _update_system_prompt(self, system_content):
+        """Update the system prompt."""
+        self.messages[0] = {"role": "system", "content": system_content}
+
+    def register_tool(self, tool_function: Callable, name: str = None, description: str = None, parameters: Dict = None):
+        """
+        Register a tool function for use in conversations.
+        
+        Args:
+            tool_function: The callable function to register
+            name: Name of the tool (defaults to function name)
+            description: Description of what the tool does
+            parameters: JSON Schema describing the function parameters
+        """
+        if name is None:
+            name = tool_function.__name__
+            
+        # Store the function
+        self.tools[name] = tool_function
+        
+        # Create tool definition for the model
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description or tool_function.__doc__ or f"Function {name}",
+                "parameters": parameters or {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        }
+        
+        # Update available tools list
+        self.available_tools = [t for t in self.available_tools if t["function"]["name"] != name]
+        self.available_tools.append(tool_def)
+    
+    def _parse_tool_calls(self, content: str) -> Dict[str, Any]:
+        """
+        Parse tool calls from model output using the Hermes format.
+        
+        The Qwen2.5 model with Hermes template generates tool calls in the format:
+        <tool_call>
+        {"name": "function_name", "arguments": {"arg1": "value1"}}
+        </tool_call>
+        """
+        tool_calls = []
+        offset = 0
+        
+        # Find all tool call blocks
+        for i, match in enumerate(re.finditer(r"<tool_call>\n(.+?)\n</tool_call>", content, re.DOTALL)):
+            if i == 0:
+                offset = match.start()
+            
+            try:
+                # Parse the JSON inside the tool_call tags
+                tool_call_json = json.loads(match.group(1).strip())
+                
+                # Ensure arguments is a dict, not a string
+                if isinstance(tool_call_json.get("arguments"), str):
+                    tool_call_json["arguments"] = json.loads(tool_call_json["arguments"])
+                
+                tool_calls.append({
+                    "type": "function", 
+                    "function": tool_call_json
+                })
+                
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse tool call: {match.group(1)} - Error: {e}")
+                continue
+        
+        # Extract content before tool calls (if any)
+        if tool_calls:
+            if offset > 0 and content[:offset].strip():
+                content_text = content[:offset].strip()
+            else:
+                content_text = ""
+            
+            return {
+                "role": "assistant",
+                "content": content_text,
+                "tool_calls": tool_calls
+            }
+        else:
+            # No tool calls found, return regular assistant message
+            # Remove any trailing special tokens
+            clean_content = re.sub(r"<\|im_end\|>$", "", content)
+            return {
+                "role": "assistant",
+                "content": clean_content
+            }
+    
+    def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[Dict]:
+        """Execute the tool calls and return tool results."""
+        tool_results = []
+        
+        for tool_call in tool_calls:
+            if function_call := tool_call.get("function"):
+                function_name = function_call["name"]
+                function_args = function_call["arguments"]
+                
+                if function_name in self.tools:
+                    try:
+                        # Execute the function
+                        result = self.tools[function_name](**function_args)
+                        
+                        # Add tool result message
+                        tool_results.append({
+                            "role": "tool",
+                            "name": function_name,
+                            "content": json.dumps(result) if not isinstance(result, str) else result
+                        })
+                        
+                    except Exception as e:
+                        # Handle function execution errors
+                        tool_results.append({
+                            "role": "tool",
+                            "name": function_name,
+                            "content": f"Error executing {function_name}: {str(e)}"
+                        })
+                else:
+                    tool_results.append({
+                        "role": "tool",
+                        "name": function_name,
+                        "content": f"Function {function_name} not found"
+                    })
+        
+        return tool_results
+
     def update_token_stats(self, input_tokens, output_tokens):
         """Update token usage statistics."""
         self.token_stats['total_input_tokens'] += input_tokens
@@ -242,48 +379,162 @@ class QwenChat:
             print(f"Avg tokens per conversation: {stats['total_tokens'] / stats['conversation_count']:.1f}")
         print(f"----------------------------\n")
     
-    def generate_response(self, user_input, max_new_tokens=512):
-        """Generate a response using the simplified Qwen pattern."""
+    def generate_response(self, user_input: str, max_new_tokens: int = 512, auto_execute_tools: bool = True) -> str:
+        """
+        Generate a response using the Qwen model with optional tool use.
         
+        Args:
+            user_input: The user's input message
+            max_new_tokens: Maximum number of tokens to generate
+            auto_execute_tools: Whether to automatically execute tool calls and generate final response
+            
+        Returns:
+            The assistant's response (either direct response or final response after tool execution)
+        """
         # Add user message to conversation
         self.messages.append({"role": "user", "content": user_input})
         
-        # Apply chat template
+        # Apply chat template with tools if available
         text = self.tokenizer.apply_chat_template(
             self.messages,
+            tools=self.available_tools if self.available_tools else None,
             tokenize=False,
             add_generation_prompt=True
         )
         
         # Tokenize and generate
         model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-        
         input_tokens = model_inputs.input_ids.shape[1]
         
         generated_ids = self.model.generate(
             **model_inputs,
-            max_new_tokens=max_new_tokens
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.8
         )
         
         # Extract only the new tokens
         generated_ids = [
             output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
         ]
-        response = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        response_text = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
         
         # Count tokens and update stats
         output_tokens = len(generated_ids[0])
         self.update_token_stats(input_tokens, output_tokens)
         
-        # Add assistant response to conversation
-        self.messages.append({"role": "assistant", "content": response})
+        # Parse the response for tool calls
+        parsed_response = self._parse_tool_calls(response_text)
+        self.messages.append(parsed_response)
         
-        return response
+        # Check if there are tool calls to execute
+        if tool_calls := parsed_response.get("tool_calls"):
+            if auto_execute_tools:
+                # Execute the tools
+                tool_results = self._execute_tool_calls(tool_calls)
+                self.messages.extend(tool_results)
+                
+                # Generate final response based on tool results
+                return self._generate_final_response(max_new_tokens)
+            else:
+                # Return indication that tools need to be executed
+                return f"[TOOL_CALLS_PENDING] {len(tool_calls)} tool(s) need execution"
+        else:
+            # No tool calls, return the content directly
+            return parsed_response["content"]
+    
+    def _generate_final_response(self, max_new_tokens: int) -> str:
+        """Generate the final response after tool execution."""
+        # Apply chat template again with the tool results
+        text = self.tokenizer.apply_chat_template(
+            self.messages,
+            tools=self.available_tools if self.available_tools else None,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize and generate
+        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+        input_tokens = model_inputs.input_ids.shape[1]
+        
+        generated_ids = self.model.generate(
+            **model_inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.8
+        )
+        
+        # Extract only the new tokens
+        generated_ids = [
+            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
+        ]
+        final_response = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        
+        # Count tokens and update stats
+        output_tokens = len(generated_ids[0])
+        self.update_token_stats(input_tokens, output_tokens)
+        
+        # Parse and add the final response
+        parsed_final = self._parse_tool_calls(final_response)
+        self.messages.append(parsed_final)
+        
+        return parsed_final["content"]
+    
+    def execute_pending_tools(self, max_new_tokens: int = 512) -> str:
+        """
+        Execute any pending tool calls from the last assistant message.
+        Useful when auto_execute_tools=False in generate_response.
+        """
+        if self.messages and self.messages[-1]["role"] == "assistant":
+            if tool_calls := self.messages[-1].get("tool_calls"):
+                # Execute the tools
+                tool_results = self._execute_tool_calls(tool_calls)
+                self.messages.extend(tool_results)
+                
+                # Generate final response
+                return self._generate_final_response(max_new_tokens)
+        
+        return "No pending tool calls found"
+    
+    def list_available_tools(self) -> List[str]:
+        """Return a list of registered tool names."""
+        return list(self.tools.keys())
+    
+    def remove_tool(self, tool_name: str) -> bool:
+        """Remove a registered tool."""
+        if tool_name in self.tools:
+            del self.tools[tool_name]
+            self.available_tools = [t for t in self.available_tools if t["function"]["name"] != tool_name]
+            return True
+        return False
+
+
 
 
 
 if __name__ == "__main__":
-
+    # Example tools
+    def get_weather(location: str, unit: str = "celsius") -> Dict[str, Any]:
+        """Get current weather for a location."""
+        # This would normally call a real weather API
+        return {
+            "location": location,
+            "temperature": 22,
+            "unit": unit,
+            "conditions": "sunny"
+        }
+    
+    def calculate(expression: str) -> Dict[str, Any]:
+        """Safely evaluate a mathematical expression."""
+        try:
+            # In production, use a safer evaluation method
+            result = eval(expression)
+            return {"expression": expression, "result": result}
+        except Exception as e:
+            return {"expression": expression, "error": str(e)}
+        
     def chat_loop(chat_instance):
         """Start an interactive chat session."""
         print("\n" + "="*50)
@@ -329,6 +580,54 @@ if __name__ == "__main__":
                 response = chat_instance.generate_response(user_input)
                 print(f"\nQwen: {response}")
 
+                chat_instance.print_token_stats()
+
+                chat_instance.message = []
+                # Register tools
+                chat_instance.register_tool(
+                    get_weather,
+                    description="Get current weather for a specific location",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string",
+                                "description": "City name, e.g., 'New York' or 'Tokyo'"
+                            },
+                            "unit": {
+                                "type": "string",
+                                "enum": ["celsius", "fahrenheit"],
+                                "description": "Temperature unit"
+                            }
+                        },
+                        "required": ["location"]
+                    }
+                )
+                
+                chat_instance.register_tool(
+                    calculate,
+                    description="Perform mathematical calculations",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "expression": {
+                                "type": "string",
+                                "description": "Mathematical expression to evaluate, e.g., '2 + 2' or '10 * 5'"
+                            }
+                        },
+                        "required": ["expression"]
+                    }
+                )
+
+                # Example Tool conversation
+                print("Available tools:", chat_instance.list_available_tools())
+                
+                response1 = chat_instance.generate_response("What's the weather like in Tokyo?")
+                print("Assistant:", response1)
+                
+                response2 = chat_instance.generate_response("Can you calculate 15 * 8 + 3?")
+                print("Assistant:", response2)
+                
                 chat_instance.print_token_stats()
                 
             except KeyboardInterrupt:
