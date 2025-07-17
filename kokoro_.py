@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Kokoro-82M Text-to-Speech - Thread-Safe Audio Version with Multi-line Support
 Modified to handle newlines by generating separate speech for each line.

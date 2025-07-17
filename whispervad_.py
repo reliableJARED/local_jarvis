@@ -14,14 +14,19 @@ import threading
 import queue
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Callable, Dict, List, Tuple
+from typing import Optional,  Dict, List, Tuple #Callable,
 import pickle
 import os
+import urllib.request
+import onnxruntime as ort
 from sklearn.cluster import DBSCAN, KMeans
 from sklearn.metrics import silhouette_score
 from scipy.spatial.distance import cosine, pdist, squareform
 import sys
 import warnings
+#from pathlib import Path
+
+
 warnings.filterwarnings("ignore")
 
 # Try to import speaker embedding models
@@ -710,40 +715,64 @@ class AudioCapture:
             return None
 
 class VoiceActivityDetector:
-    """Handles voice activity detection"""
+    """Handles voice activity detection using Silero VAD ONNX model"""
     
     def __init__(self, threshold=0.3, sample_rate=16000):
         self.threshold = threshold
         self.sample_rate = sample_rate
         self.vad_history = deque(maxlen=5)
         
-        # Load Silero VAD
-        self.vad_model, self.utils = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad',
-            model='silero_vad'
-        )
+        # Load Silero VAD ONNX model using the official package
+        self.model = self._load_vad_model()
+        self._reset_states()
+    
+    def _load_vad_model(self):
+        """Load the Silero VAD ONNX model using the official package"""
+        try:
+            from silero_vad import load_silero_vad
+            # Load ONNX model for offline operation
+            model = load_silero_vad(onnx=True)
+            return model
+        except ImportError:
+            raise ImportError(
+                "silero-vad package not found. Install with: pip install silero-vad"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to load VAD model: {e}")
+    
+    def _reset_states(self):
+        """Reset the internal states of the VAD model"""
+        # Initialize hidden and cell states for the LSTM
+        self._h = torch.zeros((2, 1, 64))
+        self._c = torch.zeros((2, 1, 64))
     
     def detect_speech(self, audio_chunk: np.ndarray) -> bool:
         """Detect if audio chunk contains speech"""
-        audio_tensor = torch.from_numpy(audio_chunk).float()
+        # Convert numpy array to torch tensor
+        if isinstance(audio_chunk, np.ndarray):
+            audio_tensor = torch.from_numpy(audio_chunk).float()
+        else:
+            audio_tensor = audio_chunk.float()
         
         # Ensure correct length for VAD model
-        if len(audio_tensor) != 512:
-            if len(audio_tensor) > 512:
-                audio_tensor = audio_tensor[:512]
+        target_length = 512 if self.sample_rate == 16000 else 256
+        
+        if len(audio_tensor) != target_length:
+            if len(audio_tensor) > target_length:
+                audio_tensor = audio_tensor[:target_length]
             else:
-                padded = torch.zeros(512)
+                padded = torch.zeros(target_length)
                 padded[:len(audio_tensor)] = audio_tensor
                 audio_tensor = padded
         
-        speech_prob = self.vad_model(audio_tensor, self.sample_rate)
-        
-        if hasattr(speech_prob, 'item'):
-            speech_prob = speech_prob.item()
-        elif isinstance(speech_prob, torch.Tensor):
-            speech_prob = speech_prob.cpu().numpy()
-            if speech_prob.ndim > 0:
-                speech_prob = speech_prob[0]
+        try:
+            # Run inference with state management
+            with torch.no_grad():
+                speech_prob = self.model(audio_tensor, self.sample_rate).item()
+            
+        except Exception as e:
+            print(f"VAD inference error: {e}")
+            return False
         
         # Smooth VAD decisions
         has_speech_raw = speech_prob > self.threshold
@@ -757,7 +786,17 @@ class VoiceActivityDetector:
             has_speech = has_speech_raw
         
         return has_speech
-
+    
+    def reset(self):
+        """Reset the VAD state - call this when:
+        - Starting a new audio session/conversation
+        - Switching audio sources
+        - After long periods of silence (>5 seconds)
+        - When audio conditions change significantly
+        """
+        self._reset_states()
+        self.vad_history.clear()
+        
 class WordBoundaryDetector:
     """Detects word boundaries in audio streams"""
     
