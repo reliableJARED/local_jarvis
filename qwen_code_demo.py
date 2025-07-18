@@ -3,7 +3,9 @@ import os
 import urllib.request
 import socket
 from transformers import AutoTokenizer, AutoModelForCausalLM
-
+import json
+import re
+from typing import List, Dict, Any, Optional, Callable
 
 class QwenChatDependencyManager:
     """Handles model loading, dependency management, and offline/online detection."""
@@ -191,9 +193,7 @@ class QwenChatDependencyManager:
             print(f"Error downloading model: {e}")
 
 
-import json
-import re
-from typing import List, Dict, Any, Optional, Callable
+
 
 class QwenChat:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
