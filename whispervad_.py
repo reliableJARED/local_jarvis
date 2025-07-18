@@ -1017,7 +1017,6 @@ class SpeechTranscriber:
         
         return transcription.strip()
 
-
 class VoiceAssistantSpeechProcessor:
     """Main speech processing system for voice assistants"""
     
