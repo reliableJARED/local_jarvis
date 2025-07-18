@@ -198,7 +198,7 @@ from typing import List, Dict, Any, Optional, Callable
 class QwenChat:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
     
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False):
+    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False,max_tool_itteration=3):
         """Initialize the chat interface with automatic dependency management."""
         self.dependency_manager = QwenChatDependencyManager(
             model_name=model_name,
@@ -219,6 +219,7 @@ class QwenChat:
         # Tool management
         self.tools = {}
         self.available_tools = []
+        self.max_tool_itteration = max_tool_itteration #how many tool request loops can run in a row
         
         # Initialize conversation with system prompt
         self.messages = []
@@ -518,26 +519,94 @@ class QwenChat:
 
 
 if __name__ == "__main__":
-    # Example tools
-    def get_weather(location: str, unit: str = "celsius") -> Dict[str, Any]:
-        """Get current weather for a location."""
-        # This would normally call a real weather API
-        return {
-            "location": location,
-            "temperature": 22,
-            "unit": unit,
-            "conditions": "sunny"
-        }
+    import multiprocessing
+    from multiprocessing import Queue
+    import subprocess
+    import sys
+    import shlex
+
+    #IMPORTANT - must do this to stop huggingface/tokenizers warning when new subprocess.run() is triggered
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
     
-    def calculate(expression: str) -> Dict[str, Any]:
-        """Safely evaluate a mathematical expression."""
+    def run_python_code(code_string):
+        print("code_string SUB PROCESS RUNNING")
+        print(code_string)
+        """Run python code in a subprocess and return the results
+        code_string: (str) Python code to execute as a string. Can include imports, function definitions, and multiple statements. Example: 'import math\nresult = math.sqrt(16)\nprint(result)'
+        timeout: (int) Maximum time in seconds to wait for code execution. Defaults to 30 seconds.
+        """
+        timeout=120
         try:
-            # In production, use a safer evaluation method
-            result = eval(expression)
-            return {"expression": expression, "result": result}
+            result = subprocess.run(
+                [sys.executable, '-c', code_string],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            return {
+                'stdout': result.stdout,
+                'stderr': result.stderr,
+                'return_code': result.returncode,
+                'success': result.returncode == 0
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                'stdout': '',
+                'stderr': 'Process timed out',
+                'return_code': -1,
+                'success': False,
+                'error': 'timeout'
+            }
         except Exception as e:
-            return {"expression": expression, "error": str(e)}
+            return {
+                'stdout': '',
+                'stderr': str(e),
+                'return_code': -1,
+                'success': False,
+                'error': str(e)
+            }
+    
+    
+    def run_terminal_command(command):
+        """Run any terminal command and return the results"""
+        print("run_terminal_command SUB PROCESS RUNNING")
+        print(command)
         
+        timeout = 120
+        use_shell = True
+        
+        try:
+            # If use_shell is False, split the command for better security
+            if not use_shell and isinstance(command, str):
+                command = shlex.split(command)
+            
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                shell=use_shell
+            )
+            
+            # Format the result for the LLM
+            if result.returncode == 0:
+                if result.stdout:
+                    return f"Command '{command}' executed successfully. Output:\n{result.stdout}"
+                else:
+                    return f"Command '{command}' executed successfully with no output."
+            else:
+                error_msg = f"Command '{command}' failed with return code {result.returncode}"
+                if result.stderr:
+                    error_msg += f"\nError: {result.stderr}"
+                return error_msg
+                
+        except subprocess.TimeoutExpired:
+            return f"Command '{command}' timed out after {timeout} seconds"
+        except Exception as e:
+            return f"Error executing command '{command}': {str(e)}"
+      
     def chat_loop(chat_instance):
         """Start an interactive chat session."""
         print("\n" + "="*50)
@@ -559,85 +628,93 @@ if __name__ == "__main__":
                     f.write(f"{role}: {content}\n\n")
             print(f"Conversation saved to {filename}")
         
-        while True:
-            try:
-                user_input = input("\nYou: ").strip()
-                
-                if user_input.lower() in ['quit', 'exit', 'q']:
-                    print("Goodbye!")
-                    break
-                elif user_input.lower() == 'clear':
-                    clear_history(chat_instance)
-                    continue
-                elif user_input.lower() == 'save':
-                    filename = input("Enter filename (default: conversation.txt): ").strip()
-                    if not filename:
-                        filename = "conversation.txt"
-                    save_conversation(chat_instance, filename)
-                    continue
-                elif not user_input:
-                    print("Please enter a message.")
-                    continue
-                
-                print("\nThinking...")
-                response = chat_instance.generate_response(user_input)
-                print(f"\nQwen: {response}")
-
-                chat_instance.print_token_stats()
-
-                chat_instance.clear_chat_messages()
-                
-                # Register tools
-                chat_instance.register_tool(
-                    get_weather,
-                    description="Get current weather for a specific location",
+        # Register tools
+        chat_instance.register_tool(
+                    run_python_code,
+                    description="Execute Python code string in a subprocess and return results. YOU MUST use three quote sytle \"\"\" around the code string",
                     parameters={
                         "type": "object",
                         "properties": {
-                            "location": {
-                                "type": "string",
-                                "description": "City name, e.g., 'New York' or 'Tokyo'"
-                            },
-                            "unit": {
-                                "type": "string",
-                                "enum": ["celsius", "fahrenheit"],
-                                "description": "Temperature unit"
-                            }
+                        "code_string": {
+                            "type": "string",
+                            "description": "Python code to execute as a string. Can include imports, function definitions, and multiple statements. Example: \"\"\"import math\\nresult = math.sqrt(16)\\nprint(result)\"\"\""
+                        }
                         },
-                        "required": ["location"]
+                        "required": ["code_string"],
+                        "additionalProperties": False
                     }
                 )
                 
-                chat_instance.register_tool(
-                    calculate,
-                    description="Perform mathematical calculations",
+        chat_instance.register_tool(
+                    run_terminal_command,
+                    description="Execute any mac terminal/bash command and return the output, error messages, and return code. Useful for running system commands, Python scripts, package installations, file operations, etc.",
                     parameters={
                         "type": "object",
                         "properties": {
-                            "expression": {
-                                "type": "string",
-                                "description": "Mathematical expression to evaluate, e.g., '2 + 2' or '10 * 5'"
-                            }
+                        "command": {
+                            "type": "string",
+                            "description": "The terminal command to execute. Can be any valid shell command like 'python script.py', 'ls -la', 'pip install package', etc."
+                        }
                         },
-                        "required": ["expression"]
+                        "required": ["command"],
+                        "additionalProperties": False
                     }
                 )
+            
 
+        try:
+                
                 # Example Tool conversation
                 print("Available tools:", chat_instance.list_available_tools())
-                
-                response1 = chat_instance.generate_response("What's the weather like in Tokyo?")
+                print("="*50)
+                print("Demo 1: How many files in the current directory")
+                response1 = chat_instance.generate_response("How many files in the current directory?")
                 print("Assistant:", response1)
+
+                chat_instance.print_token_stats()
                 
-                response2 = chat_instance.generate_response("Can you calculate 15 * 8 + 3?")
+                print("="*50)
+                print("Demo 2: Can you tell me what time it is?")
+
+                response2 = chat_instance.generate_response("Can you tell me what time it is?")
                 print("Assistant:", response2)
                 
                 chat_instance.print_token_stats()
+
+                print("="*50)
+
+                chat_instance.clear_chat_messages()
                 
-            except KeyboardInterrupt:
+                print("Now you try >>>")
+
+                #User Input Mode after Example
+                while True:
+                    user_input = input("\nYou: ").strip()
+                    
+                    if user_input.lower() in ['quit', 'exit', 'q']:
+                        print("Goodbye!")
+                        break
+                    elif user_input.lower() == 'clear':
+                        clear_history(chat_instance)
+                        continue
+                    elif user_input.lower() == 'save':
+                        filename = input("Enter filename (default: conversation.txt): ").strip()
+                        if not filename:
+                            filename = "conversation.txt"
+                        save_conversation(chat_instance, filename)
+                        continue
+                    elif not user_input:
+                        print("Please enter a message.")
+                        continue
+                    
+                    print("\nThinking...")
+                    response = chat_instance.generate_response(user_input)
+                    print(f"\nQwen: {response}")
+                
+        except KeyboardInterrupt:
                 print("\n\nChat interrupted. Goodbye!")
-                break
-            except Exception as e:
+                
+        except Exception as e:
                 print(f"\nError: {e}")
                 print("Please try again.")
 
@@ -665,6 +742,7 @@ if __name__ == "__main__":
             
             # Initialize chat interface (Qwen/Qwen2.5-7B-Instruct is default if no model passed)
             chat = QwenChat()
+            chat._update_system_prompt("You generate and run python code to answer questions. You use your terminal for information about the computer. You use python to solve any problem")
             
             # Start the chat loop
             chat_loop(chat)
