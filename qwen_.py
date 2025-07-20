@@ -198,7 +198,7 @@ class QwenChatDependencyManager:
 class QwenChat:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
     
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False):
+    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False, auto_append_conversation = False):
         """Initialize the chat interface with automatic dependency management."""
         self.dependency_manager = QwenChatDependencyManager(
             model_name=model_name,
@@ -207,6 +207,7 @@ class QwenChat:
         )
         self.model = self.dependency_manager.get_model()
         self.tokenizer = self.dependency_manager.get_tokenizer()
+        self.auto_append_conversation = auto_append_conversation
         
         # Token tracking
         self.token_stats = {
@@ -395,7 +396,11 @@ class QwenChat:
             The assistant's response (either direct response or final response after tool execution)
         """
         # Add user message to conversation
-        self.messages.append({"role": "user", "content": user_input})
+        if self.auto_append_conversation:
+            self.messages.append({"role": "user", "content": user_input})
+        else:
+            self.clear_chat_messages()
+            self.messages.append({"role": "user", "content": user_input})
         
         # Apply chat template with tools if available
         text = self.tokenizer.apply_chat_template(

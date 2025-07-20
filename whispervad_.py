@@ -212,13 +212,14 @@ class SpeakerIdentifier:
     def __init__(self, speaker_db_path: str = "clustered_speaker_profiles.pkl",
                  auto_save_interval: int = 30,
                  clustering_interval: int = 300,  # 5 minutes
+                 auto_clustering: bool = False, #If true, cluster every clustering_interval seconds
                  min_samples_for_clustering: int = 10):
         
         self.speaker_db_path = speaker_db_path
         self.auto_save_interval = auto_save_interval
         self.clustering_interval = clustering_interval
         self.min_samples_for_clustering = min_samples_for_clustering
-        
+        self.auto_clustering = auto_clustering
         self.speaker_profiles: Dict[str, ClusteredSpeakerProfile] = {}
         self.current_speaker_id = None
         self.speaker_counter = 0
@@ -243,7 +244,7 @@ class SpeakerIdentifier:
         self._auto_save_thread = threading.Thread(target=self._auto_save_loop, daemon=True)
         self._auto_save_thread.start()
         
-        self._clustering_thread = threading.Thread(target=self._clustering_loop, daemon=True)
+        self._clustering_thread = threading.Thread(target=self._clustering_loop, args=self.auto_clustering,daemon=True)
         self._clustering_thread.start()
     
     def extract_embedding(self, audio_data: np.ndarray) -> np.ndarray:
@@ -452,15 +453,17 @@ class SpeakerIdentifier:
         
         return clusters
     
-    def _clustering_loop(self):
+    def _clustering_loop(self,auto_clustering):
         """Background thread for periodic clustering"""
         while True:
             time.sleep(self.clustering_interval)
             current_time = time.time()
             
             if current_time - self._last_clustering_time > self.clustering_interval:
-                self._perform_global_clustering()
-                self._last_clustering_time = current_time
+                if auto_clustering:
+                    print(f"AUTO CLUSTERING: {auto_clustering}")
+                    self._perform_global_clustering()
+                    self._last_clustering_time = current_time
     
     def _perform_global_clustering(self):
         """Perform clustering analysis on all speakers that need it"""
