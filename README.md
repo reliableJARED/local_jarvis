@@ -35,6 +35,14 @@ Jarvis is a comprehensive voice assistant that combines state-of-the-art speech 
 - **Clustering**: DBSCAN and K-means algorithms
 
 ## Installation
+⚠️ System Requirements Warning: This system loads multiple large AI models simultaneously and requires significant computational resources:
+
+Memory: 32GB+ RAM recommended (peak usage ~32GB)
+Storage: 30GB free disk space for model files
+Processing: Modern multi-core CPU or Apple Silicon recommended
+Tested Configuration: MacBook Pro M4 with 48GB RAM runs smoothly
+
+Systems with less than 16GB RAM may experience performance issues or crashes. 
 
 ### Prerequisites
 - Python 3.8+
@@ -77,8 +85,11 @@ cd jarvis-voice-assistant
 ### 2. Download Models (First Run)
 On first run, models will download automatically with internet connection. For offline setup:
 ```bash
-python qwen_.py download  # Download Qwen model
-# Other models download automatically on first use
+# Only Qwen has manual download option
+python qwen_.py download  
+
+# Kokoro, Whisper, VAD, and other models download automatically on first use
+# They will fallback to cached/offline versions if no internet connection
 ```
 
 ### Basic Usage
