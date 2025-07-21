@@ -318,6 +318,103 @@ class SpeakerIdentifier:
         self.speaker_profiles[speaker_id] = profile
         print(f"Created new clustered speaker profile: {speaker_id}")
     
+    def rename_speaker(self, speaker_id: str, new_name: str):
+        """
+        Rename a speaker with collision detection and formatting
+        
+        Args:
+            speaker_id: Current speaker ID to rename
+            new_name: New name for the speaker (e.g., 'Bob', 'Bob Johnson')
+        
+        Returns:
+            str: The final speaker_id that was assigned, or None if operation failed
+        """
+        # Check if the speaker exists
+        if speaker_id not in self.speaker_profiles:
+            print(f"Error: Speaker '{speaker_id}' not found")
+            return None
+        
+        # Format the new name as a valid speaker_id
+        # Replace spaces with underscores and clean up the name
+        formatted_name = new_name.strip().replace(' ', '_')
+        
+        # Remove any characters that might cause issues (keep alphanumeric, underscore, hyphen)
+        import re
+        formatted_name = re.sub(r'[^a-zA-Z0-9_\-]', '', formatted_name)
+        
+        if not formatted_name:
+            print("Error: Invalid name provided")
+            return None
+        
+        # Handle collision detection
+        final_speaker_id = self._get_unique_speaker_id(formatted_name)
+        
+        # If the final ID is the same as current, no change needed
+        if final_speaker_id == speaker_id:
+            print(f"Speaker '{speaker_id}' name unchanged")
+            return speaker_id
+        
+        # Perform the rename by moving the profile to the new key
+        try:
+            # Get the existing profile
+            profile = self.speaker_profiles[speaker_id]
+            
+            # Update the speaker_id within the profile
+            profile.speaker_id = final_speaker_id
+            profile.last_updated = datetime.now()
+            
+            # Move to new key in the dictionary
+            self.speaker_profiles[final_speaker_id] = profile
+            
+            # Remove the old key
+            del self.speaker_profiles[speaker_id]
+            
+            # Update current_speaker_id if it was pointing to the renamed speaker
+            if self.current_speaker_id == speaker_id:
+                self.current_speaker_id = final_speaker_id
+            
+            print(f"Successfully renamed speaker '{speaker_id}' to '{final_speaker_id}'")
+            
+            # Schedule a save to persist the change
+            self._schedule_save()
+            
+            return final_speaker_id
+            
+        except Exception as e:
+            print(f"Error renaming speaker: {e}")
+            return None
+
+    def _get_unique_speaker_id(self, base_name: str) -> str:
+        """
+        Generate a unique speaker ID by handling name collisions
+        
+        Args:
+            base_name: The desired base name (e.g., 'Bob', 'Bob_Johnson')
+        
+        Returns:
+            str: A unique speaker ID (e.g., 'Bob', 'Bob_2', 'Bob_Johnson_3')
+        """
+        # Check if the base name is already unique
+        if base_name not in self.speaker_profiles:
+            return base_name
+        
+        # Find a unique variation by appending numbers
+        counter = 2
+        while True:
+            candidate_name = f"{base_name}_{counter}"
+            if candidate_name not in self.speaker_profiles:
+                return candidate_name
+            counter += 1
+            
+            # Safety check to prevent infinite loops
+            if counter > 1000:
+                # Fallback to timestamp-based uniqueness
+                import time
+                timestamp_suffix = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
+                return f"{base_name}_{timestamp_suffix}"
+
+
+
     def update_speaker_embedding(self, speaker_id: str, embedding: np.ndarray, confidence: float = 1.0):
         """Update speaker embedding and trigger clustering if needed"""
         if speaker_id in self.speaker_profiles:
