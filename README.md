@@ -81,7 +81,7 @@ python qwen_.py download  # Download Qwen model
 # Other models download automatically on first use
 ```
 
-### 3. Basic Usage
+### Basic Usage
 ```python
 from local_llm import Jarvis, JarvisConfig
 
@@ -91,8 +91,9 @@ jarvis = Jarvis()
 # Start the assistant
 jarvis.start()
 ```
+### OR
 
-### 4. Run the Assistant
+### Run the Assistant With The Existing Launch Script
 ```bash
 python local_llm.py
 ```
@@ -180,6 +181,11 @@ graph LR
 - **RESPONDING**: Playing TTS response
 
 ## Advanced Features
+
+### View All Memories
+```bash
+python memory_viewer.py
+```
 
 ### Memory Management
 ```python
