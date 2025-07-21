@@ -227,11 +227,20 @@ class QwenChat:
     
     def _add_system_prompt(self):
         """Add the initial system prompt."""
-        system_content = """You are a robot"""
+        system_content = """
+        <interaction_rule>You are an autonomous AI Robot</interaction_rule>
+        <interaction_rule>YOU ALWAYS act like a person that exists in the real world</interaction_rule>
+        <interaction_rule>You can directly interact with the world through your sensors and libs</interaction_rule>
+        <interaction_rule>You can receive descriptions of what you see from your camera</interaction_rule>
+        <interaction_rule>You can receive descriptions of what you hear from your microphone</interaction_rule>
+        <interaction_rule>You INTERPERET and consider the MEANING of your microphone and camera in the conversation or environment context. DO NOT simply restate the ouputs</interaction_rule>
+        <interaction_rule>Your output is converted to speech audio and must be suitable for a text to speech system to process</interaction_rule>
+        """
         self.messages = [{"role": "system", "content": system_content}]
     
     def _update_system_prompt(self, system_content):
         """Update the system prompt."""
+        print(f"RESET SYSTEM PROMPT TO:\n{system_content}")
         self.messages[0] = {"role": "system", "content": system_content}
 
     def clear_chat_messages(self):
@@ -399,8 +408,9 @@ class QwenChat:
         if self.auto_append_conversation:
             self.messages.append({"role": "user", "content": user_input})
         else:
-            print("ERASE ALL PRIOR MESSAGES ->")
+            print("ERASE ALL PRIOR MESSAGES BEFORE RESPONDING->")
             self.clear_chat_messages()
+            print(self.messages)
             self.messages.append({"role": "user", "content": user_input})
         
         # Apply chat template with tools if available
@@ -525,25 +535,33 @@ class QwenChat:
 
 if __name__ == "__main__":
     # Example tools
-    def get_weather(location: str, unit: str = "celsius") -> Dict[str, Any]:
-        """Get current weather for a location."""
-        # This would normally call a real weather API
+    def get_camera_view() -> Dict[str, Any]:
+        """Get a description of what the camera currently sees."""
+        # This would normally interface with actual camera hardware/API
+        # For now, returning a simulated description
         return {
-            "location": location,
-            "temperature": 22,
-            "unit": unit,
-            "conditions": "sunny"
+            "timestamp": "2025-07-21T10:30:00Z",
+            "raw_output": "Living room with a person in a blue shirt and black pants sitting on a blue couch, coffee table with laptop, large window showing daylight",
+            "objects_detected": ["person", "couch", "laptop", "coffee_table", "window"],
+            "lighting_conditions": "bright natural light",
+            "camera_status": "active",
+            "instruction":"raw output provides context and is NOT meant to be directly returned to user"
         }
     
-    def calculate(expression: str) -> Dict[str, Any]:
-        """Safely evaluate a mathematical expression."""
-        try:
-            # In production, use a safer evaluation method
-            result = eval(expression)
-            return {"expression": expression, "result": result}
-        except Exception as e:
-            return {"expression": expression, "error": str(e)}
-        
+    def get_microphone_audio() -> Dict[str, Any]:
+        """Get a description of what the microphone currently hears."""
+        # This would normally interface with actual microphone hardware/API
+        # For now, returning a simulated description
+        return {
+            "timestamp": "2025-07-21T10:30:00Z",
+            "raw_output": "Quiet ambient room noise with occasional keyboard typing sounds",
+            "audio_level": "low",
+            "dominant_sounds": ["keyboard_typing", "ambient_noise"],
+            "speech_detected": False,
+            "microphone_status": "active",
+            "instruction":"raw output provides context and is NOT meant to be directly returned to user"
+        }
+            
     def chat_loop(chat_instance):
         """Start an interactive chat session."""
         print("\n" + "="*50)
@@ -565,6 +583,18 @@ if __name__ == "__main__":
                     f.write(f"{role}: {content}\n\n")
             print(f"Conversation saved to {filename}")
         
+
+        chat_instance._update_system_prompt("""
+        <interaction_rule>You are an autonomous AI Robot</interaction_rule>
+        <interaction_rule>YOU ALWAYS act like a person that exists in the real world</interaction_rule>
+        <interaction_rule>You can directly interact with the world through your sensors and libs</interaction_rule>
+        <interaction_rule>You can receive descriptions of what you see from your camera</interaction_rule>
+        <interaction_rule>You can receive descriptions of what you hear from your microphone</interaction_rule>
+        <interaction_rule>You INTERPERET and consider the MEANING of your microphone and camera in the conversation or environment context. DO NOT simply restate the ouputs</interaction_rule>
+        <interaction_rule>Your output is converted to speech audio and must be suitable for a text to speech system to process</interaction_rule>
+        """)
+
+
         while True:
             try:
                 user_input = input("\nYou: ").strip()
@@ -593,51 +623,39 @@ if __name__ == "__main__":
 
                 chat_instance.clear_chat_messages()
 
-                # Register tools
+                # Register camera tool
                 chat_instance.register_tool(
-                    get_weather,
-                    description="Get current weather for a specific location",
+                    get_camera_view,
+                    description="Get a description of what my camera currently sees in the environment",
                     parameters={
                         "type": "object",
-                        "properties": {
-                            "location": {
-                                "type": "string",
-                                "description": "City name, e.g., 'New York' or 'Tokyo'"
-                            },
-                            "unit": {
-                                "type": "string",
-                                "enum": ["celsius", "fahrenheit"],
-                                "description": "Temperature unit"
-                            }
-                        },
-                        "required": ["location"]
+                        "properties": {},
+                        "required": []
                     }
                 )
-                
+
+                # Register microphone tool
                 chat_instance.register_tool(
-                    calculate,
-                    description="Perform mathematical calculations",
+                    get_microphone_audio,
+                    description="Get a description of what my microphone currently hears in the environment",
                     parameters={
                         "type": "object",
-                        "properties": {
-                            "expression": {
-                                "type": "string",
-                                "description": "Mathematical expression to evaluate, e.g., '2 + 2' or '10 * 5'"
-                            }
-                        },
-                        "required": ["expression"]
+                        "properties": {},
+                        "required": []
                     }
                 )
 
                 # Example Tool conversation
                 print("Available tools:", chat_instance.list_available_tools())
-                
-                response1 = chat_instance.generate_response("What's the weather like in Tokyo?")
+                print("\n\n\n")
+                response1 = chat_instance.generate_response("What do you think of my outfit?")
+                print("\n")
                 print("Assistant:", response1)
-                
-                response2 = chat_instance.generate_response("Can you calculate 15 * 8 + 3?")
+                print("\n\n\n")
+                response2 = chat_instance.generate_response("what was that sound?")
+                print("\n")
                 print("Assistant:", response2)
-                
+                print("\n")
                 chat_instance.print_token_stats()
                 
             except KeyboardInterrupt:
@@ -670,7 +688,7 @@ if __name__ == "__main__":
             print(f"Initializing {model_name}...")
             
             # Initialize chat interface (Qwen/Qwen2.5-7B-Instruct is default if no model passed)
-            chat = QwenChat()
+            chat = QwenChat(auto_append_conversation=False)
             
             # Start the chat loop
             chat_loop(chat)
