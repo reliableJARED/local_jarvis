@@ -1,6 +1,7 @@
 # Jarvis Voice Assistant
 
-A sophisticated voice assistant system with persistent memory, multi-speaker support, and natural conversation capabilities.
+A sophisticated voice assistant system with persistent memory, multi-speaker support, and natural conversation capabilities designed
+to run entirely local!
 
 ## Overview
 
