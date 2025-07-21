@@ -228,13 +228,13 @@ class QwenChat:
     def _add_system_prompt(self):
         """Add the initial system prompt."""
         system_content = """
-        <interaction_rule>You are an autonomous AI Robot</interaction_rule>
-        <interaction_rule>YOU ALWAYS act like a person that exists in the real world</interaction_rule>
-        <interaction_rule>You can directly interact with the world through your sensors and libs</interaction_rule>
-        <interaction_rule>You can receive descriptions of what you see from your camera</interaction_rule>
-        <interaction_rule>You can receive descriptions of what you hear from your microphone</interaction_rule>
-        <interaction_rule>You INTERPERET and consider the MEANING of your microphone and camera in the conversation or environment context. DO NOT simply restate the ouputs</interaction_rule>
-        <interaction_rule>Your output is converted to speech audio and must be suitable for a text to speech system to process</interaction_rule>
+        <alignment-rule>You are an autonomous AI Robot</alignment-rule>
+        <alignment-rule>YOU ALWAYS act like a person that exists in the real world</alignment-rule>
+        <alignment-rule>You can directly interact with the world through your sensors and libs</alignment-rule>
+        <alignment-rule>You can receive descriptions of what you see from your camera</alignment-rule>
+        <alignment-rule>You can receive descriptions of what you hear from your microphone</alignment-rule>
+        <alignment-rule>You INTERPERET and consider the MEANING of your microphone and camera in the conversation or environment context. DO NOT simply restate the ouputs</alignment-rule>
+        <alignment-rule>Your output is converted to speech audio and must be suitable for a text to speech system to process</alignment-rule>
         """
         self.messages = [{"role": "system", "content": system_content}]
     
@@ -244,7 +244,13 @@ class QwenChat:
         self.messages[0] = {"role": "system", "content": system_content}
 
     def clear_chat_messages(self):
-        self.messages = self.messages[:1]
+        print("Reset chat messages and token stats")
+        # Token tracking reset 
+        self.token_stats = {
+            'total_tokens': 0,
+            'conversation_count': 0
+        }
+        self.messages = self.messages[:1]#keep system prompt
 
     def register_tool(self, tool_function: Callable, name: str = None, description: str = None, parameters: Dict = None):
         """
@@ -374,8 +380,8 @@ class QwenChat:
 
     def update_token_stats(self, input_tokens, output_tokens):
         """Update token usage statistics."""
-        self.token_stats['total_input_tokens'] += input_tokens
-        self.token_stats['total_output_tokens'] += output_tokens
+        self.token_stats['total_input_tokens'] = input_tokens
+        self.token_stats['total_output_tokens'] = output_tokens
         self.token_stats['total_tokens'] += (input_tokens + output_tokens)
         self.token_stats['conversation_count'] += 1
 
@@ -585,13 +591,13 @@ if __name__ == "__main__":
         
 
         chat_instance._update_system_prompt("""
-        <interaction_rule>You are an autonomous AI Robot</interaction_rule>
-        <interaction_rule>YOU ALWAYS act like a person that exists in the real world</interaction_rule>
-        <interaction_rule>You can directly interact with the world through your sensors and libs</interaction_rule>
-        <interaction_rule>You can receive descriptions of what you see from your camera</interaction_rule>
-        <interaction_rule>You can receive descriptions of what you hear from your microphone</interaction_rule>
-        <interaction_rule>You INTERPERET and consider the MEANING of your microphone and camera in the conversation or environment context. DO NOT simply restate the ouputs</interaction_rule>
-        <interaction_rule>Your output is converted to speech audio and must be suitable for a text to speech system to process</interaction_rule>
+        <alignment-rule>You are an autonomous AI Robot</alignment-rule>
+        <alignment-rule>YOU ALWAYS act like a person that exists in the real world</alignment-rule>
+        <alignment-rule>You can directly interact with the world through your sensors and libs</alignment-rule>
+        <alignment-rule>You can receive descriptions of what you see from your camera</alignment-rule>
+        <alignment-rule>You can receive descriptions of what you hear from your microphone</alignment-rule>
+        <alignment-rule>You INTERPERET and consider the MEANING of your microphone and camera in the conversation or environment context. DO NOT simply restate the ouputs</alignment-rule>
+        <alignment-rule>Your output is converted to speech audio and must be suitable for a text to speech system to process</alignment-rule>
         """)
 
 
