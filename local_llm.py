@@ -49,8 +49,8 @@ class MemoryPage:
     
     # Temporal information
     timestamp: datetime = field(default_factory=datetime.now)
-    date_str: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
-    time_str: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    date_str: str = field(default_factory=lambda: datetime.now().strftime("%B %d, %Y"))  # "July 5, 2025"
+    time_str: str = field(default_factory=lambda: datetime.now().strftime("%I:%M %p"))   # "8:00 PM"
     
     # Speaker information
     speaker_id: str = ""
@@ -535,8 +535,10 @@ class Jarvis:
                 recent_memories.sort(key=lambda x: x.timestamp, reverse=True)
                 latest_memory = recent_memories[0]
                 
-                context_parts.append("<most_recent_interaction>")
-                context_parts.append(f"{latest_memory.combined_text}</most_recent_interaction>")
+                #If we are in a conversation still, append last prompt/response:
+                if self.in_conversation:
+                    context_parts.append("<most_recent_interaction>")
+                    context_parts.append(f"{latest_memory.combined_text}</most_recent_interaction>")
                 
                 if self.config.debug_mode:
                     print(f"🧠 Found recent memory with {speaker_id}: {latest_memory.combined_text[:50]}...")
@@ -588,6 +590,8 @@ class Jarvis:
     def stop(self):
         """Stop Jarvis voice assistant"""
         self.should_stop = True
+        self.speech_processor.speaker_id.save_speaker_profiles()
+        #self.speech_processor.speaker_id._perform_global_clustering()
         self.speech_processor.stop()
         self.tts.cleanup()
 
@@ -622,7 +626,7 @@ class Jarvis:
                     if (self.config.continuous_conversation and 
                         self.in_conversation and 
                         self.last_speech_time and
-                        current_time - self.last_speech_time > self.config.conversation_timeout):
+                        current_time - self.last_speech_time > self.config.conversation_timeout and (self.state == JarvisState.IDLE)):
                         
                         print("Conversation timeout - requiring wake word again")
                         self._end_conversation_internal()
@@ -906,9 +910,13 @@ class Jarvis:
         try:
             # Build memory context for system prompt
             memory_context = self._build_memory_context(prompt, self.primary_speaker or "unknown")
+
+            # Temporal information
+            date_str = datetime.now().strftime("%B %d, %Y")  # "July 5, 2025"
+            time_str = datetime.now().strftime("%I:%M %p")  # "8:00 PM"
             
             # Update system prompt with memory context
-            enhanced_system_prompt = f"""You are {self.config.wake_word}, an intelligent robotic system with temporal and conversation aware memory. 
+            enhanced_system_prompt = f"""You are {self.config.wake_word}, an intelligent robotic system with temporal and conversation aware memory. It is currently {time_str} on {date_str}
 
                 You are conversing with {self.primary_speaker or 'the user'}. Here is the most recent prompt and response you had with {self.primary_speaker or 'the user'}:
 
@@ -990,6 +998,7 @@ class Jarvis:
         self.primary_speaker = None
         self._set_state_internal(JarvisState.IDLE)
         self._reset_prompt_state_internal()
+        self.speech_processor.speaker_id.save_speaker_profiles()
         self.speech_processor.speaker_id._perform_global_clustering()
         print(f"Conversation ended - sleeping until wake word detected")
     

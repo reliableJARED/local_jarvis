@@ -210,7 +210,7 @@ class SpeakerIdentifier:
     """Speaker identifier with automatic clustering capabilities"""
     
     def __init__(self, speaker_db_path: str = "clustered_speaker_profiles.pkl",
-                 auto_save_interval: int = 30,
+                 auto_save_interval: int = 300, #5 minutes
                  clustering_interval: int = 300,  # 5 minutes
                  auto_clustering: bool = False, #If true, cluster every clustering_interval seconds
                  min_samples_for_clustering: int = 10):
@@ -227,6 +227,7 @@ class SpeakerIdentifier:
         self._cluster_lock = threading.Lock()
         self._last_save_time = 0
         self._last_clustering_time = 0
+        self._speakerid_prefix = "USER"
         
         # Load speaker embedding model
         if SPEECHBRAIN_AVAILABLE:
@@ -299,7 +300,7 @@ class SpeakerIdentifier:
             return best_match_id
         else:
             # Create new speaker
-            new_speaker_id = f"SPEAKER_{self.speaker_counter:02d}"
+            new_speaker_id = f"{self._speakerid_prefix}_{self.speaker_counter:02d}"
             self.speaker_counter += 1
             self.create_new_speaker(new_speaker_id, embedding)
             return new_speaker_id
@@ -468,7 +469,7 @@ class SpeakerIdentifier:
     def _perform_global_clustering(self):
         """Perform clustering analysis on all speakers that need it"""
         speakers_to_cluster = []
-        
+        print("Clustering saved speakers")
         for speaker_id, profile in self.speaker_profiles.items():
             # Check if speaker needs clustering
             needs_clustering = (
@@ -562,7 +563,10 @@ class SpeakerIdentifier:
         return stats
     
     def save_speaker_profiles(self, filepath: str = None):
-        """Save speaker profiles to pickle file"""
+        """Save speaker profiles to pickle file
+        WARNING! - This function is very taxing and usually brings system to a stop. Consider NOT doing
+        Auto save on a timer and base it on some event
+        """
         if filepath is None:
             filepath = self.speaker_db_path
         

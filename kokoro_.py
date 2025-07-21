@@ -709,6 +709,11 @@ class Kokoro:
         text = text.replace('*', ".")
         text = text.replace('…', '...')  # ellipsis
         text = text.replace('•', '-')   # bullet points
+        text = text.replace('#', '.')   # hashtag
+
+        #some conjucation specific
+        text = text.replace("’re", "'re")   # as in you're - it doesn't do well with that
+        text = text.replace("’d", "'d")   # as in I'd - it doesn't do well with that
         
         #Clean up but preserve newlines
         text = text.strip()

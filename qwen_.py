@@ -399,6 +399,7 @@ class QwenChat:
         if self.auto_append_conversation:
             self.messages.append({"role": "user", "content": user_input})
         else:
+            print("ERASE ALL PRIOR MESSAGES ->")
             self.clear_chat_messages()
             self.messages.append({"role": "user", "content": user_input})
         
