@@ -51,28 +51,20 @@ Systems with less than 16GB RAM may experience performance issues or crashes.
 - Internet connection (for initial model downloads)
 
 ### System Dependencies
+System dependencies (espeak-ng, portaudio) are automatically handled by the Kokoro TTS dependency manager on first run. The system will:
 
-#### Linux (Ubuntu/Debian)
-```bash
-sudo apt-get update
-sudo apt-get install espeak-ng portaudio19-dev
-```
+Linux: Auto-install via apt-get or yum
+macOS: Auto-install via Homebrew
+Windows: sorry nothing at the moment
 
-#### macOS
-```bash
-brew install espeak-ng portaudio
-```
-
-#### Windows
-Download and install espeak-ng from the [official releases](https://github.com/espeak-ng/espeak-ng/releases)
-
-### Python Dependencies
+Simply install Python dependencies:
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 pip install transformers sounddevice soundfile numpy scipy scikit-learn
 pip install speechbrain silero-vad kokoro>=0.9.4
 pip install onnxruntime requests pickle5
 ```
+requirement.txt and an easy setup .sh file on the todo list
 
 ## Quick Start
 
