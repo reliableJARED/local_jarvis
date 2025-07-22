@@ -239,6 +239,7 @@ class ImageGenerator:
                      guidance_scale=5.5,     # Within the 4-7 range from docs
                      width=1024,
                      height=1024,
+                     use_enhanced_prompting=True,  # Use LUSTIFY-specific tags
                      **kwargs):
         """
         Generate image from text prompt
@@ -250,12 +251,19 @@ class ImageGenerator:
             guidance_scale (float): Guidance scale for generation
             width (int): Image width
             height (int): Image height
+            use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
             **kwargs: Additional generation parameters
         
         Returns:
             PIL.Image: Generated image
         """
         print(f"🎨 Generating image from text: '{prompt}'")
+        
+        # Enhance prompt for LUSTIFY model if requested
+        if use_enhanced_prompting:
+            enhanced_prompt = self._enhance_prompt_for_lustify(prompt)
+            print(f"🎨 Enhanced prompt: '{enhanced_prompt}'")
+            prompt = enhanced_prompt
         
         # Get pipeline
         pipe = self._get_pipeline("text-to-image")
@@ -273,12 +281,18 @@ class ImageGenerator:
             num_inference_steps = min(num_inference_steps, 25)
             print(f"🚀 Running on MPS - SDXL optimized: {width}x{height}, {num_inference_steps} steps")
         
+        # Add LUSTIFY-specific negative prompt for better quality
+        negative_prompt = kwargs.pop('negative_prompt', None)
+        if not negative_prompt:
+            negative_prompt = "blurry, low quality, distorted, deformed, extra limbs, bad anatomy"
+        
         # Generation parameters
         generation_kwargs = {
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
             "height": height,
             "width": width,
+            "negative_prompt": negative_prompt,
         }
         generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
         
@@ -301,15 +315,47 @@ class ImageGenerator:
             
         except Exception as e:
             print(f"❌ Error generating image: {e}")
+            print(f"💡 Try lowering strength (current: {strength}) for more consistency")
+            print(f"💡 Or enhance your prompt with camera/lighting details")
             return None
+    
+    def _enhance_prompt_for_lustify(self, prompt):
+        """
+        Enhance prompts with LUSTIFY-specific tags for better results
+        Based on model documentation and community findings
+        """
+        # LUSTIFY responds well to photography-style prompting
+        photo_enhancers = [
+            "photograph",
+            "shot on Canon EOS 5D", 
+            "cinematic lighting",
+            "professional photography"
+        ]
+        
+        # Check if prompt already has photography terms
+        prompt_lower = prompt.lower()
+        has_photo_terms = any(term in prompt_lower for term in [
+            "shot on", "photograph", "photo", "camera", "lighting", 
+            "shot with", "taken with"
+        ])
+        
+        if not has_photo_terms:
+            # Add basic photography enhancement
+            enhanced = f"photograph, {prompt}, shot on Canon EOS 5D, professional photography"
+        else:
+            # Prompt already has photo terms, just clean it up
+            enhanced = prompt
+            
+        return enhanced
     
     def image_to_image(self, 
                       prompt, 
                       input_image,
                       output_path="output.png",
-                      strength=0.75,
+                      strength=0.20,           # MUCH lower for LUSTIFY consistency
                       num_inference_steps=30,  # Model docs recommend 30 steps  
                       guidance_scale=5.5,     # Within the 4-7 range from docs
+                      use_enhanced_prompting=True,  # Use LUSTIFY-specific tags
                       **kwargs):
         """
         Transform an existing image based on text prompt
@@ -318,15 +364,23 @@ class ImageGenerator:
             prompt (str): Text description of desired transformation
             input_image (str or PIL.Image): Path to input image or PIL Image object
             output_path (str): Path to save generated image
-            strength (float): Transformation strength (0.0-1.0, higher=more change)
+            strength (float): Transformation strength (0.0-1.0, LOWER=more consistency)
             num_inference_steps (int): Number of denoising steps
             guidance_scale (float): Guidance scale for generation
+            use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
             **kwargs: Additional generation parameters
         
         Returns:
             PIL.Image: Generated image
         """
         print(f"🖼️  Transforming image with prompt: '{prompt}'")
+        print(f"💡 Using strength: {strength} (lower=more consistent with original)")
+        
+        # Enhance prompt for LUSTIFY model if requested
+        if use_enhanced_prompting:
+            enhanced_prompt = self._enhance_prompt_for_lustify(prompt)
+            print(f"🎨 Enhanced prompt: '{enhanced_prompt}'")
+            prompt = enhanced_prompt
         
         # Get pipeline
         pipe = self._get_pipeline("image-to-image")
@@ -356,8 +410,13 @@ class ImageGenerator:
             print(f"⚠️  Running on CPU - using optimized settings: {width}x{height}, {num_inference_steps} steps")
         elif self.is_mps:
             # MPS can handle full SDXL resolution - keep original dimensions
-            num_inference_steps = min(num_inference_steps, 25)
+            num_inference_steps = min(num_inference_steps, 30)
             print(f"🚀 Running on MPS - SDXL optimized: {width}x{height}, {num_inference_steps} steps")
+        
+        # Add LUSTIFY-specific negative prompt for better quality
+        negative_prompt = kwargs.pop('negative_prompt', None)
+        if not negative_prompt:
+            negative_prompt = "blurry, low quality, distorted, deformed, extra limbs, bad anatomy"
         
         # Generation parameters
         generation_kwargs = {
@@ -365,6 +424,7 @@ class ImageGenerator:
             "strength": strength,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
+            "negative_prompt": negative_prompt,
         }
         generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
         
@@ -445,7 +505,7 @@ class ImageGenerator:
                 input_image = input_image.resize((768, 768))
                 mask_image = mask_image.resize((768, 768))
                 width, height = 768, 768
-            num_inference_steps = min(num_inference_steps, 25)
+            num_inference_steps = min(num_inference_steps, 30)
             print(f"🚀 Running on MPS - optimized settings: {width}x{height}, {num_inference_steps} steps")
         
         # Generation parameters
@@ -482,24 +542,28 @@ class ImageGenerator:
 if __name__ == "__main__":
     # Initialize the generator
     generator = ImageGenerator()
+    #BEST - PROMPT STRUCTURE GUIDE - using a consistent [subject] [important feature], [more details] description will create similar subject"
+    "[style of photo] photo of a [subject], [important feature], [more details], [pose or action], [framing], [setting/background], [lighting], [camera angle], "
     
     # Example 1: Text-to-image generation
     image1 = generator.text_to_image(
-        prompt="photograph, a man walking a dog, 8k",
+        prompt="photograph, photo of a large ape, black fur, green eyes, kneeling in front of an alter, looking up with a remorseful expression, soft warm lighting, 8k",
         output_path="step1_text2img.png"
     )
     
-    if image1:
-        # Example 2: Image-to-image transformation
+    #Image to Image does NOT work well DO NOT BOTHER USING
+    """if image1:
+        # Example 2: Image-to-image transformation with LOWER strength for consistency
         image2 = generator.image_to_image(
-            prompt="Show the person in the image bending over to pet the dog",
+            prompt="photograph, photo of the same ape swinging from a tree wide angle camera, same scene, same lighting, 8k",
             input_image="step1_text2img.png",
             output_path="step2_img2img.png",
-            strength=0.75
+            strength=0.35  # Much lower for better consistency!
         )
         
         if image2:
             print("🎉 Two-step demo complete!")
             print("Generated images:")
             print(f"  - Original: step1_text2img.png")
-            print(f"  - Transformed: step2_img2img.png")
+            print(f"  - Transformed: step2_img2img.png")"""
+    
