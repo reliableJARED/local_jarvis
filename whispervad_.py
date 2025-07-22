@@ -24,6 +24,8 @@ from sklearn.metrics import silhouette_score
 from scipy.spatial.distance import cosine, pdist, squareform
 import sys
 import warnings
+import select
+
 #from pathlib import Path
 
 
@@ -1122,7 +1124,7 @@ class SpeechTranscriber:
         return transcription.strip()
 
 class VoiceAssistantSpeechProcessor:
-    """Main speech processing system for voice assistants"""
+    """Main speech processing system for voice assistants with text input support"""
     
     def __init__(self, callback: SpeechCallback):
         self.callback = callback
@@ -1152,34 +1154,41 @@ class VoiceAssistantSpeechProcessor:
         self.min_speech_duration = 0.8
         self.max_speech_duration = 10.0
         
-        # Enhanced real-time configuration - use min max to transcribe in real time and try dynamic word breaks in between that range
-        self.realtime_update_interval = 0.5      # Minimum update interval (500ms)
-        self.realtime_max_interval = 2.5         # Maximum update interval (5 * minimum)
-        self.realtime_min_duration = 1.0         # Minimum audio for real-time transcription
+        # Enhanced real-time configuration
+        self.realtime_update_interval = 0.5
+        self.realtime_max_interval = 2.5
+        self.realtime_min_duration = 1.0
+        
+        # Text input support
+        self.text_input_enabled = True
+        self.text_input_queue = queue.Queue()
+        self.text_input_thread = None
         
         # Processing thread
         self.processing_thread = None
         self.should_stop = False
     
     def start(self):
-        """Start the speech processing system"""
+        """Start the speech processing system with text input support"""
         self.should_stop = False
         self.audio_capture.start()
+        
+        # Start text input thread
+        if self.text_input_enabled:
+            self.text_input_thread = threading.Thread(target=self._text_input_loop, daemon=True)
+            self.text_input_thread.start()
+            print("📝 Text input enabled. You can type messages in the terminal.")
+        
+        # Start processing thread
         self.processing_thread = threading.Thread(target=self._process_audio, daemon=True)
         self.processing_thread.start()
         
         # Start real-time transcription thread
         self.realtime_transcript_thread = threading.Thread(target=self._realtime_transcription_loop, daemon=True)
         self.realtime_transcript_thread.start()
-    
+
     def stop(self, force_kill=False, timeout=1.0):
-        """
-        Stop the speech processing system
-        
-        Args:
-            force_kill (bool): If True, forcefully terminate threads that don't stop gracefully
-            timeout (float): How long to wait for graceful shutdown before force killing
-        """
+        """Enhanced stop method that handles text input thread"""
         print("Stopping speech processor...")
         
         # Set stop flag
@@ -1197,12 +1206,14 @@ class VoiceAssistantSpeechProcessor:
         except Exception as e:
             print(f"Error cleaning up speaker identifier: {e}")
         
-        # List of threads to manage
+        # List of threads to manage (including text input thread)
         threads_to_stop = []
         if self.processing_thread and self.processing_thread.is_alive():
             threads_to_stop.append(("processing_thread", self.processing_thread))
         if self.realtime_transcript_thread and self.realtime_transcript_thread.is_alive():
             threads_to_stop.append(("realtime_transcript_thread", self.realtime_transcript_thread))
+        if self.text_input_thread and self.text_input_thread.is_alive():
+            threads_to_stop.append(("text_input_thread", self.text_input_thread))
         
         # Also check speaker identifier threads
         if hasattr(self.speaker_id, '_auto_save_thread') and self.speaker_id._auto_save_thread.is_alive():
@@ -1239,7 +1250,51 @@ class VoiceAssistantSpeechProcessor:
                     print(f"Error force killing {thread_name}: {e}")
         
         print("Speech processor stopped.")
-    
+
+    def _text_input_loop(self):
+        """Background thread for text input"""
+        print("\n" + "="*50)
+        print("📝 TEXT INPUT ACTIVE")
+        print("Type messages to interact with the assistant.")
+        print("Type 'quit' or press Ctrl+C to exit.")
+        print("="*50 + "\n")
+        
+        while not self.should_stop:
+            try:
+                # Non-blocking input check (platform specific)
+                if self._has_pending_input():
+                    text_input = input("💬 ").strip()
+                    
+                    if text_input.lower() in ['quit', 'exit', 'q']:
+                        print("Exiting...")
+                        break
+                    
+                    if text_input:
+                        # Put text input in queue for main processing loop
+                        self.text_input_queue.put(text_input)
+                
+                time.sleep(0.1)  # Small delay to prevent busy waiting
+                
+            except (EOFError, KeyboardInterrupt):
+                print("\nText input interrupted.")
+                break
+            except Exception as e:
+                print(f"Error in text input: {e}")
+                time.sleep(0.5)
+
+    def _has_pending_input(self):
+        """Check if there's pending input without blocking"""
+        try:
+            if sys.platform == 'win32':
+                import msvcrt
+                return msvcrt.kbhit()
+            else:
+                # Unix-like systems
+                return select.select([sys.stdin], [], [], 0.0)[0]
+        except:
+            # Fallback: always return True (will block on input)
+            return True
+
     def _force_kill_thread(self, thread, thread_name="unknown"):
         """
         Force kill a thread using ctypes (platform dependent)
@@ -1303,11 +1358,19 @@ class VoiceAssistantSpeechProcessor:
         time.sleep(0.1)
 
     def _process_audio(self):
-        """Main audio processing loop"""
+        """Enhanced main audio processing loop with text input support"""
         audio_buffer = deque(maxlen=int(16000 * 0.5))  # 0.5 second buffer
         
         while not self.should_stop:
             try:
+                # Check for text input first
+                if not self.text_input_queue.empty():
+                    try:
+                        text_input = self.text_input_queue.get_nowait()
+                        self._process_text_input(text_input)
+                    except queue.Empty:
+                        pass
+                
                 # Get audio chunk
                 chunk = self.audio_capture.get_audio_chunk()
                 if chunk is None:
@@ -1369,7 +1432,62 @@ class VoiceAssistantSpeechProcessor:
             except Exception as e:
                 print(f"Error in audio processing: {e}")
                 time.sleep(0.1)
-    
+
+    def _get_text_speaker_id(self) -> str:
+        """Determine speaker ID for text input"""
+        # If we have a current speaker from voice, use that
+        if self.current_speaker:
+            return self.current_speaker
+        
+        # Check if we have any recent speakers
+        if hasattr(self.callback, 'active_speakers') and self.callback.active_speakers:
+            return list(self.callback.active_speakers)[-1]
+        
+        # Check conversation history
+        if hasattr(self.callback, 'current_conversation') and self.callback.current_conversation:
+            return self.callback.current_conversation[-1].speaker_id
+        
+        # Default to text user
+        return "TEXT_USER"
+
+    def enable_text_input(self):
+        """Enable text input mode"""
+        if not self.text_input_enabled:
+            self.text_input_enabled = True
+            if self.text_input_thread is None or not self.text_input_thread.is_alive():
+                self.text_input_thread = threading.Thread(target=self._text_input_loop, daemon=True)
+                self.text_input_thread.start()
+            print("✅ Text input enabled")
+
+    def disable_text_input(self):
+        """Disable text input mode"""
+        self.text_input_enabled = False
+        print("❌ Text input disabled")
+
+    def _process_text_input(self, text_input: str):
+        """Process text input and send through callback system"""
+        current_time = time.time()
+        
+        # Determine speaker ID - use current speaker or default
+        speaker_id = self._get_text_speaker_id()
+        
+        print(f"📝 Processing text from {speaker_id}: '{text_input}'")
+        
+        # Create final transcript segment (same as voice processing)
+        segment = TranscriptSegment(
+            text=text_input,
+            speaker_id=speaker_id,
+            start_time=current_time,
+            end_time=current_time,
+            confidence=1.0,  # Text input has perfect confidence
+            is_final=True
+        )
+        
+        # Send through callback system
+        self.callback.on_transcript_final(segment)
+        
+        print(f"✅ Text input processed as {speaker_id}")
+
     def _realtime_transcription_loop(self):
         """Enhanced background thread for real-time transcription with word boundary detection"""
         while not self.should_stop:
