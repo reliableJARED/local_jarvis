@@ -547,7 +547,7 @@ if __name__ == "__main__":
     
     # Example 1: Text-to-image generation
     image1 = generator.text_to_image(
-        prompt="photograph, photo of a large ape, black fur, green eyes, kneeling in front of an alter, looking up with a remorseful expression, soft warm lighting, 8k",
+        prompt="photograph, photo of a sexy woman, tan skin, pixie cut blond hair, green eyes, wearing a lacy bra and matching panties, standing with one hand on her hip, the dress pooled at her feet, looking into the camera with a playful smile, soft lighting, 8k",
         output_path="step1_text2img.png"
     )
     
