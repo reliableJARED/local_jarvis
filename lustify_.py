@@ -547,11 +547,14 @@ if __name__ == "__main__":
     
     # Example 1: Text-to-image generation
     image1 = generator.text_to_image(
-        prompt="photograph, photo of a sexy woman, tan skin, pixie cut blond hair, green eyes, naked and on top of a man, cum on her lips and chin, hands gripping his hips, looking into the camera with a satisfied smile, soft lighting, 8k",
+        
+        prompt="photograph, photo of monkey eating a banana, 8k",
+
         output_path="step1_text2img.png"
     )
     
     #Image to Image does NOT work well DO NOT BOTHER USING
+    #Leaving in place as it may just need more work but research online suggest it's not very effective
     """if image1:
         # Example 2: Image-to-image transformation with LOWER strength for consistency
         image2 = generator.image_to_image(

@@ -1434,18 +1434,32 @@ class VoiceAssistantSpeechProcessor:
                 time.sleep(0.1)
 
     def _get_text_speaker_id(self) -> str:
-        """Determine speaker ID for text input"""
-        # If we have a current speaker from voice, use that
-        if self.current_speaker:
-            return self.current_speaker
+        """Determine speaker ID for text input - prioritize primary speaker"""
         
-        # Check if we have any recent speakers
+        # First, check if jarvis has a primary speaker set
+        if hasattr(self.callback, 'jarvis') and self.callback.jarvis.primary_speaker:
+            return self.callback.jarvis.primary_speaker
+        
+        # Second, check if we have any recent non-assistant speakers
         if hasattr(self.callback, 'active_speakers') and self.callback.active_speakers:
-            return list(self.callback.active_speakers)[-1]
+            # Filter out assistant speakers
+            human_speakers = [
+                speaker for speaker in self.callback.active_speakers 
+                if speaker != "USER_00" and 
+                (not hasattr(self.callback, 'jarvis') or 
+                speaker != getattr(self.callback.jarvis, 'jarvis_voice_id', None))
+            ]
+            if human_speakers:
+                return human_speakers[-1]  # Most recent human speaker
         
-        # Check conversation history
+        # Third, check conversation history for non-assistant speakers
         if hasattr(self.callback, 'current_conversation') and self.callback.current_conversation:
-            return self.callback.current_conversation[-1].speaker_id
+            # Find the most recent human speaker in conversation
+            for segment in reversed(self.callback.current_conversation):
+                if (segment.speaker_id != "USER_00" and 
+                    (not hasattr(self.callback, 'jarvis') or 
+                    segment.speaker_id != getattr(self.callback.jarvis, 'jarvis_voice_id', None))):
+                    return segment.speaker_id
         
         # Default to text user
         return "TEXT_USER"
@@ -1468,12 +1482,12 @@ class VoiceAssistantSpeechProcessor:
         """Process text input and send through callback system"""
         current_time = time.time()
         
-        # Determine speaker ID - use current speaker or default
+        # Determine speaker ID - prioritize primary speaker
         speaker_id = self._get_text_speaker_id()
         
-        print(f"📝 Processing text from {speaker_id}: '{text_input}'")
+        print(f"💬 📝 Processing text from {speaker_id}: '{text_input}'")
         
-        # Create final transcript segment (same as voice processing)
+        # Create final transcript segment with text input flag
         segment = TranscriptSegment(
             text=text_input,
             speaker_id=speaker_id,
@@ -1483,10 +1497,15 @@ class VoiceAssistantSpeechProcessor:
             is_final=True
         )
         
+        # Add a flag to indicate this is text input (if TranscriptSegment supports it)
+        if hasattr(segment, 'is_text_input'):
+            segment.is_text_input = True
+        
         # Send through callback system
         self.callback.on_transcript_final(segment)
         
         print(f"✅ Text input processed as {speaker_id}")
+
 
     def _realtime_transcription_loop(self):
         """Enhanced background thread for real-time transcription with word boundary detection"""

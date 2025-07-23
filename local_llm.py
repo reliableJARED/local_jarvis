@@ -676,15 +676,159 @@ class Jarvis:
         with self.state_lock:
             self.last_speech_time = time.time()
     
+    def _is_valid_human_speaker(self, speaker_id: str) -> bool:
+        """Check if speaker_id is a valid human speaker (not the assistant)"""
+        if not speaker_id:
+            return False
+        
+        # Check against known assistant voice IDs
+        if self.jarvis_voice_id and speaker_id == self.jarvis_voice_id:
+            if self.config.debug_mode:
+                print(f"🚫 Rejecting assistant voice as primary: {speaker_id}")
+            return False
+        
+        # Additional check: user_00 is commonly used for the first/system speaker
+        if speaker_id == "user_00":
+            if self.config.debug_mode:
+                print(f"🚫 Rejecting user_00 as primary speaker: {speaker_id}")
+            return False
+        
+        return True
+
+    def _process_final_transcript(self, segment: TranscriptSegment):
+        """Process final transcript for prompts - NON-BLOCKING VERSION"""
+        # Create unique identifier for this segment to avoid duplicate processing
+        segment_id = f"{segment.speaker_id}_{segment.start_time}_{segment.text}"
+
+        # CRITICAL: Ignore system voice early
+        if not self._is_valid_human_speaker(segment.speaker_id):
+            if self.config.debug_mode:
+                print(f"🔄 Skipping invalid speaker ({segment.speaker_id}): {segment.text}")
+            return
+        
+        # Quick duplicate check
+        if segment_id in self._processed_segments:
+            if self.config.debug_mode:
+                print(f"🔄 Skipping already processed segment: {segment.text}")
+            return
+        
+        # Mark as processed
+        self._processed_segments.add(segment_id)
+        
+        # Clean up old processed segments (keep only recent ones)
+        if len(self._processed_segments) > 100:
+            segments_list = list(self._processed_segments)
+            self._processed_segments = set(segments_list[-50:])
+        
+        text_lower = segment.text.lower().strip()
+        
+        # Capture current state safely
+        with self.state_lock:
+            current_state = self.state
+            current_in_conversation = self.in_conversation
+            current_primary_speaker = self.primary_speaker
+
+        # CASE 1: Wake word detected in IDLE state (not in conversation or continuous mode disabled)
+        if ((current_state == JarvisState.IDLE or current_state == JarvisState.LISTENING) and 
+            (not current_in_conversation or not self.config.continuous_conversation) and
+            self._contains_wake_word(text_lower)):
+            
+            print(f"Wake word detected in final transcript from valid speaker: {segment.speaker_id}")
+            
+            # Start conversation ONLY with valid human speaker
+            with self.state_lock:
+                if not self.in_conversation:
+                    self._start_conversation_internal(segment.speaker_id)
+            
+            # Extract and queue the prompt part
+            prompt_clean = self._clean_prompt(segment.text)
+            if self._is_valid_prompt(prompt_clean):
+                print(f"Processing wake word + prompt: '{prompt_clean}'")
+                with self.prompt_queue_lock:
+                    self.prompt_queue.append(prompt_clean)
+            else:
+                print(f"Wake word detected, waiting for prompt...")
+            return
+        
+        # CASE 2: Continuous conversation mode - any speech from primary speaker is a prompt
+        elif (current_state == JarvisState.IDLE and 
+            current_in_conversation and 
+            self.config.continuous_conversation and
+            segment.speaker_id == current_primary_speaker):
+            
+            prompt_clean = segment.text.strip()
+            if self._is_valid_prompt(prompt_clean):
+                print(f"Continuous conversation prompt: '{prompt_clean}'")
+                with self.prompt_queue_lock:
+                    self.prompt_queue.append(prompt_clean)
+            else:
+                print(f"Invalid prompt in continuous mode: '{prompt_clean}'")
+            return
+        
+        # CASE 3: Already in LISTENING state - this is the most common case after wake word
+        elif current_state == JarvisState.LISTENING and segment.speaker_id == current_primary_speaker:
+            # For final transcript in listening state, use the full prompt directly
+            prompt_clean = self._clean_prompt(segment.text)
+            
+            if self._is_valid_prompt(prompt_clean):
+                print(f"Processing final prompt: '{prompt_clean}'")
+                with self.prompt_queue_lock:
+                    self.prompt_queue.append(prompt_clean)
+        
+        # CASE 4: Wake word from different VALID speaker during conversation (speaker switch)
+        elif (current_in_conversation and 
+            self._contains_wake_word(text_lower) and 
+            segment.speaker_id != current_primary_speaker and
+            self._is_valid_human_speaker(segment.speaker_id)):  # ADDED VALIDATION
+            
+            print(f"Wake word detected by different VALID speaker - switching primary speaker")
+            print(f"Previous: {current_primary_speaker} → New: {segment.speaker_id}")
+            
+            # Reset primary speaker and restart conversation state
+            with self.state_lock:
+                self.primary_speaker = segment.speaker_id
+                self._set_state_internal(JarvisState.LISTENING)
+                self.wake_word_detected_time = time.time()
+                self.last_speech_time = time.time()
+                self.prompt_buffer.clear()
+            
+            # Clear any pending prompts from previous speaker
+            with self.prompt_queue_lock:
+                self.prompt_queue.clear()
+            
+            # Process any prompt that came with the wake word
+            prompt_clean = self._clean_prompt(segment.text)
+            if self._is_valid_prompt(prompt_clean):
+                print(f"Processing speaker switch + prompt: '{prompt_clean}'")
+                with self.prompt_queue_lock:
+                    self.prompt_queue.append(prompt_clean)
+            
+            return
+        
+        # CASE 5: Handle calibration text detection
+        elif segment.text.strip() == self.self_voice_sample_text().strip():
+            print("🎯 Detected calibration transcript - setting voice ID")
+            self.set_self_voice_id(segment.speaker_id)
+            return
+        
+        # CASE 6: Any other case - log and ignore
+        else:
+            if self.config.debug_mode:
+                print(f"📝 Ignoring transcript - State: {current_state.value}, Speaker: {segment.speaker_id}, Primary: {current_primary_speaker}, In_conv: {current_in_conversation}")
+
     def _process_live_transcript(self, text: str, speaker_id: str):
         """Process real-time transcript for wake words and interrupts"""
+        # CRITICAL: Early validation of speaker
+        if not self._is_valid_human_speaker(speaker_id):
+            return
+        
         text_lower = text.lower().strip()
         
         with self.state_lock:
             # Check for interrupt phrase during thinking
             if self.state == JarvisState.THINKING or self.state == JarvisState.RESPONDING:
                 if self._contains_interrupt_phrase(text_lower):
-                    print(f"Interrupt detected - stopping current processing")
+                    print(f"Interrupt detected from valid speaker - stopping current processing")
                     self._set_state_internal(JarvisState.IDLE)
                     self._reset_prompt_state_internal()
                     self.tts.stop_playback()
@@ -697,7 +841,7 @@ class Jarvis:
             # Check for wake word in idle state OR if not in conversation
             if self.state == JarvisState.IDLE and (not self.in_conversation or not self.config.continuous_conversation):
                 if self._contains_wake_word(text_lower):
-                    print(f"Wake word detected")
+                    print(f"Wake word detected from valid speaker: {speaker_id}")
                     self._set_state_internal(JarvisState.LISTENING)
                     # Don't process prompts from live transcript - wait for final
                     return
@@ -707,7 +851,7 @@ class Jarvis:
                 self._contains_wake_word(text_lower) and 
                 speaker_id != self.primary_speaker):
                 
-                print(f"Wake word detected by different speaker - switching primary speaker")
+                print(f"Wake word detected by different VALID speaker - switching primary speaker")
                 print(f"Previous: {self.primary_speaker} → New: {speaker_id}")
                 
                 # Reset primary speaker and restart conversation state
@@ -735,104 +879,37 @@ class Jarvis:
                     print(f"Continuous conversation prompt: {prompt_clean}")
                     # Don't process from live transcript - wait for final
                     return
-    
-    
-    def set_self_voice_id(self,speaker_id):
-        print(f"set my voice ID as: {speaker_id}")
+
+    def _start_conversation_internal(self, speaker_id: str):
+        """Start a conversation with a specific speaker - internal version"""
+        # CRITICAL: Validate speaker before starting conversation
+        if not self._is_valid_human_speaker(speaker_id):
+            print(f"🚫 Cannot start conversation with invalid speaker: {speaker_id}")
+            return
+        
+        self.in_conversation = True
+        self._set_state_internal(JarvisState.LISTENING)
+        self.wake_word_detected_time = time.time()
+        self.last_speech_time = time.time()
+        self.primary_speaker = speaker_id
+        self.prompt_buffer.clear()
+
+        print(f"✅ Conversation started with VALID speaker: {speaker_id}")
+
+    def set_self_voice_id(self, speaker_id):
+        """Set the assistant's own voice ID and validate it's not already primary"""
+        print(f"🎯 Setting my voice ID as: {speaker_id}")
         self.jarvis_voice_id = speaker_id
+        
+        # CRITICAL: If this voice ID was somehow set as primary, reset conversation
+        with self.state_lock:
+            if self.primary_speaker == speaker_id:
+                print(f"🚫 WARNING: Assistant voice was set as primary speaker! Resetting conversation...")
+                self._end_conversation_internal()
 
     def self_voice_sample_text(self):
-        return "I need to calibrate my voice. The quick brown fox jumps over the lazy dog"
-                
-    
-    def _process_final_transcript(self, segment: TranscriptSegment):
-        """Process final transcript for prompts - NON-BLOCKING VERSION"""
-        # Create unique identifier for this segment to avoid duplicate processing
-        segment_id = f"{segment.speaker_id}_{segment.start_time}_{segment.text}"
-
-        #Ignore system voice
-        if segment.speaker_id == self.jarvis_voice_id:
-            print(f"🔄 Skipping that's just me saying: {segment.text}")
-            return
-        
-        # Quick duplicate check
-        if segment_id in self._processed_segments:
-            if self.config.debug_mode:
-                print(f"🔄 Skipping already processed segment: {segment.text}")
-            return
-        
-        # Mark as processed
-        self._processed_segments.add(segment_id)
-        
-        # Clean up old processed segments (keep only recent ones)
-        if len(self._processed_segments) > 100:
-            segments_list = list(self._processed_segments)
-            self._processed_segments = set(segments_list[-50:])
-        
-        text_lower = segment.text.lower().strip()
-        
-        # Capture current state safely
-        with self.state_lock:
-            current_state = self.state
-            current_in_conversation = self.in_conversation
-            current_primary_speaker = self.primary_speaker
-        
-
-        # CASE 1: Wake word detected in IDLE state or After speaker switch (not in conversation or continuous mode disabled)
-        if ((current_state == JarvisState.IDLE or current_state == JarvisState.LISTENING) and 
-            (not current_in_conversation or not self.config.continuous_conversation) and
-            self._contains_wake_word(text_lower)):
-            
-            print(f"Wake word detected in final transcript!")
-            
-            # Start conversation if not already started
-            with self.state_lock:
-                if not self.in_conversation:
-                    self._start_conversation_internal(segment.speaker_id)
-            
-            # Extract and queue the prompt part
-            prompt_clean = self._clean_prompt(segment.text)
-            if self._is_valid_prompt(prompt_clean):
-                print(f"Processing wake word + prompt: '{prompt_clean}'")
-                with self.prompt_queue_lock:
-                    self.prompt_queue.append(prompt_clean)
-            else:
-                print(f"Wake word detected, waiting for prompt...")
-            return
-        
-        # CASE 2: Continuous conversation mode - any speech from primary speaker is a prompt
-        elif (current_state == JarvisState.IDLE and 
-              current_in_conversation and 
-              self.config.continuous_conversation and
-              segment.speaker_id == current_primary_speaker):
-            
-            prompt_clean = segment.text.strip()
-            if self._is_valid_prompt(prompt_clean):
-                print(f"Continuous conversation prompt: '{prompt_clean}'")
-                with self.prompt_queue_lock:
-                    self.prompt_queue.append(prompt_clean)
-            else:
-                print(f" Invalid prompt in continuous mode: '{prompt_clean}'")
-            return
-        
-        # CASE 3: Already in LISTENING state - this is the most common case after wake word
-        elif current_state == JarvisState.LISTENING and segment.speaker_id == current_primary_speaker:
-            # For final transcript in listening state, use the full prompt directly
-            prompt_clean = self._clean_prompt(segment.text)
-            
-            if self._is_valid_prompt(prompt_clean):
-                print(f"Processing final prompt: '{prompt_clean}'")
-                with self.prompt_queue_lock:
-                    self.prompt_queue.append(prompt_clean)
-        
-        # CASE 4: Any other state or speaker - log and ignore
-        else:
-            if segment.text.lower() == self.self_voice_sample_text():
-                print("that was calibration transcript")
-                self.set_self_voice_id(segment.speaker_id)
-
-            print(f"Ignoring transcript - State: {current_state.value}, Speaker: {segment.speaker_id}, Primary: {current_primary_speaker}")
-    
+        """Return the calibration text - make it unique to avoid false matches"""
+        return "Voice calibration sequence: The quick brown fox jumps over the lazy dog. Jarvis initialization complete."
     #Kokoro callbacks
     def on_audio_ready(self,audio_data):
             print(f" Audio ready callback: {audio_data.file_path}")
@@ -980,17 +1057,6 @@ class Jarvis:
             with self.state_lock:
                 self._set_state_internal(JarvisState.IDLE)
                 self._reset_prompt_state_internal()
-    
-    def _start_conversation_internal(self, speaker_id: str):
-        """Start a conversation with a specific speaker - internal version"""
-        self.in_conversation = True
-        self._set_state_internal(JarvisState.LISTENING)
-        self.wake_word_detected_time = time.time()
-        self.last_speech_time = time.time()
-        self.primary_speaker = speaker_id
-        self.prompt_buffer.clear()
-
-        print(f"Conversation started with {speaker_id}")
     
     def _end_conversation_internal(self):
         """End the current conversation and return to wake word required mode - internal version"""
