@@ -232,15 +232,23 @@ class ImageVideoGenerator:
                         pipe.enable_vae_slicing()
                     if hasattr(pipe, 'enable_vae_tiling'):
                         pipe.enable_vae_tiling()
+                    # Enable model CPU offload for video generation to save memory
+                    if hasattr(pipe, 'enable_model_cpu_offload'):
+                        try:
+                            pipe.enable_model_cpu_offload()
+                            print("✓ Model CPU offload enabled for video generation")
+                        except Exception as e:
+                            print(f"⚠️  Model CPU offload not available: {e}")
                     print("✓ VAE optimizations enabled for video generation")
                 
-                # Enable sequential CPU offload for better memory management on Mac
-                try:
-                    if hasattr(pipe, 'enable_sequential_cpu_offload'):
-                        pipe.enable_sequential_cpu_offload()
-                        print("✓ Sequential CPU offload enabled for MPS")
-                except Exception as e:
-                    print(f"⚠️  Sequential CPU offload not available: {e}")
+                # Try sequential CPU offload for non-video pipelines
+                if pipeline_type != "text-to-video":
+                    try:
+                        if hasattr(pipe, 'enable_sequential_cpu_offload'):
+                            pipe.enable_sequential_cpu_offload()
+                            print("✓ Sequential CPU offload enabled for MPS")
+                    except Exception as e:
+                        print(f"⚠️  Sequential CPU offload not available: {e}")
             
             elif self.is_cpu:
                 # CPU optimizations
@@ -399,10 +407,11 @@ class ImageVideoGenerator:
                      height=1024,
                      fps=8,                  # Output frame rate
                      use_enhanced_prompting=True,
-                     export_format="gif",    # "gif" or "mp4"
+                     export_format="mp4",    # Changed default to MP4
+                     auto_fallback=True,     # Automatically reduce settings on memory error
                      **kwargs):
         """
-        Generate video from text prompt using AnimateDiff
+        Generate video from text prompt using AnimateDiff with memory-aware fallback
         
         Args:
             prompt (str): Text description of desired video
@@ -415,13 +424,13 @@ class ImageVideoGenerator:
             fps (int): Frames per second for output video
             use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
             export_format (str): "gif" or "mp4"
+            auto_fallback (bool): Automatically try reduced settings on memory error
             **kwargs: Additional generation parameters
         
         Returns:
             list: List of PIL Images representing video frames
         """
         print(f"🎬 Generating video from text: '{prompt}'")
-        print(f"📊 Video specs: {width}x{height}, {num_frames} frames @ {fps}fps")
         
         # Enhance prompt for LUSTIFY model if requested
         if use_enhanced_prompting:
@@ -431,59 +440,464 @@ class ImageVideoGenerator:
             print(f"🎨 Enhanced prompt: '{enhanced_prompt}'")
             prompt = enhanced_prompt
         
-        # Get video pipeline
-        pipe = self._get_pipeline("text-to-video")
+        # Progressive fallback configurations for memory management
+        configs = self._get_video_configs(width, height, num_frames, num_inference_steps)
         
-        # Adjust parameters for device capabilities
-        if self.is_cpu:
-            # Reduce everything for CPU
-            width = min(width, 512)
-            height = min(height, 512)
-            num_frames = min(num_frames, 8)
-            num_inference_steps = min(num_inference_steps, 15)
-            print(f"⚠️  Running on CPU - using reduced settings: {width}x{height}, {num_frames} frames, {num_inference_steps} steps")
-        elif self.is_mps:
-            # MPS can handle better settings but still optimize
-            num_frames = min(num_frames, 16)  # Keep at 16 for optimal results
-            num_inference_steps = min(num_inference_steps, 20)
-            print(f"🚀 Running on MPS - optimized settings: {width}x{height}, {num_frames} frames, {num_inference_steps} steps")
-        
-        # Add video-specific negative prompt
-        negative_prompt = kwargs.pop('negative_prompt', None)
-        if not negative_prompt:
-            negative_prompt = "blurry, low quality, distorted, deformed, static image, no movement, frozen"
-        
-        # Generation parameters
-        generation_kwargs = {
-            "num_inference_steps": num_inference_steps,
-            "guidance_scale": guidance_scale,
-            "height": height,
-            "width": width,
-            "num_frames": num_frames,
-            "negative_prompt": negative_prompt,
-        }
-        generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
-        
-        try:
-            print("Generating video... (this may take several minutes)")
-            with torch.no_grad():
+        for i, config in enumerate(configs):
+            try:
+                print(f"\n📊 Attempt {i+1}/{len(configs)}: {config['width']}x{config['height']}, {config['frames']} frames, {config['steps']} steps")
+                
+                # Get video pipeline
+                pipe = self._get_pipeline("text-to-video")
+                
+                # Add video-specific negative prompt
+                negative_prompt = kwargs.pop('negative_prompt', None)
+                if not negative_prompt:
+                    negative_prompt = "blurry, low quality, distorted, deformed, static image, no movement, frozen"
+                
+                # Generation parameters
+                generation_kwargs = {
+                    "num_inference_steps": config['steps'],
+                    "guidance_scale": guidance_scale,
+                    "height": config['height'],
+                    "width": config['width'],
+                    "num_frames": config['frames'],
+                    "negative_prompt": negative_prompt,
+                }
+                generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
+                
+                print("Generating video... (this may take several minutes)")
+                
+                # Clear cache before generation
                 if self.is_mps:
-                    with torch.autocast(device_type='cpu', enabled=False):
+                    torch.mps.empty_cache()
+                elif torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                with torch.no_grad():
+                    if self.is_mps:
+                        with torch.autocast(device_type='cpu', enabled=False):
+                            result = pipe(prompt, **generation_kwargs)
+                    else:
                         result = pipe(prompt, **generation_kwargs)
+                    frames = result.frames[0]
+                
+                # Export video
+                self._export_video(frames, output_path, fps, export_format)
+                print(f"✅ Video saved to: {output_path}")
+                print(f"🎯 Final settings used: {config['width']}x{config['height']}, {config['frames']} frames")
+                return frames
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"❌ Attempt {i+1} failed: {error_msg}")
+                
+                # Check if it's a memory error
+                is_memory_error = any(term in error_msg.lower() for term in [
+                    'out of memory', 'memory', 'oom', 'cuda out of memory', 'mps backend out of memory'
+                ])
+                
+                if is_memory_error:
+                    print(f"🧠 Memory error detected, trying reduced settings...")
+                    # Clear cache
+                    if self.is_mps:
+                        torch.mps.empty_cache()
+                    elif torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                    if not auto_fallback or i == len(configs) - 1:
+                        print(f"💡 All configurations failed. Try manually setting lower values:")
+                        print(f"💡 Example: width=512, height=512, num_frames=8")
+                        return None
+                    else:
+                        print(f"🔄 Trying next configuration...")
+                        continue
                 else:
-                    result = pipe(prompt, **generation_kwargs)
-                frames = result.frames[0]
+                    # Non-memory error, don't continue
+                    print(f"❌ Non-memory error occurred: {error_msg}")
+                    return None
+        
+        print("❌ All fallback configurations failed")
+        return None
+    
+    def _get_video_configs(self, width, height, num_frames, num_inference_steps):
+        """
+        Generate progressive fallback configurations for video generation
+        Starting from requested settings and progressively reducing memory usage
+        """
+        configs = []
+        
+        if self.is_cpu:
+            # CPU configurations - very conservative
+            configs = [
+                {"width": 512, "height": 512, "frames": 8, "steps": 15},
+                {"width": 448, "height": 448, "frames": 8, "steps": 12},
+                {"width": 384, "height": 384, "frames": 6, "steps": 10},
+            ]
+        elif self.is_mps:
+            # MPS configurations - progressive fallback for Mac
+            configs = [
+                # Start with user request (but capped for sanity)
+                {"width": min(width, 1024), "height": min(height, 1024), "frames": min(num_frames, 16), "steps": min(num_inference_steps, 20)},
+                # First fallback: reduce resolution but keep frames
+                {"width": 768, "height": 768, "frames": min(num_frames, 16), "steps": 18},
+                # Second fallback: reduce frames
+                {"width": 768, "height": 768, "frames": 12, "steps": 16},
+                # Third fallback: further reduce resolution
+                {"width": 640, "height": 640, "frames": 12, "steps": 15},
+                # Fourth fallback: minimal frames
+                {"width": 640, "height": 640, "frames": 8, "steps": 15},
+                # Last resort: very conservative
+                {"width": 512, "height": 512, "frames": 8, "steps": 12},
+            ]
+        else:
+            # GPU configurations
+            configs = [
+                # Start with user request
+                {"width": width, "height": height, "frames": num_frames, "steps": num_inference_steps},
+                # Progressive fallbacks
+                {"width": min(width, 1024), "height": min(height, 1024), "frames": min(num_frames, 16), "steps": min(num_inference_steps, 25)},
+                {"width": 768, "height": 768, "frames": 16, "steps": 20},
+                {"width": 768, "height": 768, "frames": 12, "steps": 18},
+                {"width": 640, "height": 640, "frames": 12, "steps": 15},
+                {"width": 512, "height": 512, "frames": 8, "steps": 12},
+            ]
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_configs = []
+        for config in configs:
+            config_tuple = (config['width'], config['height'], config['frames'], config['steps'])
+            if config_tuple not in seen:
+                seen.add(config_tuple)
+                unique_configs.append(config)
+        
+        return unique_configs
+    
+    def text_to_video_quick(self, 
+                           prompt, 
+                           output_path="quick_video.mp4",  # Changed default to MP4
+                           export_format="mp4",            # Changed default to MP4
+                           use_enhanced_prompting=True):
+        """
+        Quick video generation with Mac-optimized settings
+        Perfect for testing and fast iterations
+        
+        Args:
+            prompt (str): Text description of desired video
+            output_path (str): Path to save generated video
+            export_format (str): "mp4" or "gif" 
+            use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
             
-            # Export video
-            self._export_video(frames, output_path, fps, export_format)
-            print(f"✅ Video saved to: {output_path}")
-            return frames
+        Returns:
+            list: List of PIL Images representing video frames
+        """
+        print("🚀 Quick video generation (Mac-optimized settings)")
+        
+        # Conservative settings for Mac
+        if self.is_mps:
+            return self.text_to_video(
+                prompt=prompt,
+                output_path=output_path,
+                width=640,
+                height=640,
+                num_frames=8,
+                num_inference_steps=15,
+                guidance_scale=7.0,
+                fps=8,
+                export_format=export_format,
+                use_enhanced_prompting=use_enhanced_prompting,
+                auto_fallback=True
+            )
+        else:
+            # CPU or other devices
+            return self.text_to_video(
+                prompt=prompt,
+                output_path=output_path,
+                width=512,
+                height=512,
+                num_frames=6,
+                num_inference_steps=12,
+                guidance_scale=6.0,
+                fps=6,
+                export_format=export_format,
+                use_enhanced_prompting=use_enhanced_prompting,
+                auto_fallback=True
+            )
+    
+    def image_to_video(self,
+                      prompt,
+                      input_image,
+                      output_path="image_to_video_output.mp4",
+                      num_frames=16,
+                      num_inference_steps=25,
+                      guidance_scale=8.0,
+                      fps=8,
+                      export_format="mp4",
+                      use_enhanced_prompting=True,
+                      auto_fallback=True,
+                      **kwargs):
+        """
+        Generate video from an input image using AnimateDiff
+        Animates a static image based on text prompt
+        
+        Args:
+            prompt (str): Text description of desired animation/movement
+            input_image (str or PIL.Image): Path to input image or PIL Image object
+            output_path (str): Path to save generated video
+            num_frames (int): Number of frames to generate
+            num_inference_steps (int): Number of denoising steps
+            guidance_scale (float): Guidance scale for generation
+            fps (int): Frames per second for output video
+            export_format (str): "mp4" or "gif"
+            use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
+            auto_fallback (bool): Automatically try reduced settings on memory error
+            **kwargs: Additional generation parameters
+        
+        Returns:
+            list: List of PIL Images representing video frames
+        """
+        print(f"🎬 Generating video from image with prompt: '{prompt}'")
+        
+        # Load and prepare input image
+        if isinstance(input_image, str):
+            try:
+                input_image = Image.open(input_image).convert("RGB")
+                print(f"📷 Loaded input image: {input_image.size}")
+            except Exception as e:
+                print(f"❌ Error loading input image: {e}")
+                return None
+        
+        # Get image dimensions
+        original_width, original_height = input_image.size
+        
+        # Enhance prompt for video generation
+        if use_enhanced_prompting:
+            enhanced_prompt = self._enhance_prompt_for_lustify(prompt)
+            enhanced_prompt = self._enhance_prompt_for_video(enhanced_prompt)
+            print(f"🎨 Enhanced prompt: '{enhanced_prompt}'")
+            prompt = enhanced_prompt
+        
+        # Progressive fallback configurations for image-to-video
+        configs = self._get_image_to_video_configs(original_width, original_height, num_frames, num_inference_steps)
+        
+        for i, config in enumerate(configs):
+            try:
+                print(f"\n📊 Attempt {i+1}/{len(configs)}: {config['width']}x{config['height']}, {config['frames']} frames, {config['steps']} steps")
+                
+                # Resize input image to match config
+                if config['width'] != original_width or config['height'] != original_height:
+                    resized_image = input_image.resize((config['width'], config['height']))
+                    print(f"🔄 Resized image: {original_width}x{original_height} → {config['width']}x{config['height']}")
+                else:
+                    resized_image = input_image
+                
+                # Get video pipeline
+                pipe = self._get_pipeline("text-to-video")
+                
+                # Add video-specific negative prompt
+                negative_prompt = kwargs.pop('negative_prompt', None)
+                if not negative_prompt:
+                    negative_prompt = "blurry, low quality, distorted, deformed, static image, no movement, frozen"
+                
+                # Generation parameters for image-to-video
+                generation_kwargs = {
+                    "prompt": prompt,
+                    "image": resized_image,  # Input image for conditioning
+                    "num_inference_steps": config['steps'],
+                    "guidance_scale": guidance_scale,
+                    "height": config['height'],
+                    "width": config['width'],
+                    "num_frames": config['frames'],
+                    "negative_prompt": negative_prompt,
+                }
+                generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
+                
+                print("Generating video from image... (this may take several minutes)")
+                
+                # Clear cache before generation
+                if self.is_mps:
+                    torch.mps.empty_cache()
+                elif torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                with torch.no_grad():
+                    if self.is_mps:
+                        with torch.autocast(device_type='cpu', enabled=False):
+                            result = pipe(**generation_kwargs)
+                    else:
+                        result = pipe(**generation_kwargs)
+                    frames = result.frames[0]
+                
+                # Export video
+                self._export_video(frames, output_path, fps, export_format)
+                print(f"✅ Video saved to: {output_path}")
+                print(f"🎯 Final settings used: {config['width']}x{config['height']}, {config['frames']} frames")
+                return frames
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"❌ Attempt {i+1} failed: {error_msg}")
+                
+                # Check if it's a memory error
+                is_memory_error = any(term in error_msg.lower() for term in [
+                    'out of memory', 'memory', 'oom', 'cuda out of memory', 'mps backend out of memory'
+                ])
+                
+                if is_memory_error:
+                    print(f"🧠 Memory error detected, trying reduced settings...")
+                    # Clear cache
+                    if self.is_mps:
+                        torch.mps.empty_cache()
+                    elif torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                    if not auto_fallback or i == len(configs) - 1:
+                        print(f"💡 All configurations failed. Try manually setting lower values")
+                        return None
+                    else:
+                        print(f"🔄 Trying next configuration...")
+                        continue
+                else:
+                    # Non-memory error, don't continue
+                    print(f"❌ Non-memory error occurred: {error_msg}")
+                    return None
+        
+        print("❌ All fallback configurations failed")
+        return None
+    
+    def _get_image_to_video_configs(self, original_width, original_height, num_frames, num_inference_steps):
+        """
+        Generate progressive fallback configurations for image-to-video generation
+        Takes into account original image dimensions
+        """
+        configs = []
+        
+        # Calculate aspect ratio
+        aspect_ratio = original_width / original_height
+        
+        if self.is_cpu:
+            # CPU configurations - very conservative
+            configs = [
+                {"width": 512, "height": 512, "frames": 8, "steps": 15},
+                {"width": 448, "height": 448, "frames": 8, "steps": 12},
+                {"width": 384, "height": 384, "frames": 6, "steps": 10},
+            ]
+        elif self.is_mps:
+            # MPS configurations - try to preserve aspect ratio when possible
+            configs = []
             
-        except Exception as e:
-            print(f"❌ Error generating video: {e}")
-            print(f"💡 Try reducing num_frames or resolution for your device")
-            print(f"💡 Current settings: {width}x{height}, {num_frames} frames")
-            return None
+            # Try original size first if reasonable
+            if original_width <= 1024 and original_height <= 1024:
+                configs.append({
+                    "width": original_width, 
+                    "height": original_height, 
+                    "frames": min(num_frames, 16), 
+                    "steps": min(num_inference_steps, 20)
+                })
+            
+            # Add progressive fallbacks with aspect ratio preservation
+            target_sizes = [(768, 768), (640, 640), (512, 512)]
+            
+            for target_w, target_h in target_sizes:
+                # Try to preserve aspect ratio
+                if aspect_ratio > 1:  # Landscape
+                    width = target_w
+                    height = int(target_w / aspect_ratio)
+                    # Ensure height is divisible by 8 (requirement for diffusion models)
+                    height = (height // 8) * 8
+                    if height < 256:
+                        height = 256
+                else:  # Portrait or square
+                    height = target_h
+                    width = int(target_h * aspect_ratio)
+                    # Ensure width is divisible by 8
+                    width = (width // 8) * 8
+                    if width < 256:
+                        width = 256
+                
+                configs.append({
+                    "width": width,
+                    "height": height,
+                    "frames": min(num_frames, 12),
+                    "steps": min(num_inference_steps, 18)
+                })
+            
+            # Add safe fallback
+            configs.append({"width": 512, "height": 512, "frames": 8, "steps": 12})
+            
+        else:
+            # GPU configurations
+            configs = [
+                # Try original dimensions if reasonable
+                {"width": min(original_width, 1024), "height": min(original_height, 1024), "frames": num_frames, "steps": num_inference_steps},
+                # Progressive fallbacks
+                {"width": 768, "height": 768, "frames": 16, "steps": 20},
+                {"width": 640, "height": 640, "frames": 12, "steps": 18},
+                {"width": 512, "height": 512, "frames": 8, "steps": 12},
+            ]
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_configs = []
+        for config in configs:
+            config_tuple = (config['width'], config['height'], config['frames'], config['steps'])
+            if config_tuple not in seen:
+                seen.add(config_tuple)
+                unique_configs.append(config)
+        
+        return unique_configs
+    
+    def image_to_video_quick(self,
+                            prompt,
+                            input_image,
+                            output_path="quick_img2vid.mp4",
+                            export_format="mp4",
+                            use_enhanced_prompting=True):
+        """
+        Quick image-to-video generation with Mac-optimized settings
+        Perfect for testing and fast iterations
+        
+        Args:
+            prompt (str): Text description of desired animation
+            input_image (str or PIL.Image): Path to input image or PIL Image object
+            output_path (str): Path to save generated video
+            export_format (str): "mp4" or "gif"
+            use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
+            
+        Returns:
+            list: List of PIL Images representing video frames
+        """
+        print("🚀 Quick image-to-video generation (Mac-optimized settings)")
+        
+        # Conservative settings for Mac
+        if self.is_mps:
+            return self.image_to_video(
+                prompt=prompt,
+                input_image=input_image,
+                output_path=output_path,
+                num_frames=8,
+                num_inference_steps=15,
+                guidance_scale=7.0,
+                fps=8,
+                export_format=export_format,
+                use_enhanced_prompting=use_enhanced_prompting,
+                auto_fallback=True
+            )
+        else:
+            # CPU or other devices
+            return self.image_to_video(
+                prompt=prompt,
+                input_image=input_image,
+                output_path=output_path,
+                num_frames=6,
+                num_inference_steps=12,
+                guidance_scale=6.0,
+                fps=6,
+                export_format=export_format,
+                use_enhanced_prompting=use_enhanced_prompting,
+                auto_fallback=True
+            )
     
     def _export_video(self, frames, output_path, fps, format_type):
         """Export frames as video file"""
@@ -563,7 +977,6 @@ class ImageVideoGenerator:
             
         return enhanced
     
-    # Keep all your existing methods (image_to_image, inpaint, etc.)
     def image_to_image(self, 
                       prompt, 
                       input_image,
@@ -575,10 +988,77 @@ class ImageVideoGenerator:
                       **kwargs):
         """
         Transform an existing image based on text prompt
-        (Implementation same as original - keeping for compatibility)
+        
+        Args:
+            prompt (str): Text description of desired changes
+            input_image (str or PIL.Image): Path to input image or PIL Image object
+            output_path (str): Path to save generated image
+            strength (float): How much to transform the image (0.0-1.0)
+            num_inference_steps (int): Number of denoising steps
+            guidance_scale (float): Guidance scale for generation
+            use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
+            **kwargs: Additional generation parameters
+        
+        Returns:
+            PIL.Image: Generated image
         """
-        # [Keep your existing image_to_image implementation]
-        pass
+        print(f"🖼️ Transforming image with prompt: '{prompt}'")
+        
+        # Load and prepare input image
+        if isinstance(input_image, str):
+            try:
+                input_image = Image.open(input_image).convert("RGB")
+                print(f"📷 Loaded input image: {input_image.size}")
+            except Exception as e:
+                print(f"❌ Error loading input image: {e}")
+                return None
+        
+        # Enhance prompt for LUSTIFY model if requested
+        if use_enhanced_prompting:
+            enhanced_prompt = self._enhance_prompt_for_lustify(prompt)
+            print(f"🎨 Enhanced prompt: '{enhanced_prompt}'")
+            prompt = enhanced_prompt
+        
+        # Get pipeline
+        pipe = self._get_pipeline("image-to-image")
+        
+        # Add LUSTIFY-specific negative prompt for better quality
+        negative_prompt = kwargs.pop('negative_prompt', None)
+        if not negative_prompt:
+            negative_prompt = "blurry, low quality, distorted, deformed, extra limbs, bad anatomy"
+        
+        # Generation parameters
+        generation_kwargs = {
+            "prompt": prompt,
+            "image": input_image,
+            "strength": strength,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "negative_prompt": negative_prompt,
+        }
+        generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
+        
+        try:
+            print("Transforming image... (this may take a minute)")
+            with torch.no_grad():
+                # Mac-specific inference optimizations
+                if self.is_mps:
+                    # MPS sometimes has issues with certain operations
+                    with torch.autocast(device_type='cpu', enabled=False):
+                        result = pipe(**generation_kwargs)
+                else:
+                    result = pipe(**generation_kwargs)
+                image = result.images[0]
+            
+            # Save image
+            image.save(output_path)
+            print(f"✅ Transformed image saved to: {output_path}")
+            return image
+            
+        except Exception as e:
+            print(f"❌ Error transforming image: {e}")
+            print(f"💡 Try lowering strength or guidance scale")
+            return None
     
     def inpaint(self, 
                prompt,
@@ -591,10 +1071,81 @@ class ImageVideoGenerator:
                **kwargs):
         """
         Inpaint parts of an image based on a mask and text prompt
-        (Implementation same as original - keeping for compatibility)
+        
+        Args:
+            prompt (str): Text description of what to paint in masked area
+            input_image (str or PIL.Image): Path to input image or PIL Image object
+            mask_image (str or PIL.Image): Path to mask image or PIL Image object (white = inpaint)
+            output_path (str): Path to save generated image
+            strength (float): How much to change the masked area (0.0-1.0)
+            num_inference_steps (int): Number of denoising steps
+            guidance_scale (float): Guidance scale for generation
+            **kwargs: Additional generation parameters
+        
+        Returns:
+            PIL.Image: Generated image with inpainted areas
         """
-        # [Keep your existing inpaint implementation]
-        pass
+        print(f"🎨 Inpainting image with prompt: '{prompt}'")
+        
+        # Load and prepare input image
+        if isinstance(input_image, str):
+            try:
+                input_image = Image.open(input_image).convert("RGB")
+                print(f"📷 Loaded input image: {input_image.size}")
+            except Exception as e:
+                print(f"❌ Error loading input image: {e}")
+                return None
+        
+        # Load and prepare mask image
+        if isinstance(mask_image, str):
+            try:
+                mask_image = Image.open(mask_image).convert("L")  # Convert to grayscale
+                print(f"🎭 Loaded mask image: {mask_image.size}")
+            except Exception as e:
+                print(f"❌ Error loading mask image: {e}")
+                return None
+        
+        # Get pipeline
+        pipe = self._get_pipeline("inpainting")
+        
+        # Add LUSTIFY-specific negative prompt for better quality
+        negative_prompt = kwargs.pop('negative_prompt', None)
+        if not negative_prompt:
+            negative_prompt = "blurry, low quality, distorted, deformed, extra limbs, bad anatomy"
+        
+        # Generation parameters
+        generation_kwargs = {
+            "prompt": prompt,
+            "image": input_image,
+            "mask_image": mask_image,
+            "strength": strength,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "negative_prompt": negative_prompt,
+        }
+        generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
+        
+        try:
+            print("Inpainting... (this may take a minute)")
+            with torch.no_grad():
+                # Mac-specific inference optimizations
+                if self.is_mps:
+                    # MPS sometimes has issues with certain operations
+                    with torch.autocast(device_type='cpu', enabled=False):
+                        result = pipe(**generation_kwargs)
+                else:
+                    result = pipe(**generation_kwargs)
+                image = result.images[0]
+            
+            # Save image
+            image.save(output_path)
+            print(f"✅ Inpainted image saved to: {output_path}")
+            return image
+            
+        except Exception as e:
+            print(f"❌ Error inpainting image: {e}")
+            print(f"💡 Try lowering strength or guidance scale")
+            return None
 
 
 # Example usage
@@ -604,28 +1155,55 @@ if __name__ == "__main__":
     
     # Example 1: Text-to-image generation (your existing workflow)
     image1 = generator.text_to_image(
-        prompt="photograph, photo of monkey eating a banana, 8k",
+        prompt="photograph, photo of monkey hanging from a tree, 8k",
         output_path="step1_text2img.png"
     )
     
-    # Example 2: NEW - Text-to-video generation
+    # Example 2: Text-to-video generation
     if image1:
-        print("\n🎬 Now generating video...")
-        video_frames = generator.text_to_video(
+        """print("\n🎬 Trying text-to-video generation...")
+        text_video = generator.text_to_video_quick(
             prompt="photograph, photo of monkey eating a banana, monkey moving naturally, 8k",
-            output_path="step2_text2video.gif",
-            num_frames=16,
-            fps=8,
-            export_format="gif"
-        )
-        
-        if video_frames:
-            print("🎉 Image and video generation complete!")
-            print("Generated files:")
-            print(f"  - Image: step1_text2img.png")
-            print(f"  - Video: step2_text2video.gif")
+            output_path="step2_text2video.mp4"
+        )"""
+        if image1:
+        #if text_video:
+            print("✅ Text-to-video generation successful!")
             
-            # Optional: Also create MP4
-            print("\n🎬 Creating MP4 version...")
-            generator._export_video(video_frames, "step2_text2video.mp4", 8, "mp4")
-            print(f"  - Video MP4: step2_text2video.mp4")
+            # Example 3: Image-to-video generation (animate the generated image)
+            print("\n🎬 Now trying image-to-video generation...")
+            img_video = generator.image_to_video_quick(
+                prompt="monkey moving naturally, eating banana, subtle head movements, chewing motion",
+                input_image="step1_text2img.png",  # Use the generated image
+                output_path="step3_img2video.mp4"
+            )
+
+            #You control all the settings
+            video = generator.image_to_video(
+                prompt="gentle movement",
+                input_image="step1_text2img.png",
+                width=768,           # Your choice
+                height=768,          # Your choice  
+                num_frames=12,       # Your choice
+                num_inference_steps=18,
+                auto_fallback=True   # Falls back if memory fails
+            )
+                        
+            if img_video:
+                print("🎉 All generation types complete!")
+                print("Generated files:")
+                print(f"  - Original Image: step1_text2img.png")
+                print(f"  - Text-to-Video: step2_text2video.mp4")
+                print(f"  - Image-to-Video: step3_img2video.mp4")
+                print("\n💡 Compare the videos:")
+                print("  - Text-to-video: Creates entirely new video based on prompt")
+                print("  - Image-to-video: Animates your existing image with motion")
+            else:
+                print("🎉 Text-to-video generation complete!")
+                print("Generated files:")
+                print(f"  - Original Image: step1_text2img.png")
+                print(f"  - Text-to-Video: step2_text2video.mp4")
+                print("💡 Image-to-video failed - try with smaller image or different prompt")
+        else:
+            print("❌ Text-to-video generation failed.")
+            print("💡 Try with even lower settings or check your system resources")

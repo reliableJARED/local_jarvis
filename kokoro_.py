@@ -38,16 +38,54 @@ class ThreadSafeAudioManager:
         self._stream_lock = threading.Lock()
         self._find_audio_devices()
     
+
     def _find_audio_devices(self):
-        """Find separate input and output devices if available."""
+        """Find separate input and output devices, prioritizing Bluetooth headphones."""
         devices = sd.query_devices()
         
-        # Find default devices
+        # Find default devices as fallback
         self.default_input = sd.default.device[0]   # Input device
         self.default_output = sd.default.device[1]  # Output device
         
-        print(f"🎵 Default input device: {self.default_input}")
-        print(f"🔊 Default output device: {self.default_output}")
+        # Look for Bluetooth headphones or better audio devices
+        bluetooth_output = None
+        headphone_output = None
+        
+        print("🎵 Available audio devices:")
+        for i, device in enumerate(devices):
+            device_name = device['name'].lower()
+            max_outputs = device['max_output_channels']
+            
+            print(f"   {i}: {device['name']} (out: {max_outputs}, in: {device['max_input_channels']})")
+            
+            # Skip devices with no output channels
+            if max_outputs == 0:
+                continue
+                
+            # Prioritize Bluetooth devices
+            if any(keyword in device_name for keyword in ['bluetooth', 'airpods', 'headphones', 'headset', 'wireless']):
+                if bluetooth_output is None:
+                    bluetooth_output = i
+                    print(f"   🎧 Found Bluetooth device: {device['name']}")
+            
+            # Look for headphone-like devices
+            elif any(keyword in device_name for keyword in ['headphone', 'headset', 'earphone', 'buds']):
+                if headphone_output is None:
+                    headphone_output = i
+                    print(f"   🎧 Found headphone device: {device['name']}")
+        
+        # Choose the best available output device
+        if bluetooth_output is not None:
+            self.default_output = bluetooth_output
+            print(f"✅ Using Bluetooth device for output: {devices[bluetooth_output]['name']}")
+        elif headphone_output is not None:
+            self.default_output = headphone_output
+            print(f"✅ Using headphone device for output: {devices[headphone_output]['name']}")
+        else:
+            print(f"🔊 Using default output device: {devices[self.default_output]['name']}")
+        
+        print(f"🎵 Final input device: {self.default_input}")
+        print(f"🔊 Final output device: {self.default_output}")
         
         # Store device info for reference
         if self.default_input is not None:
@@ -57,6 +95,8 @@ class ThreadSafeAudioManager:
         if self.default_output is not None:
             output_info = sd.query_devices(self.default_output)
             print(f"🔊 Output: {output_info['name']} (channels: {output_info['max_output_channels']})")
+
+
     
     def play_audio(self, audio_data, sample_rate, stop_event, pause_event):
         """
@@ -712,8 +752,16 @@ class Kokoro:
         text = text.replace('#', '.')   # hashtag
 
         #some conjucation specific
-        text = text.replace("’re", "'re")   # as in you're - it doesn't do well with that
-        text = text.replace("’d", "'d")   # as in I'd - it doesn't do well with that
+        text = text.replace("you’re", "your")   
+        text = text.replace("I’d", "I would")   
+        text = text.replace("I'd", "I would")   
+        text = text.replace("I’ll", "I will")   
+        text = text.replace("I'll", "I will")   
+        text = text.replace("you're", "your")
+        text = text.replace("I'm","I am" )   
+        text = text.replace("I’m","I am" )
+        text = text.replace("we'd","we would" )   
+        text = text.replace("we’d","we would" )      
         
         #Clean up but preserve newlines
         text = text.strip()
@@ -982,7 +1030,7 @@ def main():
         single_text = "This is a single line of text that will be processed normally."
         print(f"📝 Text: {single_text}")
         
-        tts.generate_speech_async(single_text, voice="af_sky", speed=1.0)
+        tts.generate_speech_async(single_text, voice="af_heart", speed=1.0)
         tts.wait_for_generation()
         tts.wait_for_playback()
         

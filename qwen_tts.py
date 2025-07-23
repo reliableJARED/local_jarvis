@@ -6,6 +6,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import json
 import re
 from typing import List, Dict, Any, Optional, Callable
+from kokoro_ import Kokoro
+from lustify_ import ImageGenerator
+import threading
 
 class QwenChatDependencyManager:
     """Handles model loading, dependency management, and offline/online detection."""
@@ -220,7 +223,7 @@ class QwenChat:
         # Tool management
         self.tools = {}
         self.available_tools = []
-        self.physical_appearance = "woman, tan skin, pixie cut blond hair, green eyes"
+        self.physical_appearance = "woman, white skin,  short face framing red hair, glasses, high cheekbones, full lips and blue eyes with long lashes"
         self.assistant_name = name
         
         
@@ -593,29 +596,31 @@ class QwenChat:
 
 if __name__ == "__main__":
     # Example tools
-    def access_camera(arg) -> Dict[str, Any]:
-        """Get a description of what the camera currently sees."""
-        # This would normally interface with actual camera hardware/API
-        # For now, returning a simulated description
-        return {
-            "image_description": "Living room with a person in a blue shirt and black pants sitting on a blue couch, coffee table with laptop, large window showing daylight",
-            "objects_detected": ["person", "couch", "laptop", "coffee_table", "window"],
-            "lighting_conditions": "bright natural light",
-            "processing_instruction":"IMPORTANT: image_description provides full context and is NOT meant to be directly returned to user. summarize and interpret as it relates to the user prompt"
-        }
-    
-    def access_microphone(arg) -> Dict[str, Any]:
-        """Get a description of what the microphone currently hears."""
-        # This would normally interface with actual microphone hardware/API
-        # For now, returning a simulated description
-        return {
-            "audio_description": "Quiet ambient room noise with occasional keyboard typing sounds",
-            "sounds_detected": ["keyboard_typing", "ambient_noise"],
-            "processing_instruction":"IMPORTANT: audio_description provides full context and is NOT meant to be directly returned to user. summarize and interpret as it relates to the user prompt"
-        }
-    
+   
     def display_image_for_user(prompt) -> Dict[str, Any]:
-        print(f"MODEL IMAGE PROMPT: {prompt}")
+        print(f"MODEL IMAGE PROMPT: {prompt['img_prompt']}")
+        generator = ImageGenerator()
+        #BEST - PROMPT STRUCTURE GUIDE - using a consistent [subject] [important feature], [more details] description will create similar subject"
+        "[style of photo] photo of a [subject], [important feature], [more details], [pose or action], [framing], [setting/background], [lighting], [camera angle], "
+        
+        #TODO: FIX THIS - threads are creating blank images
+        """def generate_image(img_prompt):
+            try:
+                generator = ImageGenerator()
+                image1 = generator.text_to_image(
+                    prompt=f"photograph, {img_prompt}, 8k",
+                    output_path="step1_text2img.png"
+                )
+                print("Image generation completed successfully")
+            except Exception as e:
+                print(f"Error generating image: {e}")
+                return {"result":f"Image generation error: {e}"}
+        
+        # Pass the prompt as an argument
+        thread = threading.Thread(target=generate_image, args=(prompt['img_prompt'],))
+        thread.daemon = True
+        thread.start()"""
+
         return {"result":"Image was generated and is being displayed to user"}
             
     def chat_loop(chat_instance):
@@ -639,60 +644,36 @@ if __name__ == "__main__":
                     f.write(f"{role}: {content}\n\n")
             print(f"Conversation saved to {filename}")
         
+        def back_one_message(chat_instance):
+            """remove last message"""
+            del chat_instance.messages[-2:]
+            print("removed last input/output combo from messages")
         
-        demo_prompts_ran = False
+        
+        tts = Kokoro(
+            lang_code='a',
+            save_audio_as_wav=False,  # Use temporary files
+            play_audio_immediately=True  # Auto-play for demo
+        )
+        
+        # Set up callbacks
+        def on_audio_ready(audio_data):
+            print(f"🎵 Audio ready callback: {audio_data.file_path}")
+        
+        def on_playback_complete():
+            print("🎉 Playback complete callback triggered!")
+            if tts.is_multi_line_processing():
+                print(f"📄 Multi-line processing continues... ({len(tts.generating_multi_line_audio)} lines remaining)")
+        
+        tts.set_speech_audio_ready_callback(on_audio_ready)
+        tts.set_speech_audio_playback_complete_callback(on_playback_complete)
+        
+
+        chat_instance._set_emotion_based_system_prompt(emotion="aroused")
         while True:
             
             try:
                 
-                if not demo_prompts_ran:
-                    chat_instance.clear_chat_messages()
-
-                    # Register camera tool
-                    chat_instance.register_tool(
-                        access_camera,
-                        description="Access my camera to get a description of what I am looking at in my environment",
-                        parameters={
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
-                    )
-
-                    # Register microphone tool
-                    chat_instance.register_tool(
-                        access_microphone,
-                        description="Access my microphone to get a description of what I hear at in my environment",
-                        parameters={
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
-                    )
-
-                    # Example Tool conversation
-                    print("Available tools:", chat_instance.list_available_tools())
-                    print("\n\n\n")
-                    response1 = chat_instance.generate_response("What do you think of my outfit?")
-                    print("\n")
-                    print("Assistant:", response1)
-                    print("\n\n\n")
-                    chat_instance.clear_chat_messages()
-                    response2 = chat_instance.generate_response("what was that sound?")
-                    print("\n")
-                    print("Assistant:", response2)
-                    print("\n")
-                    chat_instance.print_token_stats()
-                    demo_prompts_ran = True
-
-                    chat_instance.remove_tool("access_camera")
-                    chat_instance.remove_tool("access_microphone")
-                    
-                    chat_instance.auto_append_conversation = True #reset to have continued conversation
-                    #Test emotion system prompt
-                    chat_instance._set_emotion_based_system_prompt(emotion="bot")
-                    chat_instance.clear_chat_messages()
-                    print(chat_instance.messages)
                 # Register image generation tool
                 chat_instance.register_tool(
                                 display_image_for_user,
@@ -702,7 +683,7 @@ if __name__ == "__main__":
                                     "properties": {
                                     "img_prompt": {
                                         "type": "string",
-                                        "description": "Image prompt format: photo of a sexy woman, [physical_appearance_for_image_generation], [detailed description of pose or action], looking into the camera, [lighting], 8k"
+                                        "description": "Image prompt format: photo of a sexy woman, [physical_appearance_for_image_generation], [detailed description of pose or action], looking into the camera, [lighting]"
                                     }
                                     },
                                     "required": ["img_prompt"],
@@ -718,6 +699,9 @@ if __name__ == "__main__":
                 elif user_input.lower() == 'clear':
                     clear_history(chat_instance)
                     continue
+                elif user_input.lower() == 'back':
+                    back_one_message(chat_instance)
+                    continue
                 elif user_input.lower() == 'save':
                     filename = input("Enter filename (default: conversation.txt): ").strip()
                     if not filename:
@@ -731,8 +715,11 @@ if __name__ == "__main__":
                 print("\nThinking...")
                 response = chat_instance.generate_response(user_input)
                 print(f"\nQwen: {response}")
+                tts.generate_speech_async(response, voice="af_heart", speed=.9)
+                tts.wait_for_generation()
+                tts.wait_for_playback()
 
-                chat_instance.print_token_stats()
+                #chat_instance.print_token_stats()
                     
             
 
@@ -767,7 +754,7 @@ if __name__ == "__main__":
             print(f"Initializing {model_name}...")
             
             # Initialize chat interface (Qwen/Qwen2.5-7B-Instruct is default if no model passed)
-            chat = QwenChat(auto_append_conversation=False)
+            chat = QwenChat(auto_append_conversation=True)
             
             # Start the chat loop
             chat_loop(chat)

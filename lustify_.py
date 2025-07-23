@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 import torch
 from PIL import Image
+import uuid
 
 
 class ImageGenerator:
@@ -315,7 +316,7 @@ class ImageGenerator:
             
         except Exception as e:
             print(f"❌ Error generating image: {e}")
-            print(f"💡 Try lowering strength (current: {strength}) for more consistency")
+            print(f"💡 Try lowering strength (current: strength) for more consistency")
             print(f"💡 Or enhance your prompt with camera/lighting details")
             return None
     
@@ -540,17 +541,14 @@ class ImageGenerator:
 
 # Example usage
 if __name__ == "__main__":
+    
     # Initialize the generator
     generator = ImageGenerator()
-    #BEST - PROMPT STRUCTURE GUIDE - using a consistent [subject] [important feature], [more details] description will create similar subject"
-    "[style of photo] photo of a [subject], [important feature], [more details], [pose or action], [framing], [setting/background], [lighting], [camera angle], "
     
     # Example 1: Text-to-image generation
     image1 = generator.text_to_image(
-        
-        prompt="photograph, photo of monkey eating a banana, 8k",
-
-        output_path="step1_text2img.png"
+        prompt="photograph,photo of a sexy woman, white skin, short face framing red hair, glasses, high cheekbones, full lips and blue eyes with long lashes, kneeling down sucking a popsicle, looking up at the camera. wearing black lace lingerie, 8k",
+        output_path=f"{uuid.uuid4()}.png"
     )
     
     #Image to Image does NOT work well DO NOT BOTHER USING
@@ -569,4 +567,3 @@ if __name__ == "__main__":
             print("Generated images:")
             print(f"  - Original: step1_text2img.png")
             print(f"  - Transformed: step2_img2img.png")"""
-    
