@@ -754,7 +754,6 @@ FAVORITES_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Favorites - Images</title>
     <style>
-        /* Use the same styles as FOLDER_TEMPLATE */
         * {
             margin: 0;
             padding: 0;
@@ -764,24 +763,25 @@ FAVORITES_TEMPLATE = '''
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background-color: #f5f5f5;
-            padding: 20px;
+            padding: 10px;
         }
         
         .header {
-            max-width: 1200px;
-            margin: 0 auto 30px;
+            max-width: 1044px; /* 1024 + 20px padding */
+            margin: 0 auto 15px;
             background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            padding: 15px 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         
         .back-link {
             display: inline-block;
             color: #667eea;
             text-decoration: none;
-            margin-bottom: 15px;
+            margin-bottom: 8px;
             font-weight: 500;
+            font-size: 14px;
         }
         
         .back-link:hover {
@@ -791,72 +791,71 @@ FAVORITES_TEMPLATE = '''
         h1 {
             color: #333;
             font-weight: 600;
+            font-size: 24px;
+            margin-bottom: 2px;
         }
         
         .image-count {
             color: #666;
-            font-size: 14px;
-            margin-top: 5px;
+            font-size: 13px;
         }
         
         .image-grid {
-            max-width: 600px;
+            max-width: 1044px; /* 1024 + 20px padding */
             margin: 0 auto;
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
         }
         
         .image-item {
             background: white;
-            border-radius: 12px;
+            border-radius: 8px;
             overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             transition: transform 0.2s ease;
             position: relative;
-            display: flex;
-            flex-direction: column;
-            height: 280px;
         }
         
         .image-item:hover {
-            transform: translateY(-2px);
+            transform: translateY(-1px);
         }
         
         .image-wrapper {
             width: 100%;
-            flex: 1;
-            overflow: hidden;
+            height: auto;
+            position: relative;
+            background: #fafafa;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #f8f9fa;
-            position: relative;
+            padding: 10px;
         }
         
         .image-wrapper img {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
-            transition: transform 0.2s ease;
+            width: 100%;
+            height: auto;
+            max-width: 1024px;
+            display: block;
+            border-radius: 4px;
             cursor: pointer;
         }
         
         .favorite-btn {
             position: absolute;
-            top: 10px;
-            right: 10px;
+            top: 20px;
+            right: 20px;
             background: rgba(255, 69, 100, 0.9);
             color: white;
             border: none;
             border-radius: 50%;
-            width: 36px;
-            height: 36px;
+            width: 40px;
+            height: 40px;
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
-            font-size: 18px;
+            font-size: 20px;
             transition: all 0.2s ease;
             z-index: 10;
             backdrop-filter: blur(5px);
@@ -864,72 +863,59 @@ FAVORITES_TEMPLATE = '''
         
         .favorite-btn:hover {
             background: rgba(255, 69, 100, 1);
-            transform: scale(1.1);
+            transform: scale(1.05);
         }
         
         .image-name {
-            padding: 8px 12px 4px 12px;
-            font-size: 12px;
+            padding: 12px 20px;
+            font-size: 14px;
             color: #333;
-            word-break: break-all;
+            word-break: break-word;
             background: white;
-            flex-shrink: 0;
-            line-height: 1.2;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        
-        .folder-path {
-            padding: 0 12px 8px 12px;
-            font-size: 10px;
-            color: #666;
-            font-style: italic;
-            flex-shrink: 0;
-            line-height: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            line-height: 1.3;
+            border-top: 1px solid #f0f0f0;
         }
         
         .no-images {
-            max-width: 1200px;
+            max-width: 1044px;
             margin: 0 auto;
             text-align: center;
             color: #666;
-            padding: 40px;
+            padding: 60px 40px;
             background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        
+        /* Mobile responsiveness */
+        @media (max-width: 1064px) {
+            body { padding: 8px; }
+            .header, .image-grid { max-width: calc(100vw - 16px); }
+            .header { padding: 12px 16px; }
+            .image-wrapper { padding: 8px; }
+            .image-name { padding: 10px 16px; font-size: 13px; }
+            .favorite-btn {
+                width: 36px;
+                height: 36px;
+                font-size: 18px;
+                top: 16px;
+                right: 16px;
+            }
         }
         
         @media (max-width: 600px) {
-            body { padding: 10px; }
-            .header { padding: 15px; }
-            .image-grid {
-                max-width: 100%;
-                gap: 15px;
-            }
-            .image-item { height: 200px; }
-            .image-name { 
-                padding: 6px 8px 3px 8px; 
-                font-size: 11px; 
-            }
-            .folder-path { 
-                padding: 0 8px 6px 8px; 
-                font-size: 9px; 
-            }
+            body { padding: 5px; }
+            .header { padding: 10px 12px; }
+            h1 { font-size: 20px; }
+            .image-wrapper { padding: 5px; }
+            .image-name { padding: 8px 12px; font-size: 12px; }
             .favorite-btn {
                 width: 32px;
                 height: 32px;
                 font-size: 16px;
-                top: 8px;
-                right: 8px;
+                top: 12px;
+                right: 12px;
             }
-        }
-        
-        @media (max-width: 400px) {
-            .image-item { height: 180px; }
         }
     </style>
 </head>
@@ -955,7 +941,6 @@ FAVORITES_TEMPLATE = '''
                         </button>
                     </div>
                     <div class="image-name">{{ image.name }}</div>
-                    <div class="folder-path">{{ image.folder }}</div>
                 </div>
             {% endfor %}
         </div>
