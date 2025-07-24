@@ -599,12 +599,12 @@ class ImageVideoGenerator:
             return self.text_to_video(
                 prompt=prompt,
                 output_path=output_path,
-                width=640,
-                height=640,
-                num_frames=8,
-                num_inference_steps=15,
+                width=640,#724,#640
+                height=640,##724,#640
+                num_frames=12,
+                num_inference_steps=30,
                 guidance_scale=7.0,
-                fps=8,
+                fps=12,
                 export_format=export_format,
                 use_enhanced_prompting=use_enhanced_prompting,
                 auto_fallback=True
@@ -1157,18 +1157,18 @@ if __name__ == "__main__":
     generator = ImageVideoGenerator()
     
     # Example 1: Text-to-image generation (your existing workflow)
-    image1 = generator.text_to_image(
+    """image1 = generator.text_to_image(
         prompt="photograph, photo of monkey hanging from a tree, 8k",
         output_path="step1_text2img.png"
-    )
-    
+    )"""
+    image1 = True
     # Example 2: Text-to-video generation
     if image1:
-        """print("\n🎬 Trying text-to-video generation...")
+        print("\n🎬 Trying text-to-video generation...")
         text_video = generator.text_to_video_quick(
-            prompt="photograph, photo of monkey eating a banana, monkey moving naturally, 8k",
+            prompt="sexy young woman, white skin, short face-framing pink hair with bangs,strong facial features, long eyelashes, kneeling staring into the camera, 8k",
             output_path="step2_text2video.mp4"
-        )"""
+        )
         if image1:
         #if text_video:
             print("✅ Text-to-video generation successful!")
