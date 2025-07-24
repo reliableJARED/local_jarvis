@@ -24,7 +24,8 @@ class ImageGenerator:
                  model_name="TheImposterImposters/LUSTIFY-v2.0",
                  inpaint_model="andro-flock/LUSTIFY-SDXL-NSFW-checkpoint-v2-0-INPAINTING",
                  cache_dir=None,
-                 use_mps=True):
+                 use_mps=True,
+                 use_cuda=None):
         """
         Initialize the ImageGenerator with model loading and dependency checking.
         
@@ -33,15 +34,17 @@ class ImageGenerator:
             inpaint_model (str): Model for inpainting tasks
             cache_dir (str): Cache directory for model storage
             use_mps (bool): Use Metal Performance Shaders on Mac (if available)
+            use_cuda (bool): Use CUDA if available (None=auto-detect)
         """
         self.model_name = model_name
         self.inpaint_model = inpaint_model
         self.cache_dir = cache_dir or self._setup_cache_dir()
         
-        # Enhanced device configuration for Mac
-        self.device = self._get_best_device(use_mps)
+        # Enhanced device configuration for Mac and CUDA
+        self.device = self._get_best_device(use_mps, use_cuda)
         self.is_cpu = self.device == "cpu"
         self.is_mps = self.device == "mps"
+        self.is_cuda = self.device == "cuda"
         
         # Install dependencies and check
         self._install_dependencies()
@@ -54,13 +57,19 @@ class ImageGenerator:
         
         print(f"✅ ImageGenerator initialized")
         print(f"Device: {self.device}")
-        if self.is_mps:
+        if self.is_cuda:
+            print("🚀 Using CUDA GPU acceleration!")
+        elif self.is_mps:
             print("🚀 Using Metal Performance Shaders for acceleration!")
         print(f"Cache directory: {self.cache_dir}")
     
-    def _get_best_device(self, use_mps=True):
-        """Determine the best available device for Mac optimization"""
-        if torch.cuda.is_available():
+    def _get_best_device(self, use_mps=True, use_cuda=None):
+        """Determine the best available device with CUDA priority"""
+        # Auto-detect CUDA if not explicitly specified
+        if use_cuda is None:
+            use_cuda = torch.cuda.is_available()
+        
+        if use_cuda and torch.cuda.is_available():
             return "cuda"
         elif use_mps and torch.backends.mps.is_available():
             # MPS (Metal Performance Shaders) for Mac acceleration
@@ -149,16 +158,17 @@ class ImageGenerator:
         print(f"Loading {pipeline_type} pipeline: {model_name}")
         
         try:
-            # Configure model loading parameters with Mac optimizations
+            # Configure model loading parameters with device-specific optimizations
             kwargs = {
                 "cache_dir": self.cache_dir,
-                "torch_dtype": torch.float32,  # MPS works better with float32
                 "use_safetensors": True,
             }
             
-            # Use float16 only for CUDA, float32 for MPS and CPU
-            if self.device == "cuda":
-                kwargs["torch_dtype"] = torch.float16
+            # Set torch_dtype based on device
+            if self.is_cuda:
+                kwargs["torch_dtype"] = torch.float16  # CUDA works well with float16
+            else:
+                kwargs["torch_dtype"] = torch.float32  # MPS and CPU work better with float32
             
             # Load the appropriate pipeline
             print("Downloading/loading model (this may take a few minutes on first run)...")
@@ -171,8 +181,30 @@ class ImageGenerator:
             
             pipe = pipe.to(self.device)
             
-            # Mac-specific optimizations
-            if self.is_mps:
+            # Device-specific optimizations
+            if self.is_cuda:
+                # CUDA optimizations
+                print("🔧 Applying CUDA optimizations...")
+                if hasattr(pipe, 'enable_attention_slicing'):
+                    pipe.enable_attention_slicing()
+                
+                # Enable model CPU offload for memory efficiency
+                try:
+                    if hasattr(pipe, 'enable_model_cpu_offload'):
+                        pipe.enable_model_cpu_offload()
+                        print("✓ Model CPU offload enabled for CUDA")
+                except Exception as e:
+                    print(f"⚠️  Model CPU offload not available: {e}")
+                
+                # Enable memory efficient attention if available
+                try:
+                    if hasattr(pipe, 'enable_xformers_memory_efficient_attention'):
+                        pipe.enable_xformers_memory_efficient_attention()
+                        print("✓ XFormers memory efficient attention enabled")
+                except Exception as e:
+                    print(f"⚠️  XFormers not available: {e}")
+            
+            elif self.is_mps:
                 # MPS optimizations
                 print("🔧 Applying MPS optimizations...")
                 if hasattr(pipe, 'enable_attention_slicing'):
@@ -186,7 +218,7 @@ class ImageGenerator:
                 except Exception as e:
                     print(f"⚠️  Sequential CPU offload not available: {e}")
             
-            elif self.is_cpu:
+            else:
                 # CPU optimizations
                 if hasattr(pipe, 'enable_attention_slicing'):
                     pipe.enable_attention_slicing(1)
@@ -194,19 +226,6 @@ class ImageGenerator:
                 # Set number of threads for CPU inference
                 torch.set_num_threads(torch.get_num_threads())
                 print(f"🔧 Using {torch.get_num_threads()} CPU threads")
-            
-            else:
-                # GPU optimizations
-                if hasattr(pipe, 'enable_attention_slicing'):
-                    pipe.enable_attention_slicing()
-                
-                # Enable model CPU offload for memory efficiency
-                try:
-                    if hasattr(pipe, 'enable_model_cpu_offload'):
-                        pipe.enable_model_cpu_offload()
-                        print("✓ Model CPU offload enabled")
-                except Exception as e:
-                    print(f"⚠️  Model CPU offload not available: {e}")
             
             print(f"✅ {pipeline_type.title()} pipeline loaded successfully!")
             return pipe
@@ -281,6 +300,9 @@ class ImageGenerator:
             # Keep 1024x1024 as SDXL works best at this resolution
             num_inference_steps = min(num_inference_steps, 25)
             print(f"🚀 Running on MPS - SDXL optimized: {width}x{height}, {num_inference_steps} steps")
+        elif self.is_cuda:
+            # CUDA can handle full resolution and steps efficiently
+            print(f"🚀 Running on CUDA - Full SDXL resolution: {width}x{height}, {num_inference_steps} steps")
         
         # Add LUSTIFY-specific negative prompt for better quality
         negative_prompt = kwargs.pop('negative_prompt', None)
@@ -300,12 +322,17 @@ class ImageGenerator:
         try:
             print("Generating... (this may take a minute)")
             with torch.no_grad():
-                # Mac-specific inference optimizations
+                # Device-specific inference optimizations
                 if self.is_mps:
                     # MPS sometimes has issues with certain operations
                     with torch.autocast(device_type='cpu', enabled=False):
                         result = pipe(prompt, **generation_kwargs)
+                elif self.is_cuda:
+                    # Use autocast for CUDA to improve performance
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        result = pipe(prompt, **generation_kwargs)
                 else:
+                    # CPU inference
                     result = pipe(prompt, **generation_kwargs)
                 image = result.images[0]
             
@@ -413,6 +440,9 @@ class ImageGenerator:
             # MPS can handle full SDXL resolution - keep original dimensions
             num_inference_steps = min(num_inference_steps, 30)
             print(f"🚀 Running on MPS - SDXL optimized: {width}x{height}, {num_inference_steps} steps")
+        elif self.is_cuda:
+            # CUDA can handle full resolution efficiently
+            print(f"🚀 Running on CUDA - Full resolution: {width}x{height}, {num_inference_steps} steps")
         
         # Add LUSTIFY-specific negative prompt for better quality
         negative_prompt = kwargs.pop('negative_prompt', None)
@@ -434,6 +464,9 @@ class ImageGenerator:
             with torch.no_grad():
                 if self.is_mps:
                     with torch.autocast(device_type='cpu', enabled=False):
+                        result = pipe(prompt, **generation_kwargs)
+                elif self.is_cuda:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
                         result = pipe(prompt, **generation_kwargs)
                 else:
                     result = pipe(prompt, **generation_kwargs)
@@ -508,6 +541,13 @@ class ImageGenerator:
                 width, height = 768, 768
             num_inference_steps = min(num_inference_steps, 30)
             print(f"🚀 Running on MPS - optimized settings: {width}x{height}, {num_inference_steps} steps")
+        elif self.is_cuda:
+            # CUDA can handle larger images better
+            if width > 1024 or height > 1024:
+                input_image = input_image.resize((1024, 1024))
+                mask_image = mask_image.resize((1024, 1024))
+                width, height = 1024, 1024
+            print(f"🚀 Running on CUDA - high resolution: {width}x{height}, {num_inference_steps} steps")
         
         # Generation parameters
         generation_kwargs = {
@@ -524,6 +564,9 @@ class ImageGenerator:
             with torch.no_grad():
                 if self.is_mps:
                     with torch.autocast(device_type='cpu', enabled=False):
+                        result = pipe(prompt, **generation_kwargs)
+                elif self.is_cuda:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
                         result = pipe(prompt, **generation_kwargs)
                 else:
                     result = pipe(prompt, **generation_kwargs)
@@ -542,8 +585,12 @@ class ImageGenerator:
 # Example usage
 if __name__ == "__main__":
     
-    # Initialize the generator
+    # Initialize the generator (will auto-detect CUDA)
     generator = ImageGenerator()
+    
+    # Or explicitly enable/disable CUDA
+    # generator = ImageGenerator(use_cuda=True)  # Force CUDA if available
+    # generator = ImageGenerator(use_cuda=False)  # Disable CUDA
     
     # Example 1: Text-to-image generation
     image1 = generator.text_to_image(

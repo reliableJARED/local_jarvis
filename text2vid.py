@@ -1151,6 +1151,9 @@ class ImageVideoGenerator:
 # Example usage
 if __name__ == "__main__":
     # Initialize the generator
+    
+    #https://claude.ai/chat/c0f9b774-5e81-432b-b4d7-4ab211a0b2ba
+
     generator = ImageVideoGenerator()
     
     # Example 1: Text-to-image generation (your existing workflow)
