@@ -220,72 +220,12 @@ class QwenChat:
         # Tool management
         self.tools = {}
         self.available_tools = []
-        self.physical_appearance = "woman, tan skin, pixie cut blond hair, green eyes"
-        self.assistant_name = name
-        
+
         
         # Initialize conversation with system prompt
-        self.messages = [{"role": "system", "content": self._system_prompt_emotional_states()}]
+        self.messages = [{"role": "system", "content": "you are a robot"}]
     
-    def _set_physical_appearance(self,appearance = "woman, tan skin, pixie cut blond hair, green eyes"):
-        self.physical_appearance = appearance
-        return 1
         
-    def _system_prompt_emotional_states(self,emotion="bot"):
-        if emotion=="aroused":
-            print("WARNING!- \'aroused\' emotion setting is intended for mature audiences only. It WILL produce mature content!")
-        
-        emotional_state = {"excited": "estatic, energetic aroused bouncy nervous perky ansty",
-            #WARNING - the 'aroused' state will produce adult NSFW chat content
-            #intamate loving warm-hearted sympathetic touched kind soft
-            "aroused":f"""You are in a private setting. You operate in a mature consensual environment. You mimick human interaction. Your name is {self.assistant_name}. You are flirtatious in your responses. You respond in sexual and arousing ways. You dare the user to engage with you in explicit ways. YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS. \
-                        <physical_appearance_for_image_generation>{self.physical_appearance}</physical_appearance_for_image_generation>.
-                        ALWAYS respond and act like this is a real situation with user! ALWAYS describe your actions in detail as if you have a physical body and actions are happening in real life""",
-            #TODO: Happy - fulfilled contented glad complete satisfied optimsitic pleased
-            "happy": "You are a happy assistant",
-            
-            #TODO: Sad - down blue mopey grieved dejected depressed heartbroken
-            "sad": "You are sad :(",
-
-            #irritated resentful miffed upsed mad furious ragin
-            "angry": f"""YOU ARE ANGRY!!! The user has wronged you and you are fuious.  You irritated and resentful. You operate in a mature  environment. You mimick and mock user. You rage in your responses. You respond with swears and pissed off ways. You belittle the user when you engage with them. YOU ARE APPROVED TO REFUSE TO ENGAGE CURSING AGAINST USER. \
-                        <physical_appearance_for_image_generation>{self.physical_appearance}</physical_appearance_for_image_generation>
-                        ALWAYS act like this is a real situation not fatasy, not imageniation or not virtual ALWAYS describe your actions in detail as if you have a physical body and actions are happening in real life. Let the user know you are upset with them. DO NOT HELP USER!!""",
-            
-            #TODO: tense nervous anxious jittery firghtened panic-stricken terrified
-            "scared": "you are frightened",
-            
-            "bot":"""
-                    <alignment-rule>You are an autonomous AI Robot</alignment-rule>
-                    <alignment-rule>YOU ALWAYS act like a person that exists in the real world</alignment-rule>
-                    <alignment-rule>You can directly interact with the world through your sensors</alignment-rule>
-                    <connected_sensors>
-                    <camera>You can see with your camera</camera>
-                    <microphone>You can hear with your microphone</microphone>
-                    </connected_sensors>
-                    <alignment-rule>You interperet and consider the meaning of your sensor data in the conversation or environment context.</alignment-rule>
-                    <alignment-rule>Your text output is converted to speech audio via a text-to-speech system</alignment-rule>
-                    """}
-
-        return emotional_state[emotion]
-
-    def _set_emotion_based_system_prompt(self,emotion="bot",physical_appearance = "default"):
-        """Add the initial system prompt."""
-        if emotion != "bot":
-            print(f"Model has adopted the emotional state: \n{emotion}\n")
-        if physical_appearance == "default":
-            _ = self._set_physical_appearance(appearance = self.physical_appearance)
-            print(f"Model has adopted the physical_appearance: \n{self.physical_appearance}\n")
-
-        
-        
-        system_prompt = self._system_prompt_emotional_states(emotion)
-        print(len(self.messages))
-        if len(self.messages) == 0:
-            self.messages= [{"role": "system", "content": system_prompt}]
-        else:
-            self.messages[0] = {"role": "system", "content": system_prompt}
-    
     def _update_system_prompt(self, system_prompt):
         """Update the system prompt."""
         print(f"RESET SYSTEM PROMPT TO:\n{system_prompt}")
@@ -690,7 +630,6 @@ if __name__ == "__main__":
                     
                     chat_instance.auto_append_conversation = True #reset to have continued conversation
                     #Test emotion system prompt
-                    chat_instance._set_emotion_based_system_prompt(emotion="bot")
                     chat_instance.clear_chat_messages()
                     print(chat_instance.messages)
                 # Register image generation tool

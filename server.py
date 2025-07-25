@@ -64,6 +64,251 @@ def is_favorite(image_path):
     favorites = load_favorites()
     return image_path in favorites
 
+
+def get_subfolders():
+    """Get all subdirectories in the main image folder."""
+    try:
+        main_path = Path(IMAGE_FOLDER)
+        if not main_path.exists():
+            return []
+        
+        folders = []
+        for item in main_path.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                folders.append(item.name)
+        
+        return sorted(folders)
+    except Exception:
+        return []
+
+def get_images_in_folder(folder_path):
+    """Get all PNG images in a specific folder path (can include subfolders)."""
+    try:
+        if '/' in folder_path:
+            # Handle subfolder case
+            full_path = Path(IMAGE_FOLDER) / folder_path
+        else:
+            # Handle main folder case
+            full_path = Path(IMAGE_FOLDER) / folder_path
+            
+        if not full_path.exists() or not full_path.is_dir():
+            return []
+        
+        images = []
+        for item in full_path.iterdir():
+            if item.is_file() and item.suffix.lower() in ALLOWED_EXTENSIONS:
+                images.append(item.name)
+        
+        return sorted(images)
+    except Exception:
+        return []
+
+def get_subfolders_in_folder(folder_name):
+    """Get all subdirectories in a specific folder."""
+    try:
+        folder_path = Path(IMAGE_FOLDER) / folder_name
+        if not folder_path.exists() or not folder_path.is_dir():
+            return []
+        
+        subfolders = []
+        for item in folder_path.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                subfolders.append(item.name)
+        
+        return sorted(subfolders)
+    except Exception:
+        return []
+
+@app.route('/')
+def index():
+    """Main page showing all subfolders."""
+    folders = get_subfolders()
+    return render_template_string(INDEX_TEMPLATE, 
+                                folders=folders, 
+                                image_folder=IMAGE_FOLDER)
+
+@app.route('/folder/<folder_name>')
+@app.route('/folder/<folder_name>/<subfolder_name>')
+def view_folder(folder_name, subfolder_name=None):
+    """Display all PNG images in a specific folder or subfolder."""
+    # Security check - prevent directory traversal
+    if '..' in folder_name or '/' in folder_name or '\\' in folder_name:
+        abort(404)
+    
+    if subfolder_name:
+        if '..' in subfolder_name or '/' in subfolder_name or '\\' in subfolder_name:
+            abort(404)
+        
+        # Handle subfolder
+        full_path = Path(IMAGE_FOLDER) / folder_name / subfolder_name
+        display_name = f"{folder_name} / {subfolder_name}"
+        folder_path_for_images = f"{folder_name}/{subfolder_name}"
+        
+        # Get parent folder link
+        parent_folder = folder_name
+        subfolders = []  # Subfolders don't have their own subfolders for now
+    else:
+        # Handle main folder
+        full_path = Path(IMAGE_FOLDER) / folder_name
+        display_name = folder_name
+        folder_path_for_images = folder_name
+        parent_folder = None
+        
+        # Get subfolders in this folder
+        subfolders = get_subfolders_in_folder(folder_name)
+    
+    # Check if folder exists
+    if not full_path.exists() or not full_path.is_dir():
+        abort(404)
+    
+    # Get images in the current folder/subfolder
+    if subfolder_name:
+        images = get_images_in_folder(f"{folder_name}/{subfolder_name}")
+    else:
+        images = get_images_in_folder(folder_name)
+    
+    # Get favorites status for all images in this folder
+    favorites = load_favorites()
+    image_favorites = {}
+    for image in images:
+        image_path = f"{folder_path_for_images}/{image}"
+        image_favorites[image_path] = image_path in favorites
+    
+    return render_template_string(FOLDER_TEMPLATE,
+                                folder_name=display_name,
+                                folder_path=folder_path_for_images,
+                                images=images,
+                                image_count=len(images),
+                                subfolders=subfolders,
+                                parent_folder=parent_folder,
+                                favorites=image_favorites)
+
+@app.route('/image/<path:folder_path>/<filename>')
+def serve_image(folder_path, filename):
+    """Serve individual image files from folder or subfolder."""
+    """# Security checks
+    if '..' in folder_path or '..' in filename:
+        abort(404)
+    
+    # Check file extension
+    if not filename.lower().endswith('.png'):
+        abort(404)
+    
+    full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
+    
+    # Check if folder and file exist
+    if not os.path.exists(full_folder_path) or not os.path.isdir(full_folder_path):
+        abort(404)
+    
+    file_path = os.path.join(full_folder_path, filename)
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        abort(404)"""
+    full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
+    
+    #Caching for faster loads
+    response = send_from_directory(full_folder_path, filename)
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response
+
+@app.route('/api/favorite', methods=['POST'])
+def handle_favorite():
+    """API endpoint to add or remove favorites."""
+    try:
+        data = request.get_json()
+        
+        """if not data or 'action' not in data or 'image_path' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing required fields: action and image_path'
+            }), 400"""
+        
+        action = data['action']
+        image_path = data['image_path']
+        
+        """# Security check - prevent directory traversal
+        if '..' in image_path or image_path.startswith('/') or '\\' in image_path:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid image path'
+            }), 400"""
+        
+        """# Verify the image exists
+        full_image_path = os.path.join(IMAGE_FOLDER, image_path)
+        if not os.path.exists(full_image_path) or not os.path.isfile(full_image_path):
+            return jsonify({
+                'success': False,
+                'error': 'Image not found'
+            }), 404"""
+        
+        # Handle the favorite action
+        if action == 'add':
+            success = add_favorite(image_path)
+        elif action == 'remove':
+            success = remove_favorite(image_path)
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid action. Use "add" or "remove"'
+            }), 400
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'action': action,
+                'image_path': image_path
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to update favorites file'
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/favorites')
+def view_favorites():
+    """Display all favorited images."""
+    favorites = load_favorites()
+    
+    if not favorites:
+        return render_template_string(FOLDER_TEMPLATE,
+                                    folder_name="Favorites",
+                                    folder_path="favorites",
+                                    images=[],
+                                    image_count=0,
+                                    subfolders=[],
+                                    parent_folder=None,
+                                    favorites={})
+    
+    # Parse favorite paths and organize by folder
+    favorite_images = []
+    image_favorites = {}
+    
+    for fav_path in favorites:
+        # Verify the image still exists
+        full_path = os.path.join(IMAGE_FOLDER, fav_path)
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            # Extract filename from path
+            filename = os.path.basename(fav_path)
+            favorite_images.append({
+                'name': filename,
+                'path': fav_path,
+                'folder': os.path.dirname(fav_path)
+            })
+            image_favorites[fav_path] = True
+    
+    return render_template_string(FAVORITES_TEMPLATE,
+                                folder_name="Favorites",
+                                folder_path="favorites",
+                                favorite_images=favorite_images,
+                                image_count=len(favorite_images),
+                                favorites=image_favorites)
+
 # HTML Templates
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
@@ -996,249 +1241,6 @@ FAVORITES_TEMPLATE = '''
 </html>
 '''
 
-def get_subfolders():
-    """Get all subdirectories in the main image folder."""
-    try:
-        main_path = Path(IMAGE_FOLDER)
-        if not main_path.exists():
-            return []
-        
-        folders = []
-        for item in main_path.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
-                folders.append(item.name)
-        
-        return sorted(folders)
-    except Exception:
-        return []
-
-def get_images_in_folder(folder_path):
-    """Get all PNG images in a specific folder path (can include subfolders)."""
-    try:
-        if '/' in folder_path:
-            # Handle subfolder case
-            full_path = Path(IMAGE_FOLDER) / folder_path
-        else:
-            # Handle main folder case
-            full_path = Path(IMAGE_FOLDER) / folder_path
-            
-        if not full_path.exists() or not full_path.is_dir():
-            return []
-        
-        images = []
-        for item in full_path.iterdir():
-            if item.is_file() and item.suffix.lower() in ALLOWED_EXTENSIONS:
-                images.append(item.name)
-        
-        return sorted(images)
-    except Exception:
-        return []
-
-def get_subfolders_in_folder(folder_name):
-    """Get all subdirectories in a specific folder."""
-    try:
-        folder_path = Path(IMAGE_FOLDER) / folder_name
-        if not folder_path.exists() or not folder_path.is_dir():
-            return []
-        
-        subfolders = []
-        for item in folder_path.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
-                subfolders.append(item.name)
-        
-        return sorted(subfolders)
-    except Exception:
-        return []
-
-@app.route('/')
-def index():
-    """Main page showing all subfolders."""
-    folders = get_subfolders()
-    return render_template_string(INDEX_TEMPLATE, 
-                                folders=folders, 
-                                image_folder=IMAGE_FOLDER)
-
-@app.route('/folder/<folder_name>')
-@app.route('/folder/<folder_name>/<subfolder_name>')
-def view_folder(folder_name, subfolder_name=None):
-    """Display all PNG images in a specific folder or subfolder."""
-    # Security check - prevent directory traversal
-    if '..' in folder_name or '/' in folder_name or '\\' in folder_name:
-        abort(404)
-    
-    if subfolder_name:
-        if '..' in subfolder_name or '/' in subfolder_name or '\\' in subfolder_name:
-            abort(404)
-        
-        # Handle subfolder
-        full_path = Path(IMAGE_FOLDER) / folder_name / subfolder_name
-        display_name = f"{folder_name} / {subfolder_name}"
-        folder_path_for_images = f"{folder_name}/{subfolder_name}"
-        
-        # Get parent folder link
-        parent_folder = folder_name
-        subfolders = []  # Subfolders don't have their own subfolders for now
-    else:
-        # Handle main folder
-        full_path = Path(IMAGE_FOLDER) / folder_name
-        display_name = folder_name
-        folder_path_for_images = folder_name
-        parent_folder = None
-        
-        # Get subfolders in this folder
-        subfolders = get_subfolders_in_folder(folder_name)
-    
-    # Check if folder exists
-    if not full_path.exists() or not full_path.is_dir():
-        abort(404)
-    
-    # Get images in the current folder/subfolder
-    if subfolder_name:
-        images = get_images_in_folder(f"{folder_name}/{subfolder_name}")
-    else:
-        images = get_images_in_folder(folder_name)
-    
-    # Get favorites status for all images in this folder
-    favorites = load_favorites()
-    image_favorites = {}
-    for image in images:
-        image_path = f"{folder_path_for_images}/{image}"
-        image_favorites[image_path] = image_path in favorites
-    
-    return render_template_string(FOLDER_TEMPLATE,
-                                folder_name=display_name,
-                                folder_path=folder_path_for_images,
-                                images=images,
-                                image_count=len(images),
-                                subfolders=subfolders,
-                                parent_folder=parent_folder,
-                                favorites=image_favorites)
-
-@app.route('/image/<path:folder_path>/<filename>')
-def serve_image(folder_path, filename):
-    """Serve individual image files from folder or subfolder."""
-    """# Security checks
-    if '..' in folder_path or '..' in filename:
-        abort(404)
-    
-    # Check file extension
-    if not filename.lower().endswith('.png'):
-        abort(404)
-    
-    full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
-    
-    # Check if folder and file exist
-    if not os.path.exists(full_folder_path) or not os.path.isdir(full_folder_path):
-        abort(404)
-    
-    file_path = os.path.join(full_folder_path, filename)
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        abort(404)"""
-    full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
-    
-    #Caching for faster loads
-    response = send_from_directory(full_folder_path, filename)
-    response.headers['Cache-Control'] = 'public, max-age=3600'
-    return response
-
-@app.route('/api/favorite', methods=['POST'])
-def handle_favorite():
-    """API endpoint to add or remove favorites."""
-    try:
-        data = request.get_json()
-        
-        """if not data or 'action' not in data or 'image_path' not in data:
-            return jsonify({
-                'success': False,
-                'error': 'Missing required fields: action and image_path'
-            }), 400"""
-        
-        action = data['action']
-        image_path = data['image_path']
-        
-        """# Security check - prevent directory traversal
-        if '..' in image_path or image_path.startswith('/') or '\\' in image_path:
-            return jsonify({
-                'success': False,
-                'error': 'Invalid image path'
-            }), 400"""
-        
-        """# Verify the image exists
-        full_image_path = os.path.join(IMAGE_FOLDER, image_path)
-        if not os.path.exists(full_image_path) or not os.path.isfile(full_image_path):
-            return jsonify({
-                'success': False,
-                'error': 'Image not found'
-            }), 404"""
-        
-        # Handle the favorite action
-        if action == 'add':
-            success = add_favorite(image_path)
-        elif action == 'remove':
-            success = remove_favorite(image_path)
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Invalid action. Use "add" or "remove"'
-            }), 400
-        
-        if success:
-            return jsonify({
-                'success': True,
-                'action': action,
-                'image_path': image_path
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Failed to update favorites file'
-            }), 500
-            
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/favorites')
-def view_favorites():
-    """Display all favorited images."""
-    favorites = load_favorites()
-    
-    if not favorites:
-        return render_template_string(FOLDER_TEMPLATE,
-                                    folder_name="Favorites",
-                                    folder_path="favorites",
-                                    images=[],
-                                    image_count=0,
-                                    subfolders=[],
-                                    parent_folder=None,
-                                    favorites={})
-    
-    # Parse favorite paths and organize by folder
-    favorite_images = []
-    image_favorites = {}
-    
-    for fav_path in favorites:
-        # Verify the image still exists
-        full_path = os.path.join(IMAGE_FOLDER, fav_path)
-        if os.path.exists(full_path) and os.path.isfile(full_path):
-            # Extract filename from path
-            filename = os.path.basename(fav_path)
-            favorite_images.append({
-                'name': filename,
-                'path': fav_path,
-                'folder': os.path.dirname(fav_path)
-            })
-            image_favorites[fav_path] = True
-    
-    return render_template_string(FAVORITES_TEMPLATE,
-                                folder_name="Favorites",
-                                folder_path="favorites",
-                                favorite_images=favorite_images,
-                                image_count=len(favorite_images),
-                                favorites=image_favorites)
 
 if __name__ == '__main__':
     print(f"Starting Flask image server...")
