@@ -220,7 +220,6 @@ class QwenChat:
         # Tool management
         self.tools = {}
         self.available_tools = []
-
         
         # Initialize conversation with system prompt
         self.messages = [{"role": "system", "content": "you are a robot"}]
@@ -228,7 +227,6 @@ class QwenChat:
         
     def _update_system_prompt(self, system_prompt):
         """Update the system prompt."""
-        print(f"RESET SYSTEM PROMPT TO:\n{system_prompt}")
         self.messages[0] = {"role": "system", "content": system_prompt}
 
     def clear_chat_messages(self):

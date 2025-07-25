@@ -309,6 +309,130 @@ def view_favorites():
                                 image_count=len(favorite_images),
                                 favorites=image_favorites)
 
+@app.route('/api/delete', methods=['POST'])
+def handle_delete():
+    """API endpoint to delete favorited images from disk and remove from favorites."""
+    try:
+        data = request.get_json()
+        
+        if not data or 'image_path' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: image_path'
+            }), 400
+        
+        image_path = data['image_path']
+        
+        # Security check - prevent directory traversal
+        if '..' in image_path or image_path.startswith('/') or '\\' in image_path:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid image path'
+            }), 400
+        
+        # Verify the image exists in favorites
+        favorites = load_favorites()
+        if image_path not in favorites:
+            return jsonify({
+                'success': False,
+                'error': 'Image is not in favorites'
+            }), 404
+        
+        # Get the full file path
+        full_image_path = os.path.join(IMAGE_FOLDER, image_path)
+        
+        # Check if the file exists on disk
+        if not os.path.exists(full_image_path) or not os.path.isfile(full_image_path):
+            # File doesn't exist on disk, but remove it from favorites anyway
+            remove_favorite(image_path)
+            return jsonify({
+                'success': True,
+                'message': 'File not found on disk but removed from favorites',
+                'image_path': image_path
+            })
+        
+        try:
+            # Delete the file from disk
+            os.remove(full_image_path)
+            
+            # Remove from favorites
+            remove_favorite(image_path)
+            
+            return jsonify({
+                'success': True,
+                'message': 'File deleted successfully and removed from favorites',
+                'image_path': image_path
+            })
+            
+        except PermissionError:
+            return jsonify({
+                'success': False,
+                'error': 'Permission denied - cannot delete file'
+            }), 403
+            
+        except OSError as e:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to delete file: {str(e)}'
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }), 500
+
+
+@app.route('/api/delete_all_favorites', methods=['POST'])
+def handle_delete_all_favorites():
+    """API endpoint to delete ALL favorited images from disk and clear the favorites list."""
+    try:
+        favorites = load_favorites()
+        
+        if not favorites:
+            return jsonify({
+                'success': True,
+                'message': 'No favorites to delete',
+                'deleted_count': 0,
+                'errors': []
+            })
+        
+        deleted_count = 0
+        errors = []
+        
+        # Delete each favorited file
+        for image_path in list(favorites):  # Convert to list to avoid modification during iteration
+            full_image_path = os.path.join(IMAGE_FOLDER, image_path)
+            
+            try:
+                if os.path.exists(full_image_path) and os.path.isfile(full_image_path):
+                    os.remove(full_image_path)
+                    deleted_count += 1
+                else:
+                    errors.append(f"File not found: {image_path}")
+                    
+            except PermissionError:
+                errors.append(f"Permission denied: {image_path}")
+            except OSError as e:
+                errors.append(f"Failed to delete {image_path}: {str(e)}")
+        
+        # Clear the favorites list
+        save_favorites(set())
+        
+        return jsonify({
+            'success': True,
+            'message': f'Deleted {deleted_count} files and cleared favorites',
+            'deleted_count': deleted_count,
+            'total_favorites': len(favorites),
+            'errors': errors
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }), 500
+    
 # HTML Templates
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
@@ -556,10 +680,16 @@ FOLDER_TEMPLATE = '''
             transform: scale(1.05);
         }
         
-        .favorite-btn {
+        .action-buttons {
             position: absolute;
             top: 10px;
             right: 10px;
+            display: flex;
+            gap: 5px;
+            z-index: 10;
+        }
+        
+        .action-btn {
             background: rgba(255, 255, 255, 0.9);
             border: none;
             border-radius: 50%;
@@ -571,11 +701,10 @@ FOLDER_TEMPLATE = '''
             cursor: pointer;
             font-size: 18px;
             transition: all 0.2s ease;
-            z-index: 10;
             backdrop-filter: blur(5px);
         }
         
-        .favorite-btn:hover {
+        .action-btn:hover {
             background: rgba(255, 255, 255, 1);
             transform: scale(1.1);
         }
@@ -589,7 +718,22 @@ FOLDER_TEMPLATE = '''
             background: rgba(255, 69, 100, 1);
         }
         
-        .favorite-btn.loading {
+        .delete-btn {
+            background: rgba(255, 99, 71, 0.9);
+            color: white;
+        }
+        
+        .delete-btn:hover {
+            background: rgba(255, 99, 71, 1);
+        }
+        
+        .delete-btn:disabled {
+            background: rgba(128, 128, 128, 0.5);
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .action-btn.loading {
             opacity: 0.6;
             pointer-events: none;
         }
@@ -691,6 +835,79 @@ FOLDER_TEMPLATE = '''
             z-index: 1001;
         }
         
+        /* Confirmation Dialog */
+        .confirm-dialog {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(2px);
+        }
+        
+        .confirm-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            max-width: 400px;
+            width: 90%;
+            text-align: center;
+        }
+        
+        .confirm-content h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .confirm-content p {
+            color: #666;
+            margin-bottom: 25px;
+            line-height: 1.5;
+        }
+        
+        .confirm-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        
+        .confirm-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+        
+        .confirm-btn.delete {
+            background: #ff6347;
+            color: white;
+        }
+        
+        .confirm-btn.delete:hover {
+            background: #ff4500;
+        }
+        
+        .confirm-btn.cancel {
+            background: #f0f0f0;
+            color: #333;
+        }
+        
+        .confirm-btn.cancel:hover {
+            background: #e0e0e0;
+        }
+        
         @media (max-width: 600px) {
             .close {
                 top: 10px;
@@ -719,12 +936,16 @@ FOLDER_TEMPLATE = '''
                 padding: 6px 12px;
             }
             
-            .favorite-btn {
+            .action-btn {
                 width: 32px;
                 height: 32px;
                 font-size: 16px;
+            }
+            
+            .action-buttons {
                 top: 8px;
                 right: 8px;
+                gap: 3px;
             }
         }
         
@@ -796,11 +1017,22 @@ FOLDER_TEMPLATE = '''
                              alt="{{ image }}" 
                              loading="lazy"
                              onclick="openModal({{ loop.index0 }})">
-                        <button class="favorite-btn {% if favorites[folder_path + '/' + image] %}favorited{% endif %}" 
-                                onclick="toggleFavorite(event, '{{ folder_path }}/{{ image }}', this)"
-                                data-image-path="{{ folder_path }}/{{ image }}">
-                            {% if favorites[folder_path + '/' + image] %}❤️{% else %}🤍{% endif %}
-                        </button>
+                        <div class="action-buttons">
+                            <button class="action-btn favorite-btn {% if favorites[folder_path + '/' + image] %}favorited{% endif %}" 
+                                    onclick="toggleFavorite(event, '{{ folder_path }}/{{ image }}', this)"
+                                    data-image-path="{{ folder_path }}/{{ image }}"
+                                    title="Add to favorites">
+                                {% if favorites[folder_path + '/' + image] %}❤️{% else %}🤍{% endif %}
+                            </button>
+                            {% if favorites[folder_path + '/' + image] %}
+                            <button class="action-btn delete-btn" 
+                                    onclick="confirmDelete(event, '{{ folder_path }}/{{ image }}', this)"
+                                    data-image-path="{{ folder_path }}/{{ image }}"
+                                    title="Delete image">
+                                👎
+                            </button>
+                            {% endif %}
+                        </div>
                     </div>
                     <div class="image-name">{{ image }}</div>
                 </div>
@@ -816,6 +1048,18 @@ FOLDER_TEMPLATE = '''
                 <button class="nav-button next" onclick="changeImage(1)">›</button>
                 <div class="image-counter">
                     <span id="currentImageNum">1</span> / <span id="totalImages">{{ image_count }}</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Confirmation Dialog -->
+        <div id="confirmDialog" class="confirm-dialog">
+            <div class="confirm-content">
+                <h3>Delete Image</h3>
+                <p>Are you sure you want to permanently delete this image? This action cannot be undone.</p>
+                <div class="confirm-buttons">
+                    <button class="confirm-btn delete" onclick="executeDelete()">Delete</button>
+                    <button class="confirm-btn cancel" onclick="cancelDelete()">Cancel</button>
                 </div>
             </div>
         </div>
@@ -838,10 +1082,13 @@ FOLDER_TEMPLATE = '''
         ];
         
         let currentImageIndex = 0;
+        let pendingDeletePath = null;
+        let pendingDeleteButton = null;
         const modal = document.getElementById('imageModal');
         const modalImage = document.getElementById('modalImage');
         const currentImageNum = document.getElementById('currentImageNum');
         const totalImages = document.getElementById('totalImages');
+        const confirmDialog = document.getElementById('confirmDialog');
         
         function openModal(imageIndex) {
             currentImageIndex = imageIndex;
@@ -918,20 +1165,147 @@ FOLDER_TEMPLATE = '''
                     if (action === 'add') {
                         button.classList.add('favorited');
                         button.textContent = '❤️';
+                        // Show delete button
+                        showDeleteButton(button, imagePath);
                     } else {
                         button.classList.remove('favorited');
                         button.textContent = '🤍';
+                        // Hide delete button
+                        hideDeleteButton(button);
                     }
                 } else {
                     console.error('Failed to update favorite:', result.error);
-                    // You could add a toast notification here
+                    alert('Failed to update favorite: ' + result.error);
                 }
             } catch (error) {
                 console.error('Error updating favorite:', error);
-                // You could add a toast notification here
+                alert('Error updating favorite. Please try again.');
             } finally {
                 // Remove loading state
                 button.classList.remove('loading');
+            }
+        }
+        
+        // Delete functionality
+        function confirmDelete(event, imagePath, button) {
+            // Prevent opening modal when clicking delete button
+            event.stopPropagation();
+            
+            pendingDeletePath = imagePath;
+            pendingDeleteButton = button;
+            confirmDialog.style.display = 'block';
+        }
+        
+        function cancelDelete() {
+            confirmDialog.style.display = 'none';
+            pendingDeletePath = null;
+            pendingDeleteButton = null;
+        }
+        
+        async function executeDelete() {
+            if (!pendingDeletePath || !pendingDeleteButton) {
+                cancelDelete();
+                return;
+            }
+            
+            // Hide dialog first
+            confirmDialog.style.display = 'none';
+            
+            // Add loading state to button
+            pendingDeleteButton.classList.add('loading');
+            pendingDeleteButton.disabled = true;
+            
+            try {
+                const response = await fetch('/api/delete', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        image_path: pendingDeletePath
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Remove the entire image item from the page
+                    const imageItem = pendingDeleteButton.closest('.image-item');
+                    if (imageItem) {
+                        imageItem.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+                        imageItem.style.opacity = '0';
+                        imageItem.style.transform = 'scale(0.8)';
+                        
+                        setTimeout(() => {
+                            imageItem.remove();
+                            // Update image count
+                            updateImageCount();
+                        }, 300);
+                    }
+                    
+                    // Remove from images array for modal navigation
+                    const imageIndex = images.findIndex(img => img.path === pendingDeletePath);
+                    if (imageIndex !== -1) {
+                        images.splice(imageIndex, 1);
+                    }
+                    
+                } else {
+                    console.error('Failed to delete image:', result.error);
+                    alert('Failed to delete image: ' + result.error);
+                    
+                    // Remove loading state on error
+                    pendingDeleteButton.classList.remove('loading');
+                    pendingDeleteButton.disabled = false;
+                }
+            } catch (error) {
+                console.error('Error deleting image:', error);
+                alert('Error deleting image. Please try again.');
+                
+                // Remove loading state on error
+                pendingDeleteButton.classList.remove('loading');
+                pendingDeleteButton.disabled = false;
+            } finally {
+                // Clear pending delete
+                pendingDeletePath = null;
+                pendingDeleteButton = null;
+            }
+        }
+        
+        function showDeleteButton(favoriteButton, imagePath) {
+            const actionButtons = favoriteButton.parentElement;
+            const existingDeleteBtn = actionButtons.querySelector('.delete-btn');
+            
+            if (!existingDeleteBtn) {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'action-btn delete-btn';
+                deleteBtn.onclick = (e) => confirmDelete(e, imagePath, deleteBtn);
+                deleteBtn.setAttribute('data-image-path', imagePath);
+                deleteBtn.setAttribute('title', 'Delete image');
+                deleteBtn.textContent = '👎';
+                actionButtons.appendChild(deleteBtn);
+            }
+        }
+        
+        function hideDeleteButton(favoriteButton) {
+            const actionButtons = favoriteButton.parentElement;
+            const deleteBtn = actionButtons.querySelector('.delete-btn');
+            if (deleteBtn) {
+                deleteBtn.remove();
+            }
+        }
+        
+        function updateImageCount() {
+            const imageCountElement = document.querySelector('.image-count');
+            const currentCount = document.querySelectorAll('.image-item').length;
+            imageCountElement.textContent = currentCount + ' images';
+            
+            // Update modal counter
+            totalImages.textContent = currentCount;
+            
+            // If no images left, show no images message
+            if (currentCount === 0) {
+                const imageGrid = document.querySelector('.image-grid');
+                imageGrid.innerHTML = '<div class="no-images">No .png images found in this folder.</div>';
             }
         }
         
@@ -949,6 +1323,10 @@ FOLDER_TEMPLATE = '''
                         if (images.length > 1) changeImage(1);
                         break;
                 }
+            } else if (confirmDialog.style.display === 'block') {
+                if (e.key === 'Escape') {
+                    cancelDelete();
+                }
             }
         });
         
@@ -956,6 +1334,13 @@ FOLDER_TEMPLATE = '''
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {
                 closeModal();
+            }
+        });
+        
+        // Close confirm dialog when clicking outside
+        confirmDialog.addEventListener('click', function(e) {
+            if (e.target === confirmDialog) {
+                cancelDelete();
             }
         });
         
