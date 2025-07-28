@@ -13,30 +13,32 @@ import torch
 from PIL import Image
 import uuid
 
-
 class ImageGenerator:
     """
     A class for generating images using diffusion models.
-    Supports text-to-image, image-to-image, and inpainting capabilities.
+    Supports text-to-image, image-to-image, and inpainting capabilities with optimized model selection.
     """
     
     def __init__(self, 
-                 model_name="TheImposterImposters/LUSTIFY-v2.0",
-                 inpaint_model="andro-flock/LUSTIFY-SDXL-NSFW-checkpoint-v2-0-INPAINTING",
+                 text2img_model="TheImposterImposters/LUSTIFY-v2.0",
+                 img2img_model="stabilityai/stable-diffusion-xl-base-1.0",
+                 inpaint_model="diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
                  cache_dir=None,
                  use_mps=True,
                  use_cuda=None):
         """
-        Initialize the ImageGenerator with model loading and dependency checking.
+        Initialize the ImageGenerator with separate models for different tasks.
         
         Args:
-            model_name (str): Main model for text-to-image and image-to-image
-            inpaint_model (str): Model for inpainting tasks
+            text2img_model (str): Model for text-to-image generation (LUSTIFY for quality)
+            img2img_model (str): Model for image-to-image generation (SDXL for compatibility)
+            inpaint_model (str): Model for inpainting tasks (Official SDXL inpainting)
             cache_dir (str): Cache directory for model storage
             use_mps (bool): Use Metal Performance Shaders on Mac (if available)
             use_cuda (bool): Use CUDA if available (None=auto-detect)
         """
-        self.model_name = model_name
+        self.text2img_model = text2img_model
+        self.img2img_model = img2img_model
         self.inpaint_model = inpaint_model
         self.cache_dir = cache_dir or self._setup_cache_dir()
         
@@ -55,7 +57,10 @@ class ImageGenerator:
         self.img2img_pipe = None
         self.inpaint_pipe = None
         
-        print(f"✅ ImageGenerator initialized")
+        print(f"✅ ImageGenerator initialized with multi-model setup")
+        print(f"📝 Text-to-Image: {self.text2img_model}")
+        print(f"🖼️  Image-to-Image: {self.img2img_model}")
+        print(f"🎭 Inpainting: {self.inpaint_model}")
         print(f"Device: {self.device}")
         if self.is_cuda:
             print("🚀 Using CUDA GPU acceleration!")
@@ -139,7 +144,7 @@ class ImageGenerator:
     
     def _load_pipeline(self, pipeline_type="text-to-image"):
         """
-        Load the appropriate diffusion pipeline
+        Load the appropriate diffusion pipeline with model selection
         
         Args:
             pipeline_type (str): "text-to-image", "image-to-image", or "inpainting"
@@ -149,13 +154,16 @@ class ImageGenerator:
         """
         from diffusers import DiffusionPipeline, AutoPipelineForInpainting, AutoPipelineForImage2Image
         
-        # Determine which model to use
+        # Select the appropriate model based on pipeline type
         if pipeline_type == "inpainting":
             model_name = self.inpaint_model
-        else:
-            model_name = self.model_name
-        
-        print(f"Loading {pipeline_type} pipeline: {model_name}")
+            print(f"Loading {pipeline_type} pipeline: {model_name} (Official SDXL Inpainting)")
+        elif pipeline_type == "image-to-image":
+            model_name = self.img2img_model
+            print(f"Loading {pipeline_type} pipeline: {model_name} (SDXL for compatibility)")
+        else:  # text-to-image
+            model_name = self.text2img_model
+            print(f"Loading {pipeline_type} pipeline: {model_name} (LUSTIFY for quality)")
         
         try:
             # Configure model loading parameters with device-specific optimizations
@@ -167,6 +175,7 @@ class ImageGenerator:
             # Set torch_dtype based on device
             if self.is_cuda:
                 kwargs["torch_dtype"] = torch.float16  # CUDA works well with float16
+                kwargs["variant"] = "fp16"  # Use fp16 variant if available
             else:
                 kwargs["torch_dtype"] = torch.float32  # MPS and CPU work better with float32
             
@@ -233,6 +242,14 @@ class ImageGenerator:
         except Exception as e:
             print(f"❌ Error loading {pipeline_type} pipeline: {e}")
             print("Make sure you have sufficient disk space and internet connection.")
+            
+            # Provide specific guidance based on the error
+            if "not found" in str(e).lower():
+                print(f"💡 Model '{model_name}' might not exist or be accessible.")
+                print("💡 Check the model name and ensure it's available on Hugging Face.")
+            elif "memory" in str(e).lower():
+                print("💡 Try reducing image size or using CPU mode if you're running out of memory.")
+            
             sys.exit(1)
     
     def _get_pipeline(self, pipeline_type):
@@ -262,7 +279,7 @@ class ImageGenerator:
                      use_enhanced_prompting=True,  # Use LUSTIFY-specific tags
                      **kwargs):
         """
-        Generate image from text prompt
+        Generate image from text prompt using LUSTIFY v2.0 for high quality results
         
         Args:
             prompt (str): Text description of desired image
@@ -277,7 +294,7 @@ class ImageGenerator:
         Returns:
             PIL.Image: Generated image
         """
-        print(f"🎨 Generating image from text: '{prompt}'")
+        print(f"🎨 Generating image from text using LUSTIFY v2.0: '{prompt}'")
         
         # Enhance prompt for LUSTIFY model if requested
         if use_enhanced_prompting:
@@ -320,7 +337,7 @@ class ImageGenerator:
         generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
         
         try:
-            print("Generating... (this may take a minute)")
+            print("Generating with LUSTIFY v2.0... (this may take a minute)")
             with torch.no_grad():
                 # Device-specific inference optimizations
                 if self.is_mps:
@@ -343,7 +360,7 @@ class ImageGenerator:
             
         except Exception as e:
             print(f"❌ Error generating image: {e}")
-            print(f"💡 Try lowering strength (current: strength) for more consistency")
+            print(f"💡 Try lowering image dimensions or reducing inference steps")
             print(f"💡 Or enhance your prompt with camera/lighting details")
             return None
     
@@ -380,37 +397,35 @@ class ImageGenerator:
                       prompt, 
                       input_image,
                       output_path="output.png",
-                      strength=0.20,           # MUCH lower for LUSTIFY consistency
-                      num_inference_steps=30,  # Model docs recommend 30 steps  
-                      guidance_scale=5.5,     # Within the 4-7 range from docs
-                      use_enhanced_prompting=True,  # Use LUSTIFY-specific tags
+                      strength=0.75,           # Higher default for SDXL compatibility
+                      num_inference_steps=30,  # Standard SDXL steps
+                      guidance_scale=7.5,     # Standard SDXL guidance
+                      use_enhanced_prompting=False,  # Don't use LUSTIFY tags for SDXL
                       **kwargs):
         """
-        Transform an existing image based on text prompt
+        Transform an existing image based on text prompt using SDXL for compatibility
         
         Args:
             prompt (str): Text description of desired transformation
             input_image (str or PIL.Image): Path to input image or PIL Image object
             output_path (str): Path to save generated image
-            strength (float): Transformation strength (0.0-1.0, LOWER=more consistency)
+            strength (float): Transformation strength (0.0-1.0, HIGHER=more change for SDXL)
             num_inference_steps (int): Number of denoising steps
             guidance_scale (float): Guidance scale for generation
-            use_enhanced_prompting (bool): Add LUSTIFY-specific style tags
+            use_enhanced_prompting (bool): Add style tags (disabled for SDXL)
             **kwargs: Additional generation parameters
         
         Returns:
             PIL.Image: Generated image
         """
-        print(f"🖼️  Transforming image with prompt: '{prompt}'")
-        print(f"💡 Using strength: {strength} (lower=more consistent with original)")
+        print(f"🖼️  Transforming image with SDXL: '{prompt}'")
+        print(f"💡 Using strength: {strength} (SDXL typically needs higher values)")
         
-        # Enhance prompt for LUSTIFY model if requested
+        # For SDXL, we don't use LUSTIFY-specific enhancements
         if use_enhanced_prompting:
-            enhanced_prompt = self._enhance_prompt_for_lustify(prompt)
-            print(f"🎨 Enhanced prompt: '{enhanced_prompt}'")
-            prompt = enhanced_prompt
+            print("🔧 Enhanced prompting disabled for SDXL compatibility")
         
-        # Get pipeline
+        # Get pipeline (will load SDXL model)
         pipe = self._get_pipeline("image-to-image")
         
         # Load and prepare input image
@@ -444,10 +459,10 @@ class ImageGenerator:
             # CUDA can handle full resolution efficiently
             print(f"🚀 Running on CUDA - Full resolution: {width}x{height}, {num_inference_steps} steps")
         
-        # Add LUSTIFY-specific negative prompt for better quality
+        # Add standard negative prompt for SDXL
         negative_prompt = kwargs.pop('negative_prompt', None)
         if not negative_prompt:
-            negative_prompt = "blurry, low quality, distorted, deformed, extra limbs, bad anatomy"
+            negative_prompt = "blurry, low quality, distorted, deformed, bad anatomy, extra limbs"
         
         # Generation parameters
         generation_kwargs = {
@@ -460,7 +475,7 @@ class ImageGenerator:
         generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
         
         try:
-            print("Generating... (this may take a minute)")
+            print("Generating with SDXL... (this may take a minute)")
             with torch.no_grad():
                 if self.is_mps:
                     with torch.autocast(device_type='cpu', enabled=False):
@@ -479,6 +494,8 @@ class ImageGenerator:
             
         except Exception as e:
             print(f"❌ Error generating image: {e}")
+            print(f"💡 Try adjusting strength (current: {strength}) - SDXL often needs 0.5-0.8")
+            print(f"💡 Or try reducing guidance_scale (current: {guidance_scale})")
             return None
     
     def inpaint(self, 
@@ -487,11 +504,11 @@ class ImageGenerator:
                mask_image,
                output_path="output.png",
                strength=0.99,
-               num_inference_steps=30,  # Model docs recommend 30 steps
-               guidance_scale=5.5,     # Within the 4-7 range from docs
+               num_inference_steps=30,  # Standard SDXL steps
+               guidance_scale=7.5,     # Standard SDXL guidance
                **kwargs):
         """
-        Inpaint parts of an image based on a mask and text prompt
+        Inpaint parts of an image based on a mask and text prompt using official SDXL inpainting
         
         Args:
             prompt (str): Text description of desired inpainting
@@ -507,9 +524,9 @@ class ImageGenerator:
         Returns:
             PIL.Image: Generated image
         """
-        print(f"🎭 Inpainting image with prompt: '{prompt}'")
+        print(f"🎭 Inpainting image with official SDXL inpainting: '{prompt}'")
         
-        # Get pipeline
+        # Get pipeline (will load official SDXL inpainting model)
         pipe = self._get_pipeline("inpainting")
         
         # Load and prepare images
@@ -535,19 +552,31 @@ class ImageGenerator:
             num_inference_steps = min(num_inference_steps, 15)
             print(f"⚠️  Running on CPU - using reduced settings: {width}x{height}, {num_inference_steps} steps")
         elif self.is_mps:
-            if width > 768 or height > 768:
-                input_image = input_image.resize((768, 768))
-                mask_image = mask_image.resize((768, 768))
-                width, height = 768, 768
+            if width > 1024 or height > 1024:
+                # Scale down to 1024 max for MPS
+                scale = min(1024/width, 1024/height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                input_image = input_image.resize((new_width, new_height))
+                mask_image = mask_image.resize((new_width, new_height))
+                width, height = new_width, new_height
             num_inference_steps = min(num_inference_steps, 30)
             print(f"🚀 Running on MPS - optimized settings: {width}x{height}, {num_inference_steps} steps")
         elif self.is_cuda:
             # CUDA can handle larger images better
-            if width > 1024 or height > 1024:
-                input_image = input_image.resize((1024, 1024))
-                mask_image = mask_image.resize((1024, 1024))
-                width, height = 1024, 1024
+            if width > 1536 or height > 1536:
+                scale = min(1536/width, 1536/height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                input_image = input_image.resize((new_width, new_height))
+                mask_image = mask_image.resize((new_width, new_height))
+                width, height = new_width, new_height
             print(f"🚀 Running on CUDA - high resolution: {width}x{height}, {num_inference_steps} steps")
+        
+        # Standard negative prompt for SDXL
+        negative_prompt = kwargs.pop('negative_prompt', None)
+        if not negative_prompt:
+            negative_prompt = "blurry, low quality, distorted, deformed, bad anatomy"
         
         # Generation parameters
         generation_kwargs = {
@@ -556,11 +585,12 @@ class ImageGenerator:
             "strength": strength,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
+            "negative_prompt": negative_prompt,
         }
         generation_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
         
         try:
-            print("Generating... (this may take a minute)")
+            print("Generating with official SDXL inpainting... (this may take a minute)")
             with torch.no_grad():
                 if self.is_mps:
                     with torch.autocast(device_type='cpu', enabled=False):
@@ -579,8 +609,32 @@ class ImageGenerator:
             
         except Exception as e:
             print(f"❌ Error generating image: {e}")
+            print(f"💡 Try adjusting the mask or prompt")
+            print(f"💡 Ensure mask has clear white (inpaint) and black (keep) areas")
             return None
 
+    def get_model_info(self):
+        """
+        Display information about the loaded models
+        """
+        print("\n" + "="*60)
+        print("🤖 MODEL CONFIGURATION")
+        print("="*60)
+        print(f"📝 Text-to-Image: {self.text2img_model}")
+        print(f"   └─ Purpose: High-quality photorealistic generation")
+        print(f"   └─ Strengths: NSFW/SFW content, natural language prompts")
+        print(f"")
+        print(f"🖼️  Image-to-Image: {self.img2img_model}")
+        print(f"   └─ Purpose: Reliable image transformation")
+        print(f"   └─ Strengths: Stable results, broad compatibility")
+        print(f"")
+        print(f"🎭 Inpainting: {self.inpaint_model}")
+        print(f"   └─ Purpose: Professional inpainting capabilities")
+        print(f"   └─ Strengths: Official SDXL inpainting support")
+        print(f"")
+        print(f"💾 Device: {self.device}")
+        print(f"📁 Cache: {self.cache_dir}")
+        print("="*60)
 
 # Example usage
 if __name__ == "__main__":
@@ -591,26 +645,31 @@ if __name__ == "__main__":
     # Or explicitly enable/disable CUDA
     # generator = ImageGenerator(use_cuda=True)  # Force CUDA if available
     # generator = ImageGenerator(use_cuda=False)  # Disable CUDA
-    
+    id = uuid.uuid4()
+    output_path=f"{id}.png"
+
     # Example 1: Text-to-image generation
     image1 = generator.text_to_image(
-        prompt="photograph,photo of a sexy woman, white skin, short face framing red hair, glasses, high cheekbones, full lips and blue eyes with long lashes, kneeling down sucking a popsicle, looking up at the camera. wearing black lace lingerie, 8k",
-        output_path=f"{uuid.uuid4()}.png"
+        prompt="photograph,photo of a sexy woman, white skin, flowing black hair, glasses, soft features, light blue eyes with long eyelashes, laying on a bed, seductive stare looking at viewer. wearing black lace lingerie, sunlight rays from window 8k",
+        output_path=output_path
     )
     
-    #Image to Image does NOT work well DO NOT BOTHER USING
+
     #Leaving in place as it may just need more work but research online suggest it's not very effective
-    """if image1:
-        # Example 2: Image-to-image transformation with LOWER strength for consistency
-        image2 = generator.image_to_image(
-            prompt="photograph, photo of the same ape swinging from a tree wide angle camera, same scene, same lighting, 8k",
-            input_image="step1_text2img.png",
-            output_path="step2_img2img.png",
-            strength=0.35  # Much lower for better consistency!
+    if image1:
+        print("IMAGE CREATED, NOW LETS MODIFY IT")
+
+    # Example 2: Image-to-image transformation with LOWER strength for consistency
+    image2 = generator.image_to_image(
+            prompt="photograph,photo of the woman, sitting in a, seductive stare looking at viewer. wearing black lace lingerie, sunlight rays from window 8k",
+            #prompt="photograph, photo of the woman laying on a bed looking at the camera, 8k",
+            input_image=output_path,
+            output_path=f"{id}_i2i.png",
+            strength=0.7 # Increase for more variation
         )
         
-        if image2:
+    if image2:
             print("🎉 Two-step demo complete!")
             print("Generated images:")
             print(f"  - Original: step1_text2img.png")
-            print(f"  - Transformed: step2_img2img.png")"""
+            print(f"  - Transformed: step2_img2img.png")
