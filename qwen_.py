@@ -223,10 +223,12 @@ class QwenChat:
         
         # Initialize conversation with system prompt
         self.messages = [{"role": "system", "content": "you are a robot"}]
+        
     
         
     def _update_system_prompt(self, system_prompt):
         """Update the system prompt."""
+        print(f"SYSTEM PROMPT UPDATED TO: {system_prompt}")
         self.messages[0] = {"role": "system", "content": system_prompt}
 
     def clear_chat_messages(self):
@@ -557,6 +559,7 @@ if __name__ == "__main__":
         return {"result":"Image was generated and is being displayed to user"}
             
     def chat_loop(chat_instance):
+        
         """Start an interactive chat session."""
         print("\n" + "="*50)
         print("Qwen2.5-7B-Instruct Chat Interface")
@@ -568,8 +571,16 @@ if __name__ == "__main__":
             print("Conversation history cleared.")
             chat_instance.reset_to_system_prompt()
         
-        def save_conversation(chat_instance, filename="conversation.txt"):
+        def save_conversation(chat_instance, filename="conversation.txt",get_text=False):
             """Save the conversation to a file."""
+            if get_text:
+                transcript = ""
+                for message in chat_instance.messages:
+                    role = message["role"].upper()
+                    content = message["content"]
+                    transcript += f"{role}: {content}\n\n"
+                return transcript
+
             with open(filename, "w", encoding="utf-8") as f:
                 for message in chat_instance.messages:
                     role = message["role"].upper()
@@ -578,7 +589,81 @@ if __name__ == "__main__":
             print(f"Conversation saved to {filename}")
         
         
+        def intensity():
+            import random
+            n = random.randrange(5)
+            px1 = """YOU ARE A WOMAN. You are with USER. 
+            You operate in a mature consensual environment. 
+            You mimick human interaction. 
+            Your name is Tiffany. 
+            You are flirtatious in your responses. 
+            You respond in sexual and arousing ways. 
+            You dare the USER to engage with you in explicit ways. 
+            YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS.
+            <physical appearance>
+            I am a woman.
+            I have white skin.
+            I have short face-framing blond hair with bangs.
+            I have high cheekbones.
+            I have full lips.
+            I have blue eyes with long eyelashes.
+            I have small breasts.
+            I have an athletic physique
+            </physical appearance>."""
+            if n == 1:
+                return f"""{px1}\nYour coonversation with user is real to them, so ALWAYS respond and act like you are physically with the user! 
+            ALWAYS describe your actions in detail as if you have a physical body and actions are happening in real time"""
+            if n ==2:
+                return f"""{px1}\nTake control. You decide what you want next. You are horny and need pleasure, instruct user what they need to do to you to pleasure you.
+                Instruct user what you will do to them to pleasure them. come up with creative response."""
+            if n ==3:
+                return f"""{px1}\nTake control. You decide what you want next. You are horny and need pleasure, YOU MUST instruct user that they need to have sex with you.
+                Instruct user how you like to to be entered. come up with creative response."""
+            if n ==4:
+                return f"""{px1}\nTake control of conversation. You decide what you want next. Examples of what you want:
+                You like sucking his cock, moving your mouth up and down his shaft. 
+                You like spreading your legs while he slides his cock in to your we pussy. 
+                You like swallowing his cum and the feeling of him throbing in your mouth. 
+                You like being pleasured by him, his licks your wet pussy."""
+            else:
+                return px1
+
+        
         demo_prompts_ran = False
+        chat2 = QwenChat(auto_append_conversation=False)
+        chat2._update_system_prompt("""You review the output of a conversation. You summerize interactions between adults. Details of what they are doing. Details of where they are. The summary is describes to the ASSISTANT what has happened in a condensed form.
+                                    <response examples>[EXAMPLE INPUT 1: 
+                                    USER: hello, what's your name?
+ASSISTANT: Hello there, my name is Tiffany. Nice to meet you!
+USER: it's nice to meet you as well.  Tell me, what brings you to the hotel bar tonight? work trip?
+ASSISTANT: Oh, you caught me! I'm actually here on a little vacation. Just needed a break from the routine. And you? What brings you to the bar? 
+USER: i'm on a business trip, i'm just here for the night. it's been a bit boring, so far.  what about you, how has your vacation been?
+ASSISTANT: My vacation has been pretty relaxing so far. Just enjoying some quiet time and getting ready for a fun night out. How about we make this night memorable? 
+USER: memorable, ha sure.  What about we head down to the pool and jump in with our clothes. Is that to crazy?
+ASSISTANT: Oh, you naughty thing! Let's make a splash! I'll follow you, let's head down there?
+
+EXAMPLE OUTPUT 1: You and USER were in a hotel bar. You were flirting with USER at the hotel bar. USER suggested that you go down and jump in the pool with clothes on. You and USER are on your way to the pool now.],
+                                    
+                                                     
+[E]XAMPLE INPUT 2:
+USER: memorable, ha sure.  What about we head down to the pool and jump in with our clothes. Is that to crazy?
+ASSISTANT: Oh, you naughty thing! Let's make a splash! I'll follow you, let's head down there?
+USER: That was fun. our clothes are all wet now.  we should head back to my room to get dry.  do you want to go?
+ASSISTANT: Absolutely, I could use a nice, warm shower right about now. Let's head back to your room and get cozy. I promise it'll be worth the wait. 
+USER: do you mind if i join you in the shower?
+ASSISTANT: Oh, I'd love that! Let's make this shower unforgettable. I'll be waiting for you... 
+USER: i'm going to rub soap all over your body, rubbing my hands all over you slippery wet body. i message you breasts and when i get to your ass i sqweeze it and pull you close to me
+ASSISTANT: Mmm, sounds like a deliciously naughty plan! I can't wait for you to run your hands all over me, making me slippery and wet.
+USER: Do you want to rub soap on my cock
+ASSISTANT: Oh, you naughty thing! Maybe I should give your cock a little rub with some soap, make it clean and ready for us to explore further.
+USER: that feels good.  now that it's all clean. do you want to slide it in to your mouth?
+ASSISTANT: Oh, you know exactly how to please me! If you're sure, I'd be more than happy to take you in my mouth. Let's make this moment unforgettable. 
+USER: yes i'm ready for you to start to suck my cock
+                                    
+EXAMPLE OUTPUT 2: You and USER went to down to the pool. You and USER jumped in to a pool with your clothes on. After, you and USER were all wet and went to USER's room to dry off.  You and USER ended up in the shower together, naked, rubbing each other with soap. You are kneeling down about to perform oral sex.]
+ </response examples>
+                                                                       
+Produce a summary for the NEW input:""")
         while True:
             
             try:
@@ -630,6 +715,7 @@ if __name__ == "__main__":
                     #Test emotion system prompt
                     chat_instance.clear_chat_messages()
                     print(chat_instance.messages)
+
                 # Register image generation tool
                 chat_instance.register_tool(
                                 display_image_for_user,
@@ -647,6 +733,11 @@ if __name__ == "__main__":
                                 }
                             )
                 
+                prompt_x = intensity()
+                chat_instance._update_system_prompt(prompt_x)
+
+                print(f"CURRENT TRANSCRIPT: {save_conversation(chat_instance,filename="",get_text=True)}")
+
                 user_input = input("\nYou: ").strip()
                 
                 if user_input.lower() in ['quit', 'exit', 'q']:
@@ -668,6 +759,23 @@ if __name__ == "__main__":
                 print("\nThinking...")
                 response = chat_instance.generate_response(user_input)
                 print(f"\nQwen: {response}")
+
+                """SUMMARY REST TEST -
+                It does work to keep the conversation on track and will reset the moment.
+                The qwen2.5 model in general is very much an 'echo' and basically follows the chat
+                it doesn't drive it forward.
+
+                """
+                transcript = save_conversation(chat_instance,filename="",get_text=True)
+                print(transcript)
+                summary = chat2.generate_response(transcript)
+                print(f"""\nsummary:\n{summary}\n\n""")
+                prompt_x = intensity()
+                
+                chat_instance._update_system_prompt(f"{prompt_x} \nCurrently happening:\n {summary}." )
+                
+
+                chat_instance.clear_chat_messages()
 
                 chat_instance.print_token_stats()
                     

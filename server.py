@@ -1,6 +1,9 @@
 from flask import Flask, render_template_string, send_from_directory, abort, jsonify, request
 import os
+import uuid
+import threading
 from pathlib import Path
+from lustify_xwork import ImageGenerator
 
 app = Flask(__name__)
 #
@@ -26,6 +29,11 @@ fav.txt                    ← Favorites file
 
 # Ensure the main image folder exists
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
+# Ensure demo folders exist for generated images
+os.makedirs(f"{IMAGE_FOLDER}/demo/demo_shoot", exist_ok=True)
+
+# Global dict to track image generation status
+generation_status = {}
 
 def load_favorites():
     """Load favorites from fav.txt file."""
@@ -64,6 +72,43 @@ def is_favorite(image_path):
     favorites = load_favorites()
     return image_path in favorites
 
+def generate_image_thread(prompt, job_id):
+    """Background thread function to generate image."""
+    try:
+        generation_status[job_id] = {
+            'status': 'generating',
+            'message': 'Generating image...',
+            'progress': 0
+        }
+        
+        generator = ImageGenerator()
+        output_path = f"./xserver/demo/demo_shoot/demo_{str(uuid.uuid4())}.png"
+        
+        # Update progress
+        generation_status[job_id]['progress'] = 50
+        generation_status[job_id]['message'] = 'Processing prompt...'
+        
+        # Generate the image
+        image = generator.text_to_image(
+            prompt=prompt,
+            output_path=output_path
+        )
+        
+        # Success
+        generation_status[job_id] = {
+            'status': 'completed',
+            'message': 'Image generated successfully!',
+            'progress': 100,
+            'image_path': output_path.replace('./xserver/', ''),
+            'filename': os.path.basename(output_path)
+        }
+        
+    except Exception as e:
+        generation_status[job_id] = {
+            'status': 'error',
+            'message': f'Error generating image: {str(e)}',
+            'progress': 0
+        }
 
 def get_subfolders():
     """Get all subdirectories in the main image folder."""
@@ -127,6 +172,119 @@ def index():
                                 folders=folders, 
                                 image_folder=IMAGE_FOLDER)
 
+@app.route('/image_prompt')
+def image_prompt():
+    """Image generation page."""
+    return render_template_string(IMAGE_PROMPT_TEMPLATE)
+
+@app.route('/api/generate', methods=['POST'])
+def generate_image():
+    """API endpoint to start image generation."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No data provided'
+            }), 400
+        print(data)
+        # Expected fields with their default values
+        expected_fields = {
+            'style': 'photograph, photo of',
+            'subject': 'a woman',
+            'skin': 'tan skin',
+            'hair': 'short face-framing blond hair with bangs',
+            'face': 'high cheekbones',
+            'eyes': 'brown eyes',
+            'attribute': 'long eyelashes',
+            'lips': 'full lips',
+            'chest': 'wide',
+            'pose':'sitting in a chair',
+            'action':'legs crossed, barefoot',
+            'framing':'sedutive stare at viewer',
+            'clothes':'wearing a gold bikini',
+            'lighting':'soft lighting from window'
+        }
+        
+        # Extract and validate fields
+        fields = {}
+        for field_name, default_value in expected_fields.items():
+            field_value = data.get(field_name, '').strip()
+            if field_value:  # Only include non-empty fields
+                fields[field_name] = field_value
+        
+        # Check if at least subject is provided
+        if 'subject' not in fields:
+            return jsonify({
+                'success': False,
+                'error': 'Subject field is required'
+            }), 400
+        
+        # Concatenate all fields into a single prompt
+        # Order matters for better prompt structure
+        prompt_parts = []
+        field_order = ['style', 'subject', 'skin', 'hair', 'face', 'eyes', 'attribute', 'lips', 'chest','pose','action',
+                       'framing','clothes','lighting']
+        
+        for field_name in field_order:
+            if field_name in fields:
+                prompt_parts.append(fields[field_name])
+        
+        # Join with commas and spaces for natural language flow
+        prompt = ', '.join(prompt_parts)
+        
+        # Clean up the prompt (remove extra commas, spaces)
+        prompt = ', '.join([part.strip() for part in prompt.split(',') if part.strip()])
+        
+        if not prompt:
+            return jsonify({
+                'success': False,
+                'error': 'Generated prompt is empty'
+            }), 400
+        
+        # Generate unique job ID
+        job_id = str(uuid.uuid4())
+        
+        # Log the generated prompt for debugging
+        print(f"Generated prompt for job {job_id}: {prompt}")
+        
+        # Start generation in background thread
+        thread = threading.Thread(
+            target=generate_image_thread,
+            args=(prompt, job_id)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'job_id': job_id,
+            'message': 'Image generation started',
+            'prompt': prompt  # Return the generated prompt for debugging
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }), 500
+
+@app.route('/api/status/<job_id>')
+def get_generation_status(job_id):
+    """API endpoint to check image generation status."""
+    if job_id not in generation_status:
+        return jsonify({
+            'success': False,
+            'error': 'Job ID not found'
+        }), 404
+    
+    status = generation_status[job_id]
+    return jsonify({
+        'success': True,
+        **status
+    })
+
 @app.route('/folder/<folder_name>')
 @app.route('/folder/<folder_name>/<subfolder_name>')
 def view_folder(folder_name, subfolder_name=None):
@@ -186,23 +344,6 @@ def view_folder(folder_name, subfolder_name=None):
 @app.route('/image/<path:folder_path>/<filename>')
 def serve_image(folder_path, filename):
     """Serve individual image files from folder or subfolder."""
-    """# Security checks
-    if '..' in folder_path or '..' in filename:
-        abort(404)
-    
-    # Check file extension
-    if not filename.lower().endswith('.png'):
-        abort(404)
-    
-    full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
-    
-    # Check if folder and file exist
-    if not os.path.exists(full_folder_path) or not os.path.isdir(full_folder_path):
-        abort(404)
-    
-    file_path = os.path.join(full_folder_path, filename)
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        abort(404)"""
     full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
     
     #Caching for faster loads
@@ -216,29 +357,8 @@ def handle_favorite():
     try:
         data = request.get_json()
         
-        """if not data or 'action' not in data or 'image_path' not in data:
-            return jsonify({
-                'success': False,
-                'error': 'Missing required fields: action and image_path'
-            }), 400"""
-        
         action = data['action']
         image_path = data['image_path']
-        
-        """# Security check - prevent directory traversal
-        if '..' in image_path or image_path.startswith('/') or '\\' in image_path:
-            return jsonify({
-                'success': False,
-                'error': 'Invalid image path'
-            }), 400"""
-        
-        """# Verify the image exists
-        full_image_path = os.path.join(IMAGE_FOLDER, image_path)
-        if not os.path.exists(full_image_path) or not os.path.isfile(full_image_path):
-            return jsonify({
-                'success': False,
-                'error': 'Image not found'
-            }), 404"""
         
         # Handle the favorite action
         if action == 'add':
@@ -268,7 +388,6 @@ def handle_favorite():
             'success': False,
             'error': str(e)
         }), 500
-
 
 @app.route('/favorites')
 def view_favorites():
@@ -382,7 +501,6 @@ def handle_delete():
             'error': f'Unexpected error: {str(e)}'
         }), 500
 
-
 @app.route('/api/delete_all_favorites', methods=['POST'])
 def handle_delete_all_favorites():
     """API endpoint to delete ALL favorited images from disk and clear the favorites list."""
@@ -432,7 +550,7 @@ def handle_delete_all_favorites():
             'success': False,
             'error': f'Unexpected error: {str(e)}'
         }), 500
-    
+   
 # HTML Templates
 INDEX_TEMPLATE = '''
 <!DOCTYPE html>
@@ -469,6 +587,38 @@ INDEX_TEMPLATE = '''
             margin-bottom: 30px;
             text-align: center;
             font-weight: 600;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .action-button {
+            display: inline-block;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-weight: 500;
+            transition: transform 0.2s ease;
+        }
+        
+        .action-button:hover {
+            transform: translateY(-2px);
+            color: white;
+            text-decoration: none;
+        }
+        
+        .generate-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        .favorites-button {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
         }
         
         .folder-list {
@@ -513,16 +663,20 @@ INDEX_TEMPLATE = '''
             .container { padding: 15px; }
             h1 { font-size: 24px; }
             .folder-link { padding: 15px; font-size: 16px; }
+            .action-buttons { flex-direction: column; align-items: center; }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📁 Image Folders</h1>
+        <h1>📁 Image Server</h1>
 
-        <!-- Add this favorites button -->
-        <div style="text-align: center; margin-bottom: 20px;">
-            <a href="/favorites" style="display: inline-block; background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%); color: white; text-decoration: none; padding: 12px 24px; border-radius: 25px; font-weight: 500; transition: transform 0.2s ease;">
+        <!-- Action Buttons -->
+        <div class="action-buttons">
+            <a href="/image_prompt" class="action-button generate-button">
+                🎨 Generate New Image
+            </a>
+            <a href="/favorites" class="action-button favorites-button">
                 ❤️ View Favorites
             </a>
         </div>
@@ -543,6 +697,570 @@ INDEX_TEMPLATE = '''
             </div>
         {% endif %}
     </div>
+</body>
+</html>
+'''
+
+IMAGE_PROMPT_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generate Image - Image Server</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        
+        .back-link {
+            display: inline-block;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+            margin-bottom: 20px;
+        }
+        
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        
+        .generate-section {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            padding: 30px;
+            color: white;
+        }
+        
+        .generate-section h2 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 600;
+            text-align: center;
+        }
+        
+        .form-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .form-label {
+            font-weight: 500;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.9;
+        }
+        
+        .form-input {
+            padding: 12px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            outline: none;
+            font-family: inherit;
+            background: rgba(255,255,255,0.95);
+            color: #333;
+        }
+        
+        .form-input:focus {
+            background: white;
+            box-shadow: 0 0 0 3px rgba(255,255,255,0.3);
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        
+        .generate-btn, .clear-btn {
+            padding: 15px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 120px;
+        }
+        
+        .generate-btn {
+            background: rgba(255,255,255,0.9);
+            color: #667eea;
+        }
+        
+        .generate-btn:hover {
+            background: white;
+            transform: translateY(-2px);
+        }
+        
+        .generate-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .clear-btn {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            border: 2px solid rgba(255,255,255,0.3);
+        }
+        
+        .clear-btn:hover {
+            background: rgba(255,255,255,0.3);
+            border-color: rgba(255,255,255,0.5);
+        }
+        
+        .status-message {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.1);
+            display: none;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+            margin-top: 15px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: white;
+            width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 4px;
+        }
+        
+        .tips-section {
+            margin-top: 30px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 12px;
+        }
+        
+        .tips-section h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .tips-list {
+            color: #666;
+            line-height: 1.8;
+        }
+        
+        .tips-list li {
+            margin-bottom: 8px;
+        }
+        
+        @media (max-width: 768px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        @media (max-width: 600px) {
+            body { padding: 10px; }
+            .container { padding: 20px; }
+            .generate-section { padding: 20px; }
+            .button-group { flex-direction: column; align-items: center; }
+            .generate-btn, .clear-btn { width: 100%; max-width: 200px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Image Folders</a>
+        
+        <div class="header">
+            <h1>🎨 Generate New Image</h1>
+            <p style="color: #666;">Create stunning images using detailed attributes</p>
+        </div>
+
+        <div class="generate-section">
+            <h2>🖼️ Customize Your Image</h2>
+            <div class="form-container">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label class="form-label" for="style">Style</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="style" 
+                            value="photograph, photo of"
+                            placeholder="e.g., photograph, digital art, painting"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="subject">Subject</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="subject" 
+                            value="a woman"
+                            placeholder="e.g., a woman, a man, a person"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="skin">Skin</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="skin" 
+                            value="tan skin"
+                            placeholder="e.g., tan skin, pale skin, dark skin"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="hair">Hair</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="hair" 
+                            value="short face-framing blond hair with bangs"
+                            placeholder="e.g., flowing brown hair, short layered hair, bixi cut, pixi"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="face">Face</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="face" 
+                            value="high cheekbones"
+                            placeholder="e.g., high cheekbones, soft features, angular features"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="eyes">Eyes</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="eyes" 
+                            value="light blue eyes"
+                            placeholder="e.g., blue eyes, green eyes, brown eyes"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="attribute">Attribute</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="attribute" 
+                            value="long eyelashes"
+                            placeholder="e.g., long eyelashes, freckles, dimples"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="lips">Lips</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="lips" 
+                            value="full lips"
+                            placeholder="e.g., full lips, thin lips, glossy lips"
+                        >
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="chest">Chest</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="chest" 
+                            value="small tits"
+                            placeholder="e.g., natural breasts, large tits"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="pose">Pose</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="pose" 
+                            value="sitting on a bed"
+                            placeholder="e.g., laying on a blankiet, kneeling down"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="action">Action</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="action" 
+                            value="one leg crossed over the other, barefoot"
+                            placeholder="e.g., walking, jumping"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="framing">Framing</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="framing" 
+                            value="seductive smile at viewer"
+                            placeholder="e.g., looking up at viewer, looking back over shoulder"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="clothes">Clothes</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="clothes" 
+                            value="wearing a gold bikini"
+                            placeholder="e.g., nude, underwear"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="lighting">Lighting</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="lighting" 
+                            value="soft light, 8k image"
+                            placeholder="e.g., sunray through window, daylight"
+                        >
+                    </div>
+
+                </div>
+                
+                <div class="button-group">
+                    <button class="generate-btn" id="generateBtn" onclick="generateImage()">
+                        Generate Image
+                    </button>
+                    <button class="clear-btn" onclick="clearForm()">
+                        Reset to Defaults
+                    </button>
+                </div>
+            </div>
+            
+            <div class="status-message" id="statusMessage">
+                <div id="statusText"></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tips-section">
+            <h3>💡 Tips for Better Results</h3>
+            <ul class="tips-list">
+                <li><strong>Style:</strong> Try "photorealistic", "digital art", "oil painting", "watercolor", "cinematic"</li>
+                <li><strong>Be specific:</strong> Use detailed descriptions for each attribute to get more accurate results</li>
+                <li><strong>Combine attributes:</strong> The fields will be combined into a single prompt automatically</li>
+                <li><strong>Experiment:</strong> Try different combinations of features to create unique looks</li>
+                <li><strong>Leave empty:</strong> If you don't want a specific attribute, just leave that field empty</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let currentJobId = null;
+        let statusInterval = null;
+
+        function generateImage() {
+            const generateBtn = document.getElementById('generateBtn');
+            const statusMessage = document.getElementById('statusMessage');
+            const statusText = document.getElementById('statusText');
+            const progressFill = document.getElementById('progressFill');
+
+            // Collect all form values
+            const formData = {
+                style: document.getElementById('style').value.trim(),
+                subject: document.getElementById('subject').value.trim(),
+                skin: document.getElementById('skin').value.trim(),
+                hair: document.getElementById('hair').value.trim(),
+                face: document.getElementById('face').value.trim(),
+                eyes: document.getElementById('eyes').value.trim(),
+                attribute: document.getElementById('attribute').value.trim(),
+                lips: document.getElementById('lips').value.trim(),
+                chest: document.getElementById('chest').value.trim(),
+                pose: document.getElementById('pose').value.trim(),
+                action: document.getElementById('action').value.trim(),
+                framing: document.getElementById('framing').value.trim(),
+                clothes: document.getElementById('clothes').value.trim(),
+                lighting: document.getElementById('lighting').value.trim(),
+            };
+
+            // Check if at least subject is filled
+            if (!formData.subject) {
+                alert('Please enter at least a subject');
+                return;
+            }
+
+            // Disable button and show status
+            generateBtn.disabled = true;
+            generateBtn.textContent = 'Generating...';
+            statusMessage.style.display = 'block';
+            statusText.textContent = 'Starting image generation...';
+            progressFill.style.width = '0%';
+
+            // Start generation
+            fetch('/api/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    currentJobId = data.job_id;
+                    checkStatus();
+                } else {
+                    throw new Error(data.error);
+                }
+            })
+            .catch(error => {
+                statusText.textContent = 'Error: ' + error.message;
+                resetForm();
+            });
+        }
+
+        function checkStatus() {
+            if (!currentJobId) return;
+
+            statusInterval = setInterval(() => {
+                fetch(`/api/status/${currentJobId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const statusText = document.getElementById('statusText');
+                        const progressFill = document.getElementById('progressFill');
+
+                        statusText.textContent = data.message;
+                        progressFill.style.width = data.progress + '%';
+
+                        if (data.status === 'completed') {
+                            clearInterval(statusInterval);
+                            statusText.innerHTML = `✅ ${data.message}<br><a href="/folder/demo/demo_shoot" style="color: white; text-decoration: underline; font-weight: bold;">→ View Generated Image</a>`;
+                            setTimeout(resetForm, 5000);
+                        } else if (data.status === 'error') {
+                            clearInterval(statusInterval);
+                            statusText.textContent = '❌ ' + data.message;
+                            setTimeout(resetForm, 3000);
+                        }
+                    }
+                })
+                .catch(error => {
+                    clearInterval(statusInterval);
+                    document.getElementById('statusText').textContent = 'Error checking status: ' + error.message;
+                    setTimeout(resetForm, 3000);
+                });
+            }, 6000);
+        }
+
+        function resetForm() {
+            const generateBtn = document.getElementById('generateBtn');
+            const statusMessage = document.getElementById('statusMessage');
+
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'Generate Image';
+            statusMessage.style.display = 'none';
+            currentJobId = null;
+            
+            if (statusInterval) {
+                clearInterval(statusInterval);
+                statusInterval = null;
+            }
+        }
+
+        function clearForm() {
+            // Reset all fields to their default values
+            document.getElementById('style').value = 'photograph, photo of';
+            document.getElementById('subject').value = 'a woman';
+            document.getElementById('skin').value = 'tan skin';
+            document.getElementById('hair').value = 'short face-framing blond hair with bangs';
+            document.getElementById('face').value = 'high cheekbones';
+            document.getElementById('eyes').value = 'brown eyes';
+            document.getElementById('attribute').value = 'long eyelashes';
+            document.getElementById('lips').value = 'full lips';
+            document.getElementById('chest').value = 'small tits';
+            document.getElementById('pose').value = 'sitting in a white arm chair ';
+            document.getElementById('action').value = 'crosslegged, barefoot';
+            document.getElementById('framing').value = 'staring seductivly at viewer';
+            document.getElementById('clothes').value = 'gold bikini';
+            document.getElementById('lighting').value = 'sunlight';
+            
+            // Focus on the first field
+            document.getElementById('style').focus();
+        }
+
+        // Allow Ctrl+Enter to submit from any field
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'Enter') {
+                generateImage();
+            }
+        });
+
+        // Focus on style input when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('style').focus();
+        });
+    </script>
 </body>
 </html>
 '''
