@@ -38,6 +38,12 @@ Dependencies:
 - QwenChat class (for LLM interaction)
 - MxBaiEmbedder class (for embeddings and emotion analysis)
 - SpacyNounExtractor class (for noun extraction)
+
+TODO:
+Context pruning. Evaluate the conversation and remove inputs from messages that are no longer needed. Memory system will recall them if they are useful.
+- consider time delay/decay of context elements
+- EMOTIONAL Weight something to weight towards a particular emotion
+
 """
 
 
@@ -1652,7 +1658,7 @@ class ContextualLLMChat:
             try:
                 noun_memories = self.embedder.search_by_text(
                     noun,
-                    n=2,
+                    n=self.config['memory_search_limit'],
                     exclude_emotions=True
                 )
                 all_memories.extend(noun_memories)
@@ -1766,16 +1772,15 @@ class ContextualLLMChat:
             top_emotions = analysis.emotions[:2]  # Use top 2 emotions
             emotion_names = [emotion[0] for emotion in top_emotions]
             emotional_context = f"""
-                <Emotional Context> I feel {', '.join(emotion_names)}. 
-                I respond based on my emotional context.<Emotional Context>"""
+                <Emotional Context> I feel {', '.join(emotion_names)}. I respond based on my emotional context.<Emotional Context>"""
         
         # Add memory context if available
         memory_context = ""
         if analysis.memories:
-            relevant_memories = [mem[2][:100] + "..." for mem in analysis.memories[:2]]
+            relevant_memories = [mem[2] + ".\n\n." for mem in analysis.memories[:2]] #mem[0] = embedding_id, mem[1] = similarity_score, mem[2] = original_text
             memory_context = f"""
                 <Memory Context> I remember {'; '.join(relevant_memories)}
-                I use my memory to relate to the user.</Memory Context> """
+                I SUMMARIZE my memory to either discuss new topics or if they are related, continue the current one.</Memory Context>"""
         
         # Add noun-based focus if significant nouns detected
         noun_context = ""
@@ -1813,7 +1818,7 @@ class ContextualLLMChat:
         # Track emotional patterns
         if analysis.emotions:
             self.conversation_context['emotional_history'].append({
-                'input': user_input[:100],
+                'input': user_input,
                 'emotions': [e[0] for e in analysis.emotions[:2]],
                 'timestamp': time.time()
             })
