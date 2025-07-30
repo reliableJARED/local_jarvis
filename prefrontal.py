@@ -643,54 +643,13 @@ class PrefrontalCortex:
         # Step 5: Return the association (what this reminded us of) - could be from any modality
         return best_memory
 
-    def identify_foundational_memories(self, min_references: int = 3, min_connections: int = 2) -> List[Tuple[MemoryPage, Dict]]:
-        """
-        Identify memories that have become foundational through repeated access and connections
-        
-        Args:
-            min_references: Minimum access count to be considered foundational
-            min_connections: Minimum number of connections to be considered foundational
-            
-        Returns:
-            List[Tuple[MemoryPage, Dict]]: List of (memory, stats) for foundational memories
-        """
-        foundational = []
-        current_time = time.time()
-        
-        for memory_id, memory in self.memory_pages.items():
-            connections = len(memory.related_memory_ids)
-            age_days = (current_time - memory.timestamp) / (24 * 3600)
-            
-            # Calculate foundational score based on multiple factors
-            foundational_score = (
-                memory.access_count * 0.4 +  # Access frequency
-                connections * 0.3 +           # Network connectivity  
-                (1 / max(age_days, 0.1)) * 0.2 +  # Recency bonus
-                (1 if memory.emotion in self.positive_emotions else 0.8) * 0.1  # Emotion factor
-            )
-            
-            if memory.access_count >= min_references and connections >= min_connections:
-                stats = {
-                    'access_count': memory.access_count,
-                    'connections': connections,
-                    'age_days': age_days,
-                    'foundational_score': foundational_score
-                }
-                foundational.append((memory, stats))
-        
-        # Sort by foundational score
-        foundational.sort(key=lambda x: x[1]['foundational_score'], reverse=True)
-        return foundational
-    
-    def identify_weak_memories(self, max_references: int = 1, max_connections: int = 1, 
-                              min_age_days: float = 1.0) -> List[Tuple[MemoryPage, Dict]]:
+    def identify_weak_memories(self, min_age_hours: float = 6.0) -> List[Tuple[MemoryPage, Dict]]:
         """
         Identify memories that are weak candidates for consolidation or deletion
+        Uses adaptive thresholds based on system-wide statistics
         
         Args:
-            max_references: Maximum access count to be considered weak
-            max_connections: Maximum connections to be considered weak
-            min_age_days: Minimum age in days to be considered for removal
+            min_age_hours: Minimum age in hours to be considered for removal
             
         Returns:
             List[Tuple[MemoryPage, Dict]]: List of (memory, stats) for weak memories
@@ -698,19 +657,47 @@ class PrefrontalCortex:
         weak = []
         current_time = time.time()
         
+        if not self.memory_pages:
+            return []
+        
+        # Calculate system-wide statistics for adaptive thresholds
+        all_access_counts = [m.access_count for m in self.memory_pages.values()]
+        all_connections = [len(m.related_memory_ids) for m in self.memory_pages.values()]
+        
+        # Use 25th percentile as threshold for "weak"
+        access_25th = np.percentile(all_access_counts, 25) if all_access_counts else 0
+        connections_25th = np.percentile(all_connections, 25) if all_connections else 0
+        
+        print(f"Weak memory thresholds: access ≤ {access_25th:.1f}, connections ≤ {connections_25th:.1f}")
+        
         for memory_id, memory in self.memory_pages.items():
             connections = len(memory.related_memory_ids)
-            age_days = (current_time - memory.timestamp) / (24 * 3600)
+            age_hours = (current_time - memory.timestamp) / 3600
             
-            if (memory.access_count <= max_references and 
-                connections <= max_connections and 
-                age_days >= min_age_days):
+            # Adaptive criteria: bottom 25th percentile in both access and connections
+            # AND older than minimum age
+            is_weak = (
+                memory.access_count <= access_25th and 
+                connections <= connections_25th and 
+                age_hours >= min_age_hours
+            )
+            
+            if is_weak:
+                # Calculate composite weakness score
+                weakness_score = (
+                    age_hours * 0.4 +  # Age factor (older = weaker)
+                    (1 / max(memory.access_count + 1, 1)) * 30 +  # Inverse access frequency
+                    (1 / max(connections + 1, 1)) * 20 +  # Inverse connectivity
+                    (10 if not memory.emotion else 0)  # No emotion penalty
+                )
                 
                 stats = {
                     'access_count': memory.access_count,
                     'connections': connections,
-                    'age_days': age_days,
-                    'weakness_score': age_days / max(memory.access_count + connections + 1, 1)
+                    'age_hours': age_hours,
+                    'weakness_score': weakness_score,
+                    'access_threshold': access_25th,
+                    'connection_threshold': connections_25th
                 }
                 weak.append((memory, stats))
         
@@ -718,23 +705,96 @@ class PrefrontalCortex:
         weak.sort(key=lambda x: x[1]['weakness_score'], reverse=True)
         return weak
     
-    def consolidate_similar_memories(self, similarity_threshold: float = 0.9, max_merges: int = 5) -> int:
+    def identify_foundational_memories(self, min_age_hours: float = 1.0) -> List[Tuple[MemoryPage, Dict]]:
         """
-        Merge similar memories that have low activity to reduce redundancy
+        Identify memories that have become foundational through repeated access and connections
+        Uses adaptive thresholds based on system-wide statistics
         
         Args:
-            similarity_threshold: Minimum similarity to consider merging
+            min_age_hours: Minimum age to be considered foundational (avoid recency bias)
+            
+        Returns:
+            List[Tuple[MemoryPage, Dict]]: List of (memory, stats) for foundational memories
+        """
+        foundational = []
+        current_time = time.time()
+        
+        if not self.memory_pages:
+            return []
+        
+        # Calculate system-wide statistics for adaptive thresholds
+        all_access_counts = [m.access_count for m in self.memory_pages.values()]
+        all_connections = [len(m.related_memory_ids) for m in self.memory_pages.values()]
+        
+        # Use 75th percentile as threshold for "foundational"
+        access_75th = np.percentile(all_access_counts, 75) if all_access_counts else 0
+        connections_75th = np.percentile(all_connections, 75) if all_connections else 0
+        
+        print(f"Foundational thresholds: access ≥ {access_75th:.1f} OR connections ≥ {connections_75th:.1f}")
+        
+        for memory_id, memory in self.memory_pages.items():
+            connections = len(memory.related_memory_ids)
+            age_hours = (current_time - memory.timestamp) / 3600
+            age_days = age_hours / 24
+            
+            # Must be in top 25th percentile for either access OR connections
+            # AND old enough to avoid recency bias
+            is_foundational = (
+                (memory.access_count >= access_75th or connections >= connections_75th) and
+                age_hours >= min_age_hours
+            )
+            
+            if is_foundational:
+                # Multi-factor foundational score
+                foundational_score = (
+                    memory.access_count * 0.3 +  # Frequency of access
+                    connections * 0.3 +  # Network importance
+                    (len(memory.text or '') / 100) * 0.1 +  # Content richness
+                    (2 if memory.emotion in self.positive_emotions else 1) * 0.1 +  # Emotion bonus
+                    min(age_days * 0.1, 2.0)  # Age bonus (capped at 2.0)
+                )
+                
+                stats = {
+                    'access_count': memory.access_count,
+                    'connections': connections,
+                    'age_days': age_days,
+                    'foundational_score': foundational_score,
+                    'text_length': len(memory.text or ''),
+                    'has_multimodal': bool(memory.audio_file or memory.image_file),
+                    'access_threshold': access_75th,
+                    'connection_threshold': connections_75th
+                }
+                foundational.append((memory, stats))
+        
+        # Sort by foundational score
+        foundational.sort(key=lambda x: x[1]['foundational_score'], reverse=True)
+        return foundational
+    
+    def consolidate_similar_memories(self, max_merges: int = 10) -> int:
+        """
+        Merge similar memories that have low activity to reduce redundancy
+        Uses improved similarity detection and dynamic thresholds
+        
+        Args:
             max_merges: Maximum number of merges to perform
             
         Returns:
             int: Number of memories that were merged/consolidated
         """
         merged_count = 0
-        weak_memories = self.identify_weak_memories(max_references=2, max_connections=2)
+        weak_memories = self.identify_weak_memories(min_age_hours=1.0)  # At least 1 hour old
         
-        # Create list of weak memory embeddings for comparison
-        weak_with_embeddings = [(memory, stats) for memory, stats in weak_memories 
-                               if memory.text_embedding is not None]
+        # Only consider memories with text embeddings
+        weak_with_embeddings = [
+            (memory, stats) for memory, stats in weak_memories 
+            if memory.text_embedding is not None
+        ]
+        
+        if len(weak_with_embeddings) < 2:
+            print(f"Not enough weak memories with embeddings for consolidation: {len(weak_with_embeddings)}")
+            return 0
+        
+        print(f"Attempting to consolidate {len(weak_with_embeddings)} weak memories...")
         
         merged_ids = set()
         
@@ -746,49 +806,54 @@ class PrefrontalCortex:
                 if memory2.memory_id in merged_ids:
                     continue
                 
-                # Calculate similarity
-                similarity = np.dot(memory1.text_embedding, memory2.text_embedding)
+                # Multi-factor similarity calculation
+                embedding_sim = np.dot(memory1.text_embedding, memory2.text_embedding)
                 
-                if similarity >= similarity_threshold:
-                    # Merge memory2 into memory1 (keep the older one)
-                    if memory1.timestamp <= memory2.timestamp:
-                        primary, secondary = memory1, memory2
-                    else:
+                # Temporal similarity (closer in time = more likely to merge)
+                time_diff_hours = abs(memory1.timestamp - memory2.timestamp) / 3600
+                temporal_sim = max(0, 1 - (time_diff_hours / 24))  # Decay over 24 hours
+                
+                # Text length similarity (similar lengths more likely to be duplicates)
+                len1, len2 = len(memory1.text or ''), len(memory2.text or '')
+                length_sim = 1 - abs(len1 - len2) / max(len1 + len2, 1)
+                
+                # Composite similarity score
+                composite_sim = (
+                    embedding_sim * 0.6 +
+                    temporal_sim * 0.2 +
+                    length_sim * 0.2
+                )
+                
+                # Dynamic threshold based on weakness (weaker memories easier to merge)
+                weakness_factor = (stats1['weakness_score'] + stats2['weakness_score']) / 200
+                dynamic_threshold = 0.70 - min(weakness_factor, 0.15)  # 0.55 to 0.70 range
+                
+                if composite_sim >= dynamic_threshold:
+                    # Merge less important into more important
+                    if stats1['weakness_score'] > stats2['weakness_score']:
                         primary, secondary = memory2, memory1
+                    else:
+                        primary, secondary = memory1, memory2
                     
-                    # Combine text if both have it
-                    if primary.text and secondary.text:
-                        primary.text = f"{primary.text} [Merged: {secondary.text[:50]}...]"
-                    
-                    # Transfer connections
-                    for related_id in secondary.related_memory_ids:
-                        if related_id not in primary.related_memory_ids and related_id != primary.memory_id:
-                            primary.related_memory_ids.append(related_id)
-                            # Update bidirectional link
-                            if related_id in self.memory_pages:
-                                related_memory = self.memory_pages[related_id]
-                                if secondary.memory_id in related_memory.related_memory_ids:
-                                    related_memory.related_memory_ids.remove(secondary.memory_id)
-                                if primary.memory_id not in related_memory.related_memory_ids:
-                                    related_memory.related_memory_ids.append(primary.memory_id)
-                    
-                    # Combine access statistics
-                    primary.access_count += secondary.access_count
-                    
-                    # Remove the secondary memory
-                    del self.memory_pages[secondary.memory_id]
-                    if secondary.memory_id in self.temporal_chain:
-                        self.temporal_chain.remove(secondary.memory_id)
+                    # Enhanced merging logic
+                    self._merge_memories_enhanced(primary, secondary, composite_sim)
                     
                     merged_ids.add(secondary.memory_id)
                     merged_count += 1
+                    
+                    print(f"  Merged memories (similarity: {composite_sim:.3f}, threshold: {dynamic_threshold:.3f})")
+                    print(f"    Primary: {primary.text[:50]}...")
+                    print(f"    Secondary: {secondary.text[:50]}...")
                     break
         
         if merged_count > 0:
             self._save_memory_store()
+            print(f"Successfully merged {merged_count} similar memories")
+        else:
+            print("No memories were similar enough to merge")
         
         return merged_count
-    
+
     def calculate_network_density(self) -> float:
         """Calculate the density of the memory network (how connected it is)"""
         if len(self.memory_pages) <= 1:
@@ -799,20 +864,84 @@ class PrefrontalCortex:
         
         return actual_connections / total_possible_connections if total_possible_connections > 0 else 0.0
     
+    def _merge_memories_enhanced(self, primary: MemoryPage, secondary: MemoryPage, similarity_score: float):
+        """Enhanced memory merging with metadata preservation"""
+        
+        # Preserve both texts if they're different enough
+        if similarity_score < 0.90 and primary.text != secondary.text:
+            primary.text = f"{primary.text}\n[Merged similar: {secondary.text[:80]}...]"
+        elif similarity_score >= 0.95:
+            # Very similar - likely duplicates, keep primary text only
+            pass
+        
+        # Merge multimodal content (keep richer content)
+        if not primary.audio_file and secondary.audio_file:
+            primary.audio_file = secondary.audio_file
+            primary.audio_embedding = secondary.audio_embedding
+            
+        if not primary.image_file and secondary.image_file:
+            primary.image_file = secondary.image_file
+            primary.image_embedding = secondary.image_embedding
+        
+        # Combine access statistics (weighted by similarity)
+        weight = min(similarity_score, 0.9)  # Cap influence of merged memory
+        primary.access_count += int(secondary.access_count * weight)
+        
+        # Update timestamps (keep older timestamp, update last_accessed to most recent)
+        primary.timestamp = min(primary.timestamp, secondary.timestamp)
+        primary.last_accessed = max(primary.last_accessed, secondary.last_accessed)
+        
+        # Merge emotion (keep more positive emotion if different)
+        if not primary.emotion and secondary.emotion:
+            primary.emotion = secondary.emotion
+            primary.emotion_embedding = secondary.emotion_embedding
+        elif (primary.emotion and secondary.emotion and 
+              secondary.emotion in self.positive_emotions and 
+              primary.emotion not in self.positive_emotions):
+            primary.emotion = secondary.emotion
+            primary.emotion_embedding = secondary.emotion_embedding
+        
+        # Merge connections (avoid duplicates)
+        connections_added = 0
+        for related_id in secondary.related_memory_ids:
+            if related_id not in primary.related_memory_ids and related_id != primary.memory_id:
+                primary.related_memory_ids.append(related_id)
+                connections_added += 1
+                
+                # Update bidirectional links
+                if related_id in self.memory_pages:
+                    related_memory = self.memory_pages[related_id]
+                    if secondary.memory_id in related_memory.related_memory_ids:
+                        related_memory.related_memory_ids.remove(secondary.memory_id)
+                    if primary.memory_id not in related_memory.related_memory_ids:
+                        related_memory.related_memory_ids.append(primary.memory_id)
+        
+        print(f"    Added {connections_added} connections from merged memory")
+        
+        # Remove the secondary memory completely
+        del self.memory_pages[secondary.memory_id]
+        if secondary.memory_id in self.temporal_chain:
+            self.temporal_chain.remove(secondary.memory_id)
+    
     def get_memory_strength_distribution(self) -> Dict[str, int]:
-        """Get distribution of memory strengths in the network"""
+        """Get realistic distribution of memory strengths in the network"""
         try:
-            foundational_memories = self.identify_foundational_memories(min_references=3, min_connections=2)
-            weak_memories = self.identify_weak_memories(max_references=1, max_connections=1)
+            foundational_memories = self.identify_foundational_memories(min_age_hours=1.0)
+            weak_memories = self.identify_weak_memories(min_age_hours=6.0)
             
             foundational = len(foundational_memories)
             weak = len(weak_memories)
             active = len(self.memory_pages) - foundational - weak
             
+            # Ensure we don't have negative counts due to overlap
+            active = max(0, active)
+            
+            print(f"Memory strength calculation: {foundational} foundational, {weak} weak, {active} active")
+            
             return {
                 'foundational': foundational,
-                'active': max(0, active),
-                'dormant': weak
+                'active': active,
+                'weak': weak  
             }
         except Exception as e:
             print(f"Error in get_memory_strength_distribution: {str(e)}")
@@ -820,8 +949,128 @@ class PrefrontalCortex:
             return {
                 'foundational': 0,
                 'active': len(self.memory_pages),
-                'dormant': 0
+                'weak': 0
             }
+    
+    def analyze_memory_network_health(self) -> Dict[str, Any]:
+        """
+        Comprehensive analysis of memory network health and recommendations
+        
+        Returns:
+            Dict with network health metrics and recommendations
+        """
+        if not self.memory_pages:
+            return {'status': 'empty', 'recommendations': ['Add some memories first']}
+        
+        # Basic statistics
+        total_memories = len(self.memory_pages)
+        strength_dist = self.get_memory_strength_distribution()
+        network_density = self.calculate_network_density()
+        
+        # Calculate health metrics
+        foundational_ratio = strength_dist['foundational'] / total_memories
+        weak_ratio = strength_dist['weak'] / total_memories
+        active_ratio = strength_dist['active'] / total_memories
+        
+        # Access pattern analysis
+        access_counts = [m.access_count for m in self.memory_pages.values()]
+        avg_access = np.mean(access_counts) if access_counts else 0
+        access_std = np.std(access_counts) if access_counts else 0
+        
+        # Connection pattern analysis
+        connections = [len(m.related_memory_ids) for m in self.memory_pages.values()]
+        avg_connections = np.mean(connections) if connections else 0
+        connection_std = np.std(connections) if connections else 0
+        
+        # Age distribution
+        current_time = time.time()
+        ages_hours = [(current_time - m.timestamp) / 3600 for m in self.memory_pages.values()]
+        avg_age_hours = np.mean(ages_hours) if ages_hours else 0
+        
+        # Health assessment
+        health_score = 0
+        recommendations = []
+        
+        # Foundational ratio assessment (ideal: 10-20%)
+        if foundational_ratio < 0.05:
+            health_score -= 10
+            recommendations.append("Very few foundational memories - system may lack stable knowledge base")
+        elif foundational_ratio > 0.4:
+            health_score -= 15
+            recommendations.append("Too many foundational memories - thresholds may be too low")
+        else:
+            health_score += 5
+        
+        # Weak memory ratio assessment (ideal: 20-40%)
+        if weak_ratio < 0.1:
+            health_score -= 5
+            recommendations.append("Very few weak memories identified - pruning thresholds may be too strict")
+        elif weak_ratio > 0.6:
+            health_score += 10
+            recommendations.append(f"Many weak memories ({weak_ratio:.1%}) - good candidates for pruning")
+        else:
+            health_score += 5
+        
+        # Network density assessment (ideal: 0.01-0.05 for larger networks)
+        if network_density < 0.005:
+            health_score -= 5
+            recommendations.append("Low network connectivity - memories may be too isolated")
+        elif network_density > 0.1:
+            health_score -= 5
+            recommendations.append("Very high network density - may indicate over-linking")
+        else:
+            health_score += 5
+        
+        # Access pattern assessment
+        if access_std / max(avg_access, 1) > 2:
+            health_score += 5
+            recommendations.append("Good access diversity - some memories clearly more important")
+        elif access_std / max(avg_access, 1) < 0.5:
+            health_score -= 5
+            recommendations.append("Low access diversity - all memories accessed similarly")
+        
+        # Age distribution assessment
+        if avg_age_hours > 168:  # More than a week old on average
+            recommendations.append("Older memory system - consider consolidation")
+        elif avg_age_hours < 1:  # Very fresh
+            recommendations.append("Very new memory system - may need time to develop patterns")
+        
+        # Overall health classification
+        if health_score >= 15:
+            status = 'excellent'
+        elif health_score >= 5:
+            status = 'good'
+        elif health_score >= -5:
+            status = 'fair'
+        else:
+            status = 'needs_attention'
+        
+        return {
+            'status': status,
+            'health_score': health_score,
+            'total_memories': total_memories,
+            'strength_distribution': strength_dist,
+            'strength_ratios': {
+                'foundational': foundational_ratio,
+                'active': active_ratio,
+                'weak': weak_ratio
+            },
+            'network_density': network_density,
+            'access_stats': {
+                'mean': avg_access,
+                'std': access_std,
+                'diversity_ratio': access_std / max(avg_access, 1)
+            },
+            'connection_stats': {
+                'mean': avg_connections,
+                'std': connection_std
+            },
+            'age_stats': {
+                'mean_hours': avg_age_hours,
+                'mean_days': avg_age_hours / 24
+            },
+            'recommendations': recommendations
+        }
 
     def process_new_experience(self, 
                            text: Optional[str] = None,
@@ -1044,7 +1293,6 @@ class Hippocampus:
         
         # 3. Merge similar weak memories
         results['merged_memories'] = self.prefrontal_cortex.consolidate_similar_memories(
-            similarity_threshold=0.85,
             max_merges=5
         )
         
@@ -1931,32 +2179,44 @@ class MemorySystemDemo:
         
         # Sample values for simple templates
         self.template_values = {
-            'tasks': ["coding", "design", "writing", "planning", "debugging"],
-            'emotions': ["focused", "tired", "excited", "stressed", "calm"],
-            'foods': ["coffee", "sandwich", "salad", "pasta", "soup"],
-            'meals': ["breakfast", "lunch", "dinner", "snack"],
+            'task': ["coding", "design", "writing", "planning", "debugging"],
+            'emotion': ["focused", "tired", "excited", "stressed", "calm"],
+            'food': ["coffee", "sandwich", "salad", "pasta", "soup"],
+            'meal': ["breakfast", "lunch", "dinner", "snack"],
             'quality': ["delicious", "okay", "terrible", "amazing", "bland"],
-            'people': ["Sarah", "Mike", "Alex", "Emma", "David"],
-            'locations': ["office", "cafe", "park", "gym", "home"],
-            'topics': ["vacation", "work", "family", "technology", "movies"],
+            'person': ["Sarah", "Mike", "Alex", "Emma", "David"],
+            'location': ["office", "cafe", "park", "gym", "home"],
+            'topic': ["vacation", "work", "family", "technology", "movies"],
             'weather': ["sunny", "rainy", "cloudy", "snowy", "windy"],
-            'activities': ["walk", "run", "read", "code", "rest"],
+            'activity': ["walk", "run", "read", "code", "rest"],
             'music': ["jazz", "rock", "classical", "pop", "ambient"],
-            'apps': ["email", "news", "social media", "calendar", "messages"],
-            'outcomes': ["productive", "confusing", "helpful", "long", "brief"]
+            'app': ["email", "news", "social media", "calendar", "messages"],
+            'outcome': ["productive", "confusing", "helpful", "long", "brief"]
         }
     
     def generate_memory_text(self) -> str:
-        """Generate a random memory text"""
+        """Generate a random memory text using proper template formatting"""
         if random.random() < 0.7:  # 70% chance of complex template
             return random.choice(self.complex_templates)
         else:  # 30% chance of simple template
             template = random.choice(self.simple_templates)
-            # Fill in template with random values
+            
+            # Create a dictionary of all possible template values
+            template_kwargs = {}
+            
+            # Add singular forms for the template keys
             for key, values in self.template_values.items():
-                if f"{{{key}}}" in template:
-                    template = template.replace(f"{{{key}}}", random.choice(values))
-            return template
+                # Remove 's' from plural keys to match template placeholders
+                singular_key = key.rstrip('s') if key.endswith('s') else key
+                template_kwargs[singular_key] = random.choice(values)
+            
+            try:
+                # Use string format to fill in the template
+                return template.format(**template_kwargs)
+            except KeyError as e:
+                # If template has placeholders we don't have values for, return as-is
+                print(f"Warning: Missing template value for {e}")
+                return template
     
     def create_diverse_memories(self, num_memories: int = 50) -> List[str]:
         """
@@ -1976,6 +2236,7 @@ class MemorySystemDemo:
         for i in range(num_memories):
             # Generate memory text
             text = self.generate_memory_text()
+            print(f'MEM TEXT: {text}')
             
             # Add some temporal variation (memories spread over past week)
             memory_time = start_time + (i * (7 * 24 * 3600) / num_memories)
@@ -2149,8 +2410,7 @@ class MemorySystemDemo:
         
         # Identify foundational memories
         foundational = self.prefrontal_cortex.identify_foundational_memories(
-            min_references=2, 
-            min_connections=1
+            min_age_hours=1
         )
         
         print(f"Foundational Memories ({len(foundational)}):")
@@ -2161,9 +2421,7 @@ class MemorySystemDemo:
         
         # Identify weak memories
         weak = self.prefrontal_cortex.identify_weak_memories(
-            max_references=1, 
-            max_connections=1,
-            min_age_days=0.1  # Very recent for demo
+            min_age_hours=1  # Very recent for demo
         )
         
         print(f"\nWeak Memories ({len(weak)}):")
@@ -2175,7 +2433,6 @@ class MemorySystemDemo:
         # Demonstrate memory consolidation (merging similar weak memories)
         print(f"\n🔄 Attempting memory consolidation...")
         merged_count = self.prefrontal_cortex.consolidate_similar_memories(
-            similarity_threshold=0.85,
             max_merges=3
         )
         print(f"Merged {merged_count} similar memories")
@@ -2185,7 +2442,7 @@ class MemorySystemDemo:
         print(f"\nMemory Strength Distribution:")
         print(f"  Foundational: {strength_dist['foundational']}")
         print(f"  Active: {strength_dist['active']}")
-        print(f"  Dormant: {strength_dist['dormant']}")
+        print(f"  Weak: {strength_dist['weak']}")
         
         # Show network density
         network_density = self.prefrontal_cortex.calculate_network_density()
