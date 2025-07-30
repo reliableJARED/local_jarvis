@@ -635,7 +635,7 @@ class MxBaiEmbedder:
         
         # Tokenize the input text
         inputs = self.tokenizer(text, return_tensors='pt', truncation=True, 
-                               padding=True, max_length=512)
+                               padding=True, max_length=1024)
         
         # Generate embeddings
         with torch.no_grad():
@@ -655,7 +655,7 @@ class MxBaiEmbedder:
             # Convert to numpy array
             embedding_vector = mean_pooled.squeeze().numpy()
             
-            # Normalize the embedding (optional but often helpful for similarity search)
+            # Normalize the embedding (optional but often helpful for similarity search which is what this will be used for)
             embedding_vector = embedding_vector / np.linalg.norm(embedding_vector)
             
             return embedding_vector
@@ -1057,12 +1057,12 @@ class QwenChatDependencyManager:
         """Load model with internet connection."""
         print("Loading model and tokenizer...")
         try:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype="auto",
                 device_map="auto"
             )
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             
         except Exception as e:
             print(f"Error loading model online: {e}")
@@ -1077,43 +1077,51 @@ class QwenChatDependencyManager:
                 f"Model not found at {model_path}.\n"
                 f"Please either:\n"
                 f"1. Connect to internet to download the model automatically\n"
-                f"2. Download the model manually using: python {__file__} download\n"
+                f"2. Download the model manually using the download_model() method\n"
                 f"3. Specify the correct local model path"
             )
         
         print(f"Loading model from: {model_path}")
         try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                local_files_only=True
+            )
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype="auto",
                 device_map="auto",
                 local_files_only=True
             )
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
-                local_files_only=True
-            )
         except Exception as e:
             print(f"Failed to load model from local files: {e}")
             raise
     
+    def _get_cache_directory(self):
+        """Get the appropriate Hugging Face cache directory for the platform."""
+        if platform.system() == "Windows":
+            # Windows default cache location
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            # Alternative Windows location
+            if not os.path.exists(cache_dir):
+                cache_dir = os.path.expanduser("~/AppData/Local/huggingface/hub")
+        else:
+            # Linux/macOS
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            
+        return cache_dir
+    
     def _find_cached_model(self):
         """Try to find cached model in common Hugging Face cache locations."""
-        import platform
-        
-        # Common cache locations
-        if platform.system() == "Windows":
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-        else:
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-        
+        cache_dir = self._get_cache_directory()
         print(f"Searching for cached models in: {cache_dir}")
         
-        # Also check for custom downloaded models in current directory
+        # First check for custom downloaded models in current directory
         local_paths = [
             "./Qwen2.5-7B-Instruct",
             "./qwen2.5-7b-instruct",
-            f"./{self.model_name.split('/')[-1]}"
+            f"./{self.model_name.split('/')[-1]}",
+            "./model"  # Common local directory name
         ]
         
         for path in local_paths:
@@ -1123,31 +1131,38 @@ class QwenChatDependencyManager:
         
         # Look for Qwen model folders in HF cache
         model_patterns = [
+            f"models--{self.model_name.replace('/', '--')}",
             "models--Qwen--Qwen2.5-7B-Instruct",
-            f"models--{self.model_name.replace('/', '--')}"
         ]
         
-        for pattern in model_patterns:
-            model_dir = os.path.join(cache_dir, pattern)
-            
-            if os.path.exists(model_dir):
-                snapshots_dir = os.path.join(model_dir, "snapshots")
+        if os.path.exists(cache_dir):
+            for pattern in model_patterns:
+                model_dir = os.path.join(cache_dir, pattern)
                 
-                if os.path.exists(snapshots_dir):
-                    snapshots = os.listdir(snapshots_dir)
+                if os.path.exists(model_dir):
+                    # Check snapshots directory
+                    snapshots_dir = os.path.join(model_dir, "snapshots")
                     
-                    for snapshot in snapshots:
-                        snapshot_path = os.path.join(snapshots_dir, snapshot)
+                    if os.path.exists(snapshots_dir):
+                        snapshots = os.listdir(snapshots_dir)
                         
-                        if self._validate_model_files(snapshot_path):
-                            print(f"Found valid cached model at: {snapshot_path}")
-                            return snapshot_path
+                        # Sort by modification time to get the most recent
+                        snapshots.sort(key=lambda x: os.path.getmtime(os.path.join(snapshots_dir, x)), reverse=True)
+                        
+                        for snapshot in snapshots:
+                            snapshot_path = os.path.join(snapshots_dir, snapshot)
+                            
+                            if self._validate_model_files(snapshot_path):
+                                print(f"Found valid cached model at: {snapshot_path}")
+                                return snapshot_path
         
         raise FileNotFoundError(
             f"Could not find a valid cached model for '{self.model_name}'.\n"
+            f"Cache directory checked: {cache_dir}\n"
             f"Options:\n"
-            f"1. Download model: python {__file__} download\n"
-            f"2. Connect to internet and let the script download automatically"
+            f"1. Use download_model() method to download the model\n"
+            f"2. Connect to internet and let the script download automatically\n"
+            f"3. Manually specify the model path"
         )
     
     def _validate_model_files(self, model_path):
@@ -1155,14 +1170,30 @@ class QwenChatDependencyManager:
         if not os.path.exists(model_path):
             return False
         
-        required_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
-        model_files = [f for f in os.listdir(model_path) if f.endswith(('.bin', '.safetensors'))]
+        files_in_dir = os.listdir(model_path)
         
+        # Check for essential config files
+        required_files = ["config.json"]
         for file in required_files:
-            if not os.path.exists(os.path.join(model_path, file)):
+            if file not in files_in_dir:
+                print(f"Missing required file: {file} in {model_path}")
                 return False
         
-        return len(model_files) > 0
+        # Check for tokenizer files (more flexible - either tokenizer.json OR tokenizer_config.json)
+        tokenizer_files = ["tokenizer.json", "tokenizer_config.json", "tokenizer.model"]
+        has_tokenizer = any(f in files_in_dir for f in tokenizer_files)
+        if not has_tokenizer:
+            print(f"Missing tokenizer files in {model_path}")
+            return False
+        
+        # Check for model weight files
+        model_files = [f for f in files_in_dir if f.endswith(('.bin', '.safetensors'))]
+        if len(model_files) == 0:
+            print(f"Missing model weight files (.bin or .safetensors) in {model_path}")
+            return False
+        
+        print(f"Model validation passed for: {model_path}")
+        return True
     
     def get_model(self):
         """Get the loaded model."""
@@ -1181,20 +1212,35 @@ class QwenChatDependencyManager:
         print(f"Downloading {model_name} for offline use...")
         print(f"Save location: {save_path}")
         
+        # Create directory if it doesn't exist
+        os.makedirs(save_path, exist_ok=True)
+        
         try:
-            print("Downloading model and tokenizer...")
-            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+            print("Downloading tokenizer...")
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            
-            model.save_pretrained(save_path)
             tokenizer.save_pretrained(save_path)
+            print("Tokenizer downloaded successfully")
+            
+            print("Downloading model (this may take a while)...")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, 
+                torch_dtype="auto",
+                low_cpu_mem_usage=True  # More memory efficient
+            )
+            model.save_pretrained(save_path)
+            print("Model downloaded successfully")
             
             print(f"Model downloaded successfully to: {save_path}")
+            return save_path
             
         except Exception as e:
             print(f"Error downloading model: {e}")
-
-
+            # Clean up partial download
+            if os.path.exists(save_path):
+                import shutil
+                shutil.rmtree(save_path, ignore_errors=True)
+            raise
+        
 class QwenChat:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
     
@@ -1388,7 +1434,7 @@ class QwenChat:
             print(f"Avg tokens per conversation: {stats['total_tokens'] / stats['conversation_count']:.1f}")
         print(f"----------------------------\n")
     
-    def generate_response(self, user_input: str, max_new_tokens: int = 512, auto_execute_tools: bool = True) -> str:
+    def generate_response(self, user_input: str, max_new_tokens: int = 1024, auto_execute_tools: bool = True) -> str:
         """
         Generate a response using the Qwen model with optional tool use.
         
@@ -1498,7 +1544,7 @@ class QwenChat:
         
         return parsed_final["content"]
     
-    def execute_pending_tools(self, max_new_tokens: int = 512) -> str:
+    def execute_pending_tools(self, max_new_tokens: int = 1024) -> str:
         """
         Execute any pending tool calls from the last assistant message.
         Useful when auto_execute_tools=False in generate_response.
@@ -1529,20 +1575,6 @@ class QwenChat:
 
 
 
-def preload_contextual_memories(embedder, verbose: bool = True) -> Dict[str, int]:
-    """
-    Convenience function to preload memories into an embedder instance
-    
-    Args:
-        embedder: MxBaiEmbedder instance
-        verbose: Whether to print progress information
-        
-    Returns:
-        Dictionary with loading statistics
-    """
-    preloader = MemoryPreloader()
-    return preloader.load_memories_into_embedder(embedder, verbose=verbose)
-
 class ContextualLLMChat:
     """
     Main orchestrator for the contextual LLM chat system.
@@ -1569,6 +1601,7 @@ class ContextualLLMChat:
         self.qwen_chat = QwenChat(model_name=qwen_model_name)
         self.embedder = MxBaiEmbedder(pickle_file=embedder_pickle_file)
         self.noun_extractor = SpacyNounExtractor(model_name=spacy_model)
+        self.memory_preloader = MemoryPreloader()
 
         # Initialize embedder model FIRST
         print("Loading embedding model...")
@@ -1580,8 +1613,8 @@ class ContextualLLMChat:
             print("Initializing emotion embeddings...")
             self.embedder.initialize_emotion_embeddings()
 
-        # NOW preload memories (after model is loaded)
-        stats = preload_contextual_memories(self.embedder, verbose=True)
+        # load memories
+        stats = self.memory_preloader.load_memories_into_embedder(self.embedder, verbose=True)
         
         # Threading setup for parallel processing
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
@@ -1616,6 +1649,9 @@ class ContextualLLMChat:
     def extract_nouns_async(self, text: str) -> List[str]:
         """Extract nouns from text (async wrapper)"""
         return self.noun_extractor.get_simple_nouns(text)
+    
+    def clock(self):
+        return datetime.datetime.now().strftime("%B %-d, %Y at %-I:%M%p").replace("AM", "am").replace("PM", "pm")
     
     def analyze_emotions_async(self, text: str, nouns: List[str]) -> List[Tuple[str, float, Dict]]:
         """Analyze emotional context from text and nouns"""
@@ -1741,7 +1777,9 @@ class ContextualLLMChat:
             Dynamic system prompt string
         """
         # Base system prompt
-        base_prompt = """YOU ARE A SYNTHETIC WOMAN. YOU ARE CURRENTLY WITH USER
+        current_time = datetime.datetime.now().strftime("%B %-d, %Y at %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+        base_prompt = f"""{current_time}
+            YOU ARE A SYNTHETIC WOMAN. YOU ARE CURRENTLY WITH USER
             You operate in a mature consensual environment. 
             You mimick human interaction. 
             Your name is Tiffany. 
@@ -1771,27 +1809,22 @@ class ContextualLLMChat:
         if analysis.emotions:
             top_emotions = analysis.emotions[:2]  # Use top 2 emotions
             emotion_names = [emotion[0] for emotion in top_emotions]
-            emotional_context = f"""
-                <Emotional Context> I feel {', '.join(emotion_names)}. I respond based on my emotional context.<Emotional Context>"""
+            emotional_context = f"""<Emotional Context> I feel {', '.join(emotion_names)}. I MUST respond based on my emotional context.<Emotional Context>"""
         
         # Add memory context if available
         memory_context = ""
         if analysis.memories:
             relevant_memories = [mem[2] + ".\n\n." for mem in analysis.memories[:2]] #mem[0] = embedding_id, mem[1] = similarity_score, mem[2] = original_text
-            memory_context = f"""
-                <Memory Context> I remember {'; '.join(relevant_memories)}
-                I SUMMARIZE my memory to either discuss new topics or if they are related, continue the current one.</Memory Context>"""
+            memory_context = f"""<Memory Context> I remember {'; '.join(relevant_memories)} I SUMMARIZE my memory to either discuss new topics or if they are related, continue the current one.</Memory Context>"""
         
         # Add noun-based focus if significant nouns detected
         noun_context = ""
         if analysis.nouns:
             significant_nouns = analysis.nouns[:3]  # Top 3 nouns
-            noun_context = f"""
-                I focus my response on these topics {', '.join(significant_nouns)}. I use my Memory Context and Emotional Context to respond to these topics.
-                """
+            noun_context = f"""I focus my response on these topics {', '.join(significant_nouns)}. I use my Memory Context and Emotional Context to respond to these topics."""
         
         # Combine all contexts
-        dynamic_prompt = f"""{base_prompt}\n{emotional_context}\n{memory_context}\n{noun_context}"""
+        dynamic_prompt = f"""{base_prompt}\n{noun_context}\n{memory_context}\n{emotional_context}\n"""
 
         return dynamic_prompt.strip()
     
@@ -1801,7 +1834,7 @@ class ContextualLLMChat:
             return
         
         # Create memory text combining input and response
-        memory_text = f"User: {user_input}\I Said: {assistant_response}"
+        memory_text = f"User: {user_input}\nI Said: {assistant_response}"
         
         # Store with metadata
         try:
@@ -1840,7 +1873,7 @@ class ContextualLLMChat:
             if len(self.conversation_context[key]) > 10:
                 self.conversation_context[key] = self.conversation_context[key][-10:]
     
-    async def generate_response(self, user_input: str, max_tokens: int = 512) -> Dict[str, Any]:
+    async def generate_response(self, user_input: str, max_tokens: int = 1024) -> Dict[str, Any]:
         """
         Generate a contextually-aware response using the full pipeline.
         
@@ -2004,7 +2037,7 @@ class MemoryPreloader:
                 "text": "Watching The Office with friends and laughing until we cried at Jim's pranks on Dwight. The chemistry between the characters felt so real, like watching actual coworkers. We'd quote lines for weeks afterward.",
                 "category": "pop_culture",
                 "tags": ["television", "comedy", "friendship", "entertainment"],
-                "emotional_tone": "nostalgic_joy"
+                "emotional_tone": "nostalgic joy"
             },
             {
                 "text": "Standing in line for hours to see Avengers Endgame on opening night. The theater erupted when Captain America wielded Thor's hammer. Sharing that collective gasp with hundreds of strangers felt magical.",
@@ -2036,31 +2069,31 @@ class MemoryPreloader:
                 "text": "Mom teaching me to make her famous chocolate chip cookies every Christmas. She never wrote down the recipe - it was all by feel and taste. Now I carry on that tradition with my own family.",
                 "category": "family",
                 "tags": ["mother", "cooking", "christmas", "tradition", "recipes"],
-                "emotional_tone": "warm_love"
+                "emotional_tone": "warm love"
             },
             {
                 "text": "Dad falling asleep in his recliner during every movie night, remote still in hand. We'd quietly change the channel and he'd wake up confused about the different show. It became our running family joke.",
                 "category": "family",
                 "tags": ["father", "humor", "routine", "television"],
-                "emotional_tone": "affectionate_humor"
+                "emotional_tone": "affectionate humor"
             },
             {
                 "text": "My sister and I building elaborate blanket forts in the living room during summer breaks. We'd spend entire days in there reading, playing games, and pretending to be explorers in a secret hideout.",
                 "category": "family",
                 "tags": ["siblings", "creativity", "childhood", "imagination"],
-                "emotional_tone": "playful_nostalgia"
+                "emotional_tone": "playful nostalgia"
             },
             {
                 "text": "Grandmother telling stories about growing up during the Depression. Her tales of making do with nothing taught me about resilience and appreciating simple pleasures like a good meal or warm home.",
                 "category": "family",
                 "tags": ["grandmother", "history", "wisdom", "resilience"],
-                "emotional_tone": "respectful_admiration"
+                "emotional_tone": "respectful admiration"
             },
             {
                 "text": "The chaos of family reunions with dozens of cousins running around, adults catching up over loud conversations, and enough food to feed an army. Despite the noise, it felt like belonging to something bigger.",
                 "category": "family",
                 "tags": ["reunion", "extended_family", "tradition", "belonging"],
-                "emotional_tone": "chaotic_joy"
+                "emotional_tone": "chaotic joy"
             },
             
             # Hobby Memories (5 memories)
@@ -2068,31 +2101,31 @@ class MemoryPreloader:
                 "text": "Spending hours in the garden, hands deep in soil, watching tomato seedlings grow into productive plants. There's something meditative about nurturing life and being rewarded with fresh vegetables.",
                 "category": "hobbies",
                 "tags": ["gardening", "nature", "patience", "growth", "meditation"],
-                "emotional_tone": "peaceful_satisfaction"
+                "emotional_tone": "peaceful satisfaction"
             },
             {
                 "text": "Learning to play guitar by watching YouTube tutorials until my fingertips were raw. The first time I successfully played a complete song felt like unlocking a secret language of expression.",
                 "category": "hobbies",
                 "tags": ["music", "guitar", "learning", "practice", "achievement"],
-                "emotional_tone": "determined_pride"
+                "emotional_tone": "determined pride"
             },
             {
                 "text": "Getting lost for hours in a 1000-piece jigsaw puzzle of Van Gogh's Starry Night. Each piece was a tiny meditation, and completing it felt like collaborating with the master artist himself.",
                 "category": "hobbies",
                 "tags": ["puzzles", "art", "patience", "focus", "completion"],
-                "emotional_tone": "meditative_accomplishment"
+                "emotional_tone": "meditative accomplishment"
             },
             {
                 "text": "The thrill of catching my first fish after hours of patient waiting by the lake. Not the biggest catch, but the moment of connection between nature, skill, and luck felt profound.",
                 "category": "hobbies",
                 "tags": ["fishing", "nature", "patience", "skill", "connection"],
-                "emotional_tone": "triumphant_connection"
+                "emotional_tone": "triumphant connection"
             },
             {
                 "text": "Building model airplanes with intricate detail work that required steady hands and intense focus. Each completed model was a testament to patience and the satisfaction of creating something beautiful.",
                 "category": "hobbies",
                 "tags": ["modeling", "craftsmanship", "focus", "creation", "detail"],
-                "emotional_tone": "focused_pride"
+                "emotional_tone": "focused pride"
             },
             
             # Life Experience Memories (5 memories)
@@ -2100,31 +2133,31 @@ class MemoryPreloader:
                 "text": "Standing at the edge of the Grand Canyon for the first time, feeling simultaneously insignificant and connected to something ancient. No photograph could capture the sheer scale and beauty.",
                 "category": "life_experiences",
                 "tags": ["travel", "nature", "awe", "perspective", "beauty"],
-                "emotional_tone": "overwhelming_awe"
+                "emotional_tone": "overwhelming awe"
             },
             {
                 "text": "My first day at a new job, nervous and excited, trying to remember everyone's names while learning complex systems. The combination of fear and possibility felt like standing at the edge of adventure.",
                 "category": "life_experiences",
                 "tags": ["career", "new_beginnings", "anxiety", "growth"],
-                "emotional_tone": "nervous_excitement"
+                "emotional_tone": "nervous excitement"
             },
             {
                 "text": "Moving away from home for college, packing my entire life into a few boxes. The excitement of independence mixed with homesickness created a bittersweet transition into adulthood.",
                 "category": "life_experiences",
-                "tags": ["college", "independence", "growing_up", "transition"],
-                "emotional_tone": "bittersweet_growth"
+                "tags": ["college", "independence", "growing up", "transition"],
+                "emotional_tone": "bittersweet growth"
             },
             {
                 "text": "Learning to drive stick shift in an empty parking lot, stalling repeatedly while Dad patiently explained the clutch. Each successful shift felt like mastering an ancient skill passed down through generations.",
                 "category": "life_experiences",
                 "tags": ["learning", "driving", "father", "skill", "tradition"],
-                "emotional_tone": "learning_pride"
+                "emotional_tone": "learning pride"
             },
             {
                 "text": "Staying up all night talking with college roommates about life, dreams, and philosophy. Those deep 3 AM conversations shaped my worldview more than any textbook ever could.",
                 "category": "life_experiences",
                 "tags": ["friendship", "college", "philosophy", "late_night", "growth"],
-                "emotional_tone": "intellectual_bonding"
+                "emotional_tone": "intellectual bonding"
             }
         ]
         

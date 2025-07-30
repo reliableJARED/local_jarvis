@@ -273,7 +273,10 @@ def demo_class():
         sentences = [
             "The quick brown fox jumps over the lazy dog.",
             "Alice and Bob went to Paris last summer.",
-            "Apple Inc. released new products in California yesterday."
+            "Apple Inc. released new products in California yesterday.",
+            "I love it when you do that",
+            "My favorite movie is agengers endgame",
+            "This shirt looks so good on me"
         ]
         
         for i, sentence in enumerate(sentences, 1):
