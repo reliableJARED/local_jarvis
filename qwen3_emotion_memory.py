@@ -1057,12 +1057,12 @@ class QwenChatDependencyManager:
         """Load model with internet connection."""
         print("Loading model and tokenizer...")
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype="auto",
                 device_map="auto"
             )
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             
         except Exception as e:
             print(f"Error loading model online: {e}")
@@ -1077,51 +1077,43 @@ class QwenChatDependencyManager:
                 f"Model not found at {model_path}.\n"
                 f"Please either:\n"
                 f"1. Connect to internet to download the model automatically\n"
-                f"2. Download the model manually using the download_model() method\n"
+                f"2. Download the model manually using: python {__file__} download\n"
                 f"3. Specify the correct local model path"
             )
         
         print(f"Loading model from: {model_path}")
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
-                local_files_only=True
-            )
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype="auto",
                 device_map="auto",
                 local_files_only=True
             )
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                local_files_only=True
+            )
         except Exception as e:
             print(f"Failed to load model from local files: {e}")
             raise
     
-    def _get_cache_directory(self):
-        """Get the appropriate Hugging Face cache directory for the platform."""
-        if platform.system() == "Windows":
-            # Windows default cache location
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-            # Alternative Windows location
-            if not os.path.exists(cache_dir):
-                cache_dir = os.path.expanduser("~/AppData/Local/huggingface/hub")
-        else:
-            # Linux/macOS
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-            
-        return cache_dir
-    
     def _find_cached_model(self):
         """Try to find cached model in common Hugging Face cache locations."""
-        cache_dir = self._get_cache_directory()
+        import platform
+        
+        # Common cache locations
+        if platform.system() == "Windows":
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        else:
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        
         print(f"Searching for cached models in: {cache_dir}")
         
-        # First check for custom downloaded models in current directory
+        # Also check for custom downloaded models in current directory
         local_paths = [
             "./Qwen2.5-7B-Instruct",
             "./qwen2.5-7b-instruct",
-            f"./{self.model_name.split('/')[-1]}",
-            "./model"  # Common local directory name
+            f"./{self.model_name.split('/')[-1]}"
         ]
         
         for path in local_paths:
@@ -1131,38 +1123,31 @@ class QwenChatDependencyManager:
         
         # Look for Qwen model folders in HF cache
         model_patterns = [
-            f"models--{self.model_name.replace('/', '--')}",
             "models--Qwen--Qwen2.5-7B-Instruct",
+            f"models--{self.model_name.replace('/', '--')}"
         ]
         
-        if os.path.exists(cache_dir):
-            for pattern in model_patterns:
-                model_dir = os.path.join(cache_dir, pattern)
+        for pattern in model_patterns:
+            model_dir = os.path.join(cache_dir, pattern)
+            
+            if os.path.exists(model_dir):
+                snapshots_dir = os.path.join(model_dir, "snapshots")
                 
-                if os.path.exists(model_dir):
-                    # Check snapshots directory
-                    snapshots_dir = os.path.join(model_dir, "snapshots")
+                if os.path.exists(snapshots_dir):
+                    snapshots = os.listdir(snapshots_dir)
                     
-                    if os.path.exists(snapshots_dir):
-                        snapshots = os.listdir(snapshots_dir)
+                    for snapshot in snapshots:
+                        snapshot_path = os.path.join(snapshots_dir, snapshot)
                         
-                        # Sort by modification time to get the most recent
-                        snapshots.sort(key=lambda x: os.path.getmtime(os.path.join(snapshots_dir, x)), reverse=True)
-                        
-                        for snapshot in snapshots:
-                            snapshot_path = os.path.join(snapshots_dir, snapshot)
-                            
-                            if self._validate_model_files(snapshot_path):
-                                print(f"Found valid cached model at: {snapshot_path}")
-                                return snapshot_path
+                        if self._validate_model_files(snapshot_path):
+                            print(f"Found valid cached model at: {snapshot_path}")
+                            return snapshot_path
         
         raise FileNotFoundError(
             f"Could not find a valid cached model for '{self.model_name}'.\n"
-            f"Cache directory checked: {cache_dir}\n"
             f"Options:\n"
-            f"1. Use download_model() method to download the model\n"
-            f"2. Connect to internet and let the script download automatically\n"
-            f"3. Manually specify the model path"
+            f"1. Download model: python {__file__} download\n"
+            f"2. Connect to internet and let the script download automatically"
         )
     
     def _validate_model_files(self, model_path):
@@ -1170,30 +1155,14 @@ class QwenChatDependencyManager:
         if not os.path.exists(model_path):
             return False
         
-        files_in_dir = os.listdir(model_path)
+        required_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
+        model_files = [f for f in os.listdir(model_path) if f.endswith(('.bin', '.safetensors'))]
         
-        # Check for essential config files
-        required_files = ["config.json"]
         for file in required_files:
-            if file not in files_in_dir:
-                print(f"Missing required file: {file} in {model_path}")
+            if not os.path.exists(os.path.join(model_path, file)):
                 return False
         
-        # Check for tokenizer files (more flexible - either tokenizer.json OR tokenizer_config.json)
-        tokenizer_files = ["tokenizer.json", "tokenizer_config.json", "tokenizer.model"]
-        has_tokenizer = any(f in files_in_dir for f in tokenizer_files)
-        if not has_tokenizer:
-            print(f"Missing tokenizer files in {model_path}")
-            return False
-        
-        # Check for model weight files
-        model_files = [f for f in files_in_dir if f.endswith(('.bin', '.safetensors'))]
-        if len(model_files) == 0:
-            print(f"Missing model weight files (.bin or .safetensors) in {model_path}")
-            return False
-        
-        print(f"Model validation passed for: {model_path}")
-        return True
+        return len(model_files) > 0
     
     def get_model(self):
         """Get the loaded model."""
@@ -1212,35 +1181,20 @@ class QwenChatDependencyManager:
         print(f"Downloading {model_name} for offline use...")
         print(f"Save location: {save_path}")
         
-        # Create directory if it doesn't exist
-        os.makedirs(save_path, exist_ok=True)
-        
         try:
-            print("Downloading tokenizer...")
+            print("Downloading model and tokenizer...")
+            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            tokenizer.save_pretrained(save_path)
-            print("Tokenizer downloaded successfully")
             
-            print("Downloading model (this may take a while)...")
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name, 
-                torch_dtype="auto",
-                low_cpu_mem_usage=True  # More memory efficient
-            )
             model.save_pretrained(save_path)
-            print("Model downloaded successfully")
+            tokenizer.save_pretrained(save_path)
             
             print(f"Model downloaded successfully to: {save_path}")
-            return save_path
             
         except Exception as e:
             print(f"Error downloading model: {e}")
-            # Clean up partial download
-            if os.path.exists(save_path):
-                import shutil
-                shutil.rmtree(save_path, ignore_errors=True)
-            raise
-        
+
+
 class QwenChat:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
     
@@ -1809,7 +1763,7 @@ class ContextualLLMChat:
         if analysis.emotions:
             top_emotions = analysis.emotions[:2]  # Use top 2 emotions
             emotion_names = [emotion[0] for emotion in top_emotions]
-            emotional_context = f"""<Emotional Context> I feel {', '.join(emotion_names)}. I MUST respond based on my emotional context.<Emotional Context>"""
+            emotional_context = f"""<Emotional Context> I feel {', '.join(emotion_names)}. My response MUST align with my emotional context.<Emotional Context>"""
         
         # Add memory context if available
         memory_context = ""
@@ -2049,19 +2003,19 @@ class MemoryPreloader:
                 "text": "Discovering Taylor Swift's folklore album during lockdown. The storytelling and indie folk sound was completely different from her previous work. It became the soundtrack to quiet pandemic evenings.",
                 "category": "pop_culture",
                 "tags": ["music", "discovery", "pandemic", "change"],
-                "emotional_tone": "contemplative"
+                "emotional_tone": "interest"
             },
             {
                 "text": "Binge-watching Stranger Things and getting completely immersed in 1980s nostalgia. The synthesizer soundtrack and practical effects reminded me why that decade's aesthetic feels so compelling.",
                 "category": "pop_culture",
                 "tags": ["netflix", "nostalgia", "1980s", "horror"],
-                "emotional_tone": "nostalgic"
+                "emotional_tone": "anticipation"
             },
             {
                 "text": "Following the intense online discussions about Game of Thrones finale. Despite disappointment with the ending, the years of theorizing and weekly episode discussions created lasting friendships online.",
                 "category": "pop_culture",
                 "tags": ["television", "fantasy", "community", "disappointment"],
-                "emotional_tone": "bittersweet"
+                "emotional_tone": "apprehension"
             },
             
             # Family Memories (5 memories)
@@ -2069,7 +2023,7 @@ class MemoryPreloader:
                 "text": "Mom teaching me to make her famous chocolate chip cookies every Christmas. She never wrote down the recipe - it was all by feel and taste. Now I carry on that tradition with my own family.",
                 "category": "family",
                 "tags": ["mother", "cooking", "christmas", "tradition", "recipes"],
-                "emotional_tone": "warm love"
+                "emotional_tone": "love"
             },
             {
                 "text": "Dad falling asleep in his recliner during every movie night, remote still in hand. We'd quietly change the channel and he'd wake up confused about the different show. It became our running family joke.",

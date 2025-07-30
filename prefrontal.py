@@ -7,6 +7,20 @@ import pickle
 import os
 from datetime import datetime, timedelta
 import math
+import random
+from dataclasses import dataclass, field
+from collections import defaultdict, Counter
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics.pairwise import cosine_similarity
+import spacy
+
+
+# Import our memory system components
+from qwen3_emotion_memory import MxBaiEmbedder
+
+
+
+
 
 @dataclass
 class MemoryPage:
@@ -43,6 +57,37 @@ class MemoryPage:
         if not isinstance(self.memory_id, str):
             self.memory_id = str(self.memory_id)
 
+@dataclass
+class MemoryConcept:
+    """Hierarchical memory cluster for storing thematically related memories"""
+    cluster_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    theme: str = ""  # LLM-generated theme description
+    summary: str = ""  # LLM-generated summary of all memories in cluster
+    summary_embedding: Optional[np.ndarray] = None
+    
+    # Cluster metadata
+    memory_ids: List[str] = field(default_factory=list)
+    creation_time: float = field(default_factory=time.time)
+    last_updated: float = field(default_factory=time.time)
+    access_count: int = 0
+    importance_score: float = 0.0
+    
+    # Temporal span - single averaged timestamp
+    representative_time: float = 0.0  # Average time of all memories in cluster
+    earliest_memory: float = 0.0
+    latest_memory: float = 0.0
+    temporal_span_days: float = 0.0
+    
+    # Semantic analysis
+    key_entities: List[str] = field(default_factory=list)  # People, places, things
+    key_nouns: List[str] = field(default_factory=list)
+    common_themes: List[str] = field(default_factory=list)
+    
+    # Consolidation metadata
+    consolidation_strength: float = 0.0  # How well-formed this concept is
+    sub_concepts: List[str] = field(default_factory=list)  # Child concept IDs
+    parent_concept: Optional[str] = None  # Parent concept ID
+
 
 class PrefrontalCortex:
     """
@@ -70,11 +115,11 @@ class PrefrontalCortex:
         
         # Positive emotions based on Plutchik's wheel
         self.positive_emotions = {
-            'joy', 'trust', 'anticipation', 'admiration', 'ecstasy', 
-            'vigilance', 'rage', 'loathing', 'grief', 'amazement',
-            'terror', 'serenity', 'acceptance', 'optimism', 'love',
-            'submission', 'awe', 'disapproval', 'remorse', 'contempt',
-            'aggressiveness', 'pride', 'hope', 'curiosity', 'satisfaction'
+            'ecstasy', 'joy', 'serenity',
+            'admiration', 'trust', 'acceptance',
+            'anticipation', 'vigilance', 'interest',
+            'optimism', 'love',
+            'submission', 'awe', 'satisfaction'
         }
         
         # Load existing memories
@@ -729,12 +774,533 @@ class PrefrontalCortex:
         print("All memories cleared")
 
 
+class Hippocampus:
+    """
+    Memory consolidation system that creates conceptual clusters from individual memories.
+    Inherits from PrefrontalCortex to access the memory store and embeddings.
+    """
+    
+    def __init__(self, prefrontal_cortex, concept_store_file: str = "concept_store.pkl"):
+        """
+        Initialize Hippocampus with access to PrefrontalCortex
+        
+        Args:
+            prefrontal_cortex: Instance of PrefrontalCortex class
+            concept_store_file: Path to pickle file for persistent concept storage
+        """
+        self.prefrontal_cortex = prefrontal_cortex
+        self.concept_store_file = concept_store_file
+        self.memory_concepts: Dict[str, MemoryConcept] = {}
+        
+        # Initialize spaCy for noun extraction
+        try:
+            self.nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            print("Warning: spaCy model 'en_core_web_sm' not found. Install with: python -m spacy download en_core_web_sm")
+            self.nlp = None
+        
+        # Clustering parameters
+        self.semantic_similarity_threshold = 0.75  # For initial grouping
+        self.temporal_window_hours = 24  # Memories within 24 hours can cluster
+        self.min_cluster_size = 2
+        self.max_cluster_size = 10
+        self.entity_weight = 0.3  # How much to weight entity differences
+        
+        # Load existing concepts
+        self._load_concept_store()
+    
+    def _load_concept_store(self):
+        """Load memory concepts from pickle file"""
+        if os.path.exists(self.concept_store_file):
+            try:
+                with open(self.concept_store_file, 'rb') as f:
+                    self.memory_concepts = pickle.load(f)
+                print(f"Loaded {len(self.memory_concepts)} memory concepts from {self.concept_store_file}")
+            except Exception as e:
+                print(f"Error loading concept store: {str(e)}")
+                self.memory_concepts = {}
+        else:
+            print(f"No existing concept store found at {self.concept_store_file}")
+    
+    def _save_concept_store(self):
+        """Save memory concepts to pickle file"""
+        try:
+            with open(self.concept_store_file, 'wb') as f:
+                pickle.dump(self.memory_concepts, f)
+            print(f"Saved {len(self.memory_concepts)} memory concepts to {self.concept_store_file}")
+        except Exception as e:
+            print(f"Error saving concept store: {str(e)}")
+    
+    def extract_entities_and_nouns(self, text: str) -> Tuple[List[str], List[str], List[str]]:
+        """
+        Extract entities, nouns, and key people/places from text using spaCy
+        
+        Args:
+            text: Input text to analyze
+            
+        Returns:
+            Tuple[List[str], List[str], List[str]]: (entities, nouns, people_places)
+        """
+        if not self.nlp or not text:
+            return [], [], []
+        
+        doc = self.nlp(text)
+        
+        # Extract named entities
+        entities = [ent.text.lower() for ent in doc.ents]
+        
+        # Extract nouns (both common and proper)
+        nouns = [token.lemma_.lower() for token in doc 
+                if token.pos_ in ["NOUN", "PROPN"] and not token.is_stop]
+        
+        # Extract people and places specifically
+        people_places = [ent.text.lower() for ent in doc.ents 
+                        if ent.label_ in ["PERSON", "GPE", "LOC", "ORG"]]
+        
+        return entities, nouns, people_places
+    
+    def calculate_entity_similarity(self, entities1: List[str], entities2: List[str]) -> float:
+        """
+        Calculate similarity between two sets of entities
+        
+        Args:
+            entities1: First set of entities
+            entities2: Second set of entities
+            
+        Returns:
+            float: Similarity score (0-1)
+        """
+        if not entities1 and not entities2:
+            return 1.0
+        if not entities1 or not entities2:
+            return 0.0
+        
+        set1 = set(entities1)
+        set2 = set(entities2)
+        
+        intersection = len(set1.intersection(set2))
+        union = len(set1.union(set2))
+        
+        return intersection / union if union > 0 else 0.0
+    
+    def calculate_temporal_similarity(self, timestamp1: float, timestamp2: float) -> float:
+        """
+        Calculate temporal similarity between two timestamps
+        
+        Args:
+            timestamp1: First timestamp
+            timestamp2: Second timestamp
+            
+        Returns:
+            float: Similarity score (0-1) based on temporal distance
+        """
+        time_diff_hours = abs(timestamp1 - timestamp2) / 3600
+        
+        if time_diff_hours <= self.temporal_window_hours:
+            # Linear decay within the temporal window
+            return 1.0 - (time_diff_hours / self.temporal_window_hours)
+        else:
+            # Exponential decay beyond the window
+            return 0.1 * math.exp(-time_diff_hours / (self.temporal_window_hours * 2))
+    
+    def calculate_composite_similarity(self, memory1, memory2) -> Tuple[float, Dict[str, float]]:
+        """
+        Calculate composite similarity between two memories considering:
+        - Semantic embedding similarity
+        - Entity/noun overlap
+        - Temporal proximity
+        
+        Args:
+            memory1: First MemoryPage
+            memory2: Second MemoryPage
+            
+        Returns:
+            Tuple[float, Dict[str, float]]: (composite_score, breakdown)
+        """
+        breakdown = {}
+        
+        # 1. Semantic similarity from embeddings
+        semantic_sim = 0.0
+        if memory1.text_embedding is not None and memory2.text_embedding is not None:
+            semantic_sim = np.dot(memory1.text_embedding, memory2.text_embedding)
+        breakdown['semantic'] = semantic_sim
+        
+        # 2. Entity similarity
+        entities1, nouns1, people_places1 = self.extract_entities_and_nouns(memory1.text or "")
+        entities2, nouns2, people_places2 = self.extract_entities_and_nouns(memory2.text or "")
+        
+        entity_sim = self.calculate_entity_similarity(people_places1, people_places2)
+        noun_sim = self.calculate_entity_similarity(nouns1, nouns2)
+        breakdown['entities'] = entity_sim
+        breakdown['nouns'] = noun_sim
+        
+        # 3. Temporal similarity
+        temporal_sim = self.calculate_temporal_similarity(memory1.timestamp, memory2.timestamp)
+        breakdown['temporal'] = temporal_sim
+        
+        # 4. Composite score with weights
+        # If entities are very different (different people/places), reduce semantic weight
+        entity_penalty = 1.0
+        if entity_sim < 0.2 and semantic_sim > 0.7:
+            entity_penalty = 0.5  # Reduce importance of semantic similarity
+        
+        composite_score = (
+            semantic_sim * 0.4 * entity_penalty +
+            entity_sim * 0.3 +
+            noun_sim * 0.2 +
+            temporal_sim * 0.1
+        )
+        
+        breakdown['composite'] = composite_score
+        breakdown['entity_penalty'] = entity_penalty
+        
+        return composite_score, breakdown
+    
+    def cluster_memories_by_similarity(self, memory_ids: List[str]) -> List[List[str]]:
+        """
+        Cluster memories using composite similarity (semantic + entity + temporal)
+        
+        Args:
+            memory_ids: List of memory IDs to cluster
+            
+        Returns:
+            List[List[str]]: List of clusters, each containing memory IDs
+        """
+        if len(memory_ids) < 2:
+            return [memory_ids] if memory_ids else []
+        
+        # Get memory objects
+        memories = [self.prefrontal_cortex.get_memory(mid) for mid in memory_ids]
+        memories = [m for m in memories if m is not None]
+        
+        if len(memories) < 2:
+            return [[m.memory_id for m in memories]] if memories else []
+        
+        # Calculate pairwise similarity matrix
+        n = len(memories)
+        similarity_matrix = np.zeros((n, n))
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim_score, _ = self.calculate_composite_similarity(memories[i], memories[j])
+                similarity_matrix[i][j] = sim_score
+                similarity_matrix[j][i] = sim_score
+        
+        # Use DBSCAN clustering for flexible cluster sizes
+        # Convert similarity to distance (1 - similarity)
+        distance_matrix = 1 - similarity_matrix
+        
+        # DBSCAN parameters
+        eps = 1 - self.semantic_similarity_threshold  # Distance threshold
+        min_samples = self.min_cluster_size
+        
+        try:
+            clustering = DBSCAN(eps=eps, min_samples=min_samples, metric='precomputed')
+            cluster_labels = clustering.fit_predict(distance_matrix)
+            
+            # Group memories by cluster label
+            clusters = defaultdict(list)
+            for i, label in enumerate(cluster_labels):
+                if label >= 0:  # -1 indicates noise/outlier
+                    clusters[label].append(memories[i].memory_id)
+                else:
+                    # Create singleton cluster for outliers
+                    clusters[f"outlier_{i}"] = [memories[i].memory_id]
+            
+            return list(clusters.values())
+            
+        except Exception as e:
+            print(f"Error in clustering: {str(e)}")
+            # Fallback: return individual memories as separate clusters
+            return [[m.memory_id] for m in memories]
+    
+    def generate_concept_summary(self, memory_ids: List[str]) -> Tuple[str, str, List[str], List[str]]:
+        """
+        Generate theme and summary for a memory concept
+        
+        Args:
+            memory_ids: List of memory IDs in the concept
+            
+        Returns:
+            Tuple[str, str, List[str], List[str]]: (theme, summary, key_entities, key_nouns)
+        """
+        # Get memory texts
+        memories = [self.prefrontal_cortex.get_memory(mid) for mid in memory_ids]
+        memories = [m for m in memories if m and m.text]
+        
+        if not memories:
+            return "Empty Concept", "No text content available", [], []
+        
+        # Combine all texts
+        combined_text = " ".join([m.text for m in memories])
+        
+        # Extract common entities and nouns
+        all_entities = []
+        all_nouns = []
+        for memory in memories:
+            entities, nouns, people_places = self.extract_entities_and_nouns(memory.text)
+            all_entities.extend(people_places)  # Focus on people/places for key entities
+            all_nouns.extend(nouns)
+        
+        # Find most common entities and nouns
+        entity_counts = Counter(all_entities)
+        noun_counts = Counter(all_nouns)
+        
+        key_entities = [entity for entity, count in entity_counts.most_common(5)]
+        key_nouns = [noun for noun, count in noun_counts.most_common(10)]
+        
+        # Generate simple theme based on most common elements
+        if key_entities:
+            theme = f"Activities involving {', '.join(key_entities[:3])}"
+        elif key_nouns:
+            theme = f"Experiences related to {', '.join(key_nouns[:3])}"
+        else:
+            theme = "General memories"
+        
+        # Generate simple summary
+        if len(memories) == 1:
+            summary = f"Single memory: {memories[0].text[:100]}..."
+        else:
+            summary = f"Collection of {len(memories)} related memories"
+            if key_entities:
+                summary += f" involving {', '.join(key_entities[:2])}"
+            if key_nouns:
+                summary += f" focused on {', '.join(key_nouns[:3])}"
+        
+        return theme, summary, key_entities, key_nouns
+    
+    def create_memory_concept(self, memory_ids: List[str]) -> MemoryConcept:
+        """
+        Create a MemoryConcept from a cluster of memory IDs
+        
+        Args:
+            memory_ids: List of memory IDs to include in the concept
+            
+        Returns:
+            MemoryConcept: The created concept
+        """
+        if not memory_ids:
+            raise ValueError("Cannot create concept from empty memory list")
+        
+        # Get memory objects for temporal analysis
+        memories = [self.prefrontal_cortex.get_memory(mid) for mid in memory_ids]
+        memories = [m for m in memories if m]
+        
+        if not memories:
+            raise ValueError("No valid memories found for concept creation")
+        
+        # Calculate temporal statistics
+        timestamps = [m.timestamp for m in memories]
+        earliest_time = min(timestamps)
+        latest_time = max(timestamps)
+        representative_time = sum(timestamps) / len(timestamps)  # Average timestamp
+        temporal_span_days = (latest_time - earliest_time) / (24 * 3600)
+        
+        # Generate concept summary and theme
+        theme, summary, key_entities, key_nouns = self.generate_concept_summary(memory_ids)
+        
+        # Create summary embedding from combined text
+        summary_embedding = None
+        if summary:
+            try:
+                summary_embedding = self.prefrontal_cortex.embedder.embed_text_string(summary)
+            except Exception as e:
+                print(f"Error creating summary embedding: {str(e)}")
+        
+        # Calculate importance score based on various factors
+        importance_score = (
+            len(memory_ids) * 0.3 +  # More memories = more important
+            len(key_entities) * 0.2 +  # More entities = more important
+            (1 / max(temporal_span_days + 1, 1)) * 0.3 +  # Recent clusters more important
+            len(set(key_nouns)) * 0.2  # Diverse nouns = more important
+        )
+        
+        # Create the concept
+        concept = MemoryConcept(
+            theme=theme,
+            summary=summary,
+            summary_embedding=summary_embedding,
+            memory_ids=memory_ids.copy(),
+            representative_time=representative_time,
+            earliest_memory=earliest_time,
+            latest_memory=latest_time,
+            temporal_span_days=temporal_span_days,
+            key_entities=key_entities,
+            key_nouns=key_nouns,
+            importance_score=importance_score,
+            consolidation_strength=min(len(memory_ids) / self.max_cluster_size, 1.0)
+        )
+        
+        return concept
+    
+    def consolidate_memories(self, min_age_hours: float = 1.0, max_concepts_per_run: int = 10) -> int:
+        """
+        Main consolidation function: cluster recent memories into concepts
+        
+        Args:
+            min_age_hours: Minimum age of memories to consolidate (in hours)
+            max_concepts_per_run: Maximum number of concepts to create in one run
+            
+        Returns:
+            int: Number of concepts created
+        """
+        current_time = time.time()
+        cutoff_time = current_time - (min_age_hours * 3600)
+        
+        # Find memories that are old enough to consolidate but not already in concepts
+        already_conceptualized = set()
+        for concept in self.memory_concepts.values():
+            already_conceptualized.update(concept.memory_ids)
+        
+        candidate_memories = []
+        for memory_id, memory in self.prefrontal_cortex.memory_pages.items():
+            if (memory.timestamp < cutoff_time and 
+                memory_id not in already_conceptualized and
+                memory.text is not None):  # Only consolidate memories with text
+                candidate_memories.append(memory_id)
+        
+        if len(candidate_memories) < self.min_cluster_size:
+            print(f"Not enough candidate memories for consolidation: {len(candidate_memories)}")
+            return 0
+        
+        print(f"Consolidating {len(candidate_memories)} candidate memories...")
+        
+        # Cluster the candidate memories
+        clusters = self.cluster_memories_by_similarity(candidate_memories)
+        
+        # Filter clusters by size and create concepts
+        concepts_created = 0
+        for cluster in clusters:
+            if (len(cluster) >= self.min_cluster_size and 
+                len(cluster) <= self.max_cluster_size and
+                concepts_created < max_concepts_per_run):
+                
+                try:
+                    concept = self.create_memory_concept(cluster)
+                    self.memory_concepts[concept.cluster_id] = concept
+                    concepts_created += 1
+                    print(f"Created concept: {concept.theme} ({len(cluster)} memories)")
+                except Exception as e:
+                    print(f"Error creating concept from cluster: {str(e)}")
+        
+        if concepts_created > 0:
+            self._save_concept_store()
+        
+        print(f"Consolidation complete: {concepts_created} concepts created")
+        return concepts_created
+    
+    def search_concepts(self, query_text: str, n: int = 5) -> List[Tuple[MemoryConcept, float]]:
+        """
+        Search memory concepts by text similarity
+        
+        Args:
+            query_text: Text to search for
+            n: Maximum number of results to return
+            
+        Returns:
+            List[Tuple[MemoryConcept, float]]: List of (concept, similarity_score) tuples
+        """
+        if not query_text.strip() or not self.memory_concepts:
+            return []
+        
+        try:
+            # Get query embedding
+            query_embedding = self.prefrontal_cortex.embedder.embed_text_string(query_text)
+            
+            # Calculate similarity with concept summaries
+            candidates = []
+            for concept in self.memory_concepts.values():
+                if concept.summary_embedding is not None:
+                    similarity = np.dot(query_embedding, concept.summary_embedding)
+                    # Boost by importance score
+                    weighted_score = similarity * (1 + concept.importance_score * 0.1)
+                    candidates.append((concept, weighted_score))
+            
+            # Sort by similarity and return top n
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            return candidates[:n]
+            
+        except Exception as e:
+            print(f"Error in concept search: {str(e)}")
+            return []
+    
+    def get_concept_by_id(self, concept_id: str) -> Optional[MemoryConcept]:
+        """Get a concept by its ID and update access statistics"""
+        if concept_id in self.memory_concepts:
+            concept = self.memory_concepts[concept_id]
+            concept.access_count += 1
+            concept.last_updated = time.time()
+            return concept
+        return None
+    
+    def expand_concept(self, concept_id: str) -> List:
+        """
+        Expand a concept to retrieve its constituent memories
+        
+        Args:
+            concept_id: ID of the concept to expand
+            
+        Returns:
+            List[MemoryPage]: List of memory pages in the concept
+        """
+        concept = self.get_concept_by_id(concept_id)
+        if not concept:
+            return []
+        
+        memories = []
+        for memory_id in concept.memory_ids:
+            memory = self.prefrontal_cortex.get_memory(memory_id)
+            if memory:
+                memories.append(memory)
+        
+        # Sort by timestamp for chronological order
+        memories.sort(key=lambda m: m.timestamp)
+        return memories
+    
+    def get_consolidation_stats(self) -> Dict[str, Any]:
+        """Get statistics about memory consolidation"""
+        total_concepts = len(self.memory_concepts)
+        total_memories_in_concepts = sum(len(c.memory_ids) for c in self.memory_concepts.values())
+        total_raw_memories = len(self.prefrontal_cortex.memory_pages)
+        
+        consolidation_ratio = total_memories_in_concepts / total_raw_memories if total_raw_memories > 0 else 0
+        
+        # Concept size distribution
+        concept_sizes = [len(c.memory_ids) for c in self.memory_concepts.values()]
+        avg_concept_size = sum(concept_sizes) / len(concept_sizes) if concept_sizes else 0
+        
+        return {
+            'total_concepts': total_concepts,
+            'total_memories_in_concepts': total_memories_in_concepts,
+            'total_raw_memories': total_raw_memories,
+            'consolidation_ratio': consolidation_ratio,
+            'average_concept_size': avg_concept_size,
+            'concept_size_distribution': Counter(concept_sizes)
+        }
+    
+    def clear_all_concepts(self):
+        """Clear all stored concepts"""
+        self.memory_concepts.clear()
+        self._save_concept_store()
+        print("All memory concepts cleared")
+
 ####################################
-import numpy as np
-import time
-import random
-from typing import Optional, List, Tuple
-from datetime import datetime, timedelta
+
+#!/usr/bin/env python3
+"""
+Brain-Like Memory System Demo
+=============================
+
+This demo showcases a complete memory system that mimics human memory:
+1. Creates diverse memories with text, audio, and visual content
+2. Uses real embeddings for semantic understanding
+3. Consolidates memories into conceptual clusters (like the hippocampus)
+4. Demonstrates memory recall and pruning
+
+Usage:
+    python memory_demo.py
+"""
+
 
 # Pseudo embedding functions for audio and image
 def pseudo_vggish_embed(audio_file: str) -> np.ndarray:
@@ -763,456 +1329,456 @@ def pseudo_beit_embed(image_file: str) -> np.ndarray:
     print(f"[BeiT] Generated image embedding for {image_file} (shape: {embedding.shape})")
     return embedding
 
-def demo_memory_system():
+
+class MemorySystemDemo:
     """
-    Comprehensive demo of the PrefrontalCortex memory system
+    Comprehensive demo of the brain-like memory system
     """
-    print("=" * 80)
-    print("PREFRONTAL CORTEX MEMORY SYSTEM DEMO")
-    print("=" * 80)
-    
-    # Initialize the embedder and cortex
-    print("\n1. INITIALIZING SYSTEM...")
-    print("-" * 40)
-    
-    # Import and initialize the embedder (assuming it's available)
-    try:
-        from emotion_embed import MxBaiEmbedder  # Adjust import as needed
-        embedder = MxBaiEmbedder("demo_embeddings.pkl")
-        
-        # Load model if not already loaded
-        if embedder.model is None:
-            print("Loading MxBai embedding model...")
-            success = embedder.load_model()
-            if not success:
-                raise Exception("Failed to load embedding model")
-        
-        # Initialize emotions if not done
-        if not embedder.emotions_initialized:
-            print("Initializing emotion embeddings...")
-            embedder.initialize_emotion_embeddings()
-            
-    except ImportError:
-        print("WARNING: MxBaiEmbedder not available. Using mock embedder for demo.")
-        embedder = MockEmbedder()
-    
-    # Initialize PrefrontalCortex
-    cortex = PrefrontalCortex(embedder, "demo_memory_store.pkl")
-    
-    print(f"✓ System initialized with {cortex.get_memory_stats()['total_memories']} existing memories")
-    
-    # Clear existing memories for clean demo
-    cortex.clear_all_memories()
-    
-    print("\n2. CREATING SAMPLE MEMORIES...")
-    print("-" * 40)
-    
-    # Sample memory data with realistic timestamps and different modalities
-    current_time = time.time()
-
-    # Create realistic timestamp distribution over the past week
-    base_time = current_time - (7 * 24 * 3600)  # Start 7 days ago
-    timestamps = [
-        base_time + (i * 1.5 * 24 * 3600) + random.randint(0, 12*3600)  # Spread across days with random times
-        for i in range(5)
-    ]
-    timestamps.sort()  # Ensure chronological order
-
-
-    sample_memories = [
-            {
-                "text": "I had a wonderful morning walk in the park. The birds were singing and the sun was shining brightly.",
-                "image_file": "morning_park.jpg",
-                "audio_file": None,
-                "timestamp": timestamps[0]  # Use calculated timestamp
-            },
-            {
-                "text": "Feeling stressed about the upcoming presentation at work. Need to prepare more slides.",
-                "image_file": None,
-                "audio_file": "stress_recording.wav",
-                "timestamp": timestamps[1]  # Use calculated timestamp
-            },
-            {
-                "text": "Had lunch with Sarah today. We talked about our college memories and laughed a lot.",
-                "image_file": "lunch_with_sarah.jpg",
-                "audio_file": "lunch_conversation.wav",
-                "timestamp": timestamps[2]  # Use calculated timestamp
-            },
-            {
-                "text": "Beautiful sunset tonight. The colors were absolutely amazing - orange, pink, and purple.",
-                "image_file": "sunset_photo.jpg",
-                "audio_file": None,
-                "timestamp": timestamps[3]  # Use calculated timestamp
-            },
-            {
-                "text": "Working late again. This project is really challenging but I'm learning so much.",
-                "image_file": None,
-                "audio_file": "late_work_session.wav",
-                "timestamp": timestamps[4]  # Use calculated timestamp
-            }
-        ]
-    # Create and store sample memories with proper timestamps
-    stored_memory_ids = []
-    
-    for i, memory_data in enumerate(sample_memories):
-        print(f"\nCreating memory {i+1}/5: '{memory_data['text'][:50]}...'")
-        
-        memory_time = memory_data['timestamp']
-        
-        # Generate embeddings for available modalities
-        text_embedding = None
-        audio_embedding = None
-        image_embedding = None
-        
-        if memory_data['text']:
-            text_embedding = embedder.embed_text_string(memory_data['text'])
-            print(f"  ✓ Text embedded (shape: {text_embedding.shape})")
-        
-        if memory_data['audio_file']:
-            audio_embedding = pseudo_vggish_embed(memory_data['audio_file'])
-            print(f"  ✓ Audio embedded")
-        
-        if memory_data['image_file']:
-            image_embedding = pseudo_beit_embed(memory_data['image_file'])
-            print(f"  ✓ Image embedded")
-        
-        # Create memory page
-        memory_page = cortex.create_memory_page(
-            text=memory_data['text'],
-            text_embedding=text_embedding,
-            image_file=memory_data['image_file'],
-            image_embedding=image_embedding,
-            audio_file=memory_data['audio_file'],
-            audio_embedding=audio_embedding,
-            auto_embed_text=False,  # We already embedded
-            auto_detect_emotion=True  # Let it detect emotion
-        )
-        
-        # Override timestamp for temporal spacing demo
-        memory_page.timestamp = memory_time
-        memory_page.creation_datetime = datetime.fromtimestamp(memory_time).isoformat()
-        
-        # Store the memory
-        memory_id = cortex.store_memory(memory_page)
-        stored_memory_ids.append(memory_id)
-        
-        print(f"  ✓ Memory stored with ID: {memory_id}")
-        print(f"  ✓ Detected emotion: {memory_page.emotion}")
-        print(f"  ✓ Related memories: {len(memory_page.related_memory_ids)}")
-    
-    print(f"\n✓ Created and stored {len(stored_memory_ids)} sample memories")
-    
-    # Display memory statistics
-    stats = cortex.get_memory_stats()
-    print(f"\nMemory Store Statistics:")
-    print(f"  Total memories: {stats['total_memories']}")
-    print(f"  Text memories: {stats['text_memories']}")
-    print(f"  Audio memories: {stats['audio_memories']}")
-    print(f"  Image memories: {stats['image_memories']}")
-    print(f"  Total links: {stats['total_associative_links']}")
-    print(f"  Average links per memory: {stats['average_links_per_memory']:.1f}")
-    
-    print("\n3. PROCESSING NEW MEMORY INPUT...")
-    print("-" * 40)
-    
-    # New memory input that should trigger associations
-    new_input = {
-        "text": "Had another stressful day at work but took a relaxing walk afterwards. The evening sky looked beautiful.",
-        "image_file": "evening_walk.jpg",
-        "audio_file": "evening_thoughts.wav"
-    }
-    
-    print(f"New input text: '{new_input['text']}'")
-    
-    # Step 1: Create embeddings for new input
-    print(f"\nStep 1: Generating embeddings...")
-    new_text_embedding = embedder.embed_text_string(new_input['text'])
-    new_audio_embedding = pseudo_vggish_embed(new_input['audio_file'])
-    new_image_embedding = pseudo_beit_embed(new_input['image_file'])
-    print(f"  ✓ All embeddings generated")
-    
-    # Step 2: Search for similar memories across modalities with detailed ranking breakdown
-    print(f"\nStep 2: Searching for similar memories (with ranking breakdown)...")
-    
-    # Demonstrate the three-stage ranking process
-    print(f"\n--- TEXT SIMILARITY SEARCH ---")
-    text_matches = cortex.search_text_with_breakdown(new_input['text'], n=3)
-    print(f"Text similarity matches ({len(text_matches)} found):")
-    for i, match_data in enumerate(text_matches):
-        memory, final_score, breakdown = match_data
-        age_days = (time.time() - memory.timestamp) / (24 * 3600)
-        print(f"  {i+1}. FINAL SCORE: {final_score:.3f}")
-        print(f"     ├─ Embedding similarity: {breakdown['embedding_similarity']:.3f}")
-        print(f"     ├─ Temporal adjustment: {breakdown['temporal_factor']:.3f} (age: {age_days:.1f} days)")
-        print(f"     ├─ Popularity boost: {breakdown['popularity_factor']:.3f} ({len(memory.related_memory_ids)} links)")
-        print(f"     ├─ Emotion: {memory.emotion}")
-        print(f"     └─ Text: '{memory.text[:50]}...'")
-        print()
-    
-    # Audio similarity search (placeholder with breakdown)
-    print(f"--- AUDIO SIMILARITY SEARCH ---")
-    audio_matches = cortex.search_audio_with_breakdown(new_audio_embedding, n=3)
-    print(f"Audio similarity matches ({len(audio_matches)} found):")
-    for i, match_data in enumerate(audio_matches):
-        memory, final_score, breakdown = match_data
-        age_days = (time.time() - memory.timestamp) / (24 * 3600)
-        print(f"  {i+1}. FINAL SCORE: {final_score:.3f}")
-        print(f"     ├─ Embedding similarity: {breakdown['embedding_similarity']:.3f}")
-        print(f"     ├─ Temporal adjustment: {breakdown['temporal_factor']:.3f} (age: {age_days:.1f} days)")
-        print(f"     ├─ Popularity boost: {breakdown['popularity_factor']:.3f} ({len(memory.related_memory_ids)} links)")
-        print(f"     └─ Audio: {memory.audio_file}")
-        print()
-    
-    # Image similarity search (placeholder with breakdown)
-    print(f"--- IMAGE SIMILARITY SEARCH ---")
-    image_matches = cortex.search_image_with_breakdown(new_image_embedding, n=3)
-    print(f"Image similarity matches ({len(image_matches)} found):")
-    for i, match_data in enumerate(image_matches):
-        memory, final_score, breakdown = match_data
-        age_days = (time.time() - memory.timestamp) / (24 * 3600)
-        print(f"  {i+1}. FINAL SCORE: {final_score:.3f}")
-        print(f"     ├─ Embedding similarity: {breakdown['embedding_similarity']:.3f}")
-        print(f"     ├─ Temporal adjustment: {breakdown['temporal_factor']:.3f} (age: {age_days:.1f} days)")
-        print(f"     ├─ Popularity boost: {breakdown['popularity_factor']:.3f} ({len(memory.related_memory_ids)} links)")
-        print(f"     └─ Image: {memory.image_file}")
-        print()
-    
-    # Step 3: Create and store new memory with associations
-    print(f"\nStep 3: Creating and storing new memory...")
-    
-    new_memory = cortex.create_memory_page(
-        text=new_input['text'],
-        text_embedding=new_text_embedding,
-        image_file=new_input['image_file'],
-        image_embedding=new_image_embedding,
-        audio_file=new_input['audio_file'],
-        audio_embedding=new_audio_embedding,
-        auto_embed_text=False,
-        auto_detect_emotion=True
-    )
-    
-    print(f"  ✓ New memory created")
-    print(f"  ✓ Detected emotion: {new_memory.emotion}")
-    
-    # Store the new memory (this will create automatic associations)
-    new_memory_id = cortex.store_memory(
-        new_memory, 
-        link_to_similar=True, 
-        similarity_threshold=0.6,  # Lower threshold for demo
-        max_links=3
-    )
-    
-    print(f"  ✓ Memory stored with ID: {new_memory_id}")
-    print(f"  ✓ Created {len(new_memory.related_memory_ids)} associative links")
-    
-    # Step 4: Display the association network
-    print(f"\nStep 4: Association network for new memory...")
-    print("-" * 40)
-    
-    print(f"New memory: '{new_memory.text[:60]}...'")
-    print(f"Emotion: {new_memory.emotion}")
-    print(f"Timestamp: {datetime.fromtimestamp(new_memory.timestamp).strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    print(f"\nAssociated memories ({len(new_memory.related_memory_ids)}):")
-    for i, related_id in enumerate(new_memory.related_memory_ids):
-        related_memory = cortex.get_memory(related_id)
-        if related_memory:
-            age_hours = (new_memory.timestamp - related_memory.timestamp) / 3600
-            print(f"  {i+1}. ID: {related_id}")
-            print(f"     Text: '{related_memory.text[:50]}...'")
-            print(f"     Emotion: {related_memory.emotion}")
-            print(f"     Age: {age_hours:.1f} hours ago")
-            print(f"     Links: {len(related_memory.related_memory_ids)} total")
-            print()
-    
-    # Step 5: Final statistics
-    print("5. FINAL SYSTEM STATE...")
-    print("-" * 40)
-    
-    final_stats = cortex.get_memory_stats()
-    print(f"Final Memory Store Statistics:")
-    print(f"  Total memories: {final_stats['total_memories']}")
-    print(f"  Total associative links: {final_stats['total_associative_links']}")
-    print(f"  Average links per memory: {final_stats['average_links_per_memory']:.1f}")
-    print(f"  Temporal chain length: {final_stats['temporal_chain_length']}")
-    
-    # Show temporal chain
-    print(f"\nTemporal chain (chronological order):")
-    for i, memory_id in enumerate(cortex.temporal_chain):
-        memory = cortex.get_memory(memory_id)
-        if memory:
-            timestamp_str = datetime.fromtimestamp(memory.timestamp).strftime('%H:%M')
-            print(f"  {i+1}. [{timestamp_str}] {memory.emotion} - '{memory.text[:40]}...'")
-    
-    # Step 6: Demonstrate the core "What does this remind you of?" functionality
-    print("6. CORE MEMORY ASSOCIATION FUNCTION...")
-    print("-" * 40)
-    
-    # This is the main function - input something, get back what it reminds the system of
-    reminder_memory = cortex.what_does_this_remind_me_of(
-        text=new_input['text'],
-        image_file=new_input['image_file'],
-        audio_file=new_input['audio_file']
-    )
-    
-    if reminder_memory:
-        age_hours = (time.time() - reminder_memory.timestamp) / 3600
-        print(f"💭 INPUT: '{new_input['text']}'")
-        print(f"🧠 REMINDS ME OF: '{reminder_memory.text[:60]}...'")
-        print(f"   └─ From {age_hours:.1f} hours ago | Emotion: {reminder_memory.emotion}")
-        print(f"   └─ Access count: {reminder_memory.access_count} | Links: {len(reminder_memory.related_memory_ids)}")
-    else:
-        print("💭 No strong associations found - this is a novel experience!")
-    
-    # Step 7: Demonstrate multiple inputs to show foundational memory emergence
-    print(f"\n7. FOUNDATIONAL MEMORY EMERGENCE...")
-    print("-" * 40)
-    
-    # Simulate several related inputs over time to show how some memories become foundational
-    additional_inputs = [
-        {"text": "Went for a bike ride in the morning, feeling great!", "type": "bike"},
-        {"text": "Beautiful weather for cycling today", "type": "bike"},
-        {"text": "Stressed about the quarterly presentation coming up", "type": "work_stress"},
-        {"text": "Working on slides late into the night again", "type": "work_stress"},
-        {"text": "Another sunset walk to clear my head", "type": "walk"},
-        {"text": "Taking evening walks has become my favorite routine", "type": "walk"},
-        {"text": "Presentation went well, feeling relieved", "type": "work_stress"},
-    ]
-    
-    print("Processing additional memories to build foundational associations...")
-    foundational_candidates = {}
-    
-    for i, input_data in enumerate(additional_inputs):
-        print(f"\nInput {i+1}: '{input_data['text']}'")
-        
-        # Process each input through the system
-        reminder = cortex.what_does_this_remind_me_of(text=input_data['text'])
-        
-        if reminder:
-            # Track which memories are being referenced frequently
-            reminder_id = reminder.memory_id
-            if reminder_id not in foundational_candidates:
-                foundational_candidates[reminder_id] = {
-                    'memory': reminder,
-                    'references': 0,
-                    'themes': set()
-                }
-            foundational_candidates[reminder_id]['references'] += 1
-            foundational_candidates[reminder_id]['themes'].add(input_data['type'])
-            
-            print(f"  💭 Reminds me of: '{reminder.text[:50]}...'")
-            print(f"     └─ Now referenced {foundational_candidates[reminder_id]['references']} times")
-        else:
-            print(f"  💭 No strong associations - novel experience")
-    
-    # Step 8: Identify foundational memories
-    print(f"\n8. FOUNDATIONAL MEMORY ANALYSIS...")
-    print("-" * 40)
-    
-    # Get the most referenced and connected memories
-    foundational_memories = cortex.identify_foundational_memories(min_references=2, min_connections=3)
-    
-    print(f"Identified {len(foundational_memories)} foundational memories:")
-    for i, (memory, stats) in enumerate(foundational_memories):
-        print(f"\n  {i+1}. FOUNDATIONAL MEMORY:")
-        print(f"     Text: '{memory.text[:60]}...'")
-        print(f"     Access count: {stats['access_count']}")
-        print(f"     Connections: {stats['connections']}")
-        print(f"     Foundational score: {stats['foundational_score']:.3f}")
-        print(f"     Age: {stats['age_days']:.1f} days")
-    
-    # Step 9: Memory consolidation - merge similar low-activity memories
-    print(f"\n9. MEMORY CONSOLIDATION...")
-    print("-" * 40)
-    
-    # Identify memories that could be merged or deleted
-    weak_memories = cortex.identify_weak_memories(max_references=1, max_connections=1, min_age_days=1)
-    
-    print(f"Found {len(weak_memories)} weak memories that could be consolidated:")
-    for memory, stats in weak_memories[:3]:  # Show first 3
-        print(f"  • '{memory.text[:40]}...' (age: {stats['age_days']:.1f} days, {stats['connections']} links)")
-    
-    if len(weak_memories) > 2:
-        # Demonstrate memory merging
-        merged_count = cortex.consolidate_similar_memories(similarity_threshold=0.8, max_merges=2)
-        print(f"\n  ✓ Consolidated {merged_count} similar memories to reduce redundancy")
-    
-    # Step 10: Final system state and insights
-    print(f"\n10. SYSTEM INSIGHTS...")
-    print("-" * 40)
-    
-    final_stats = cortex.get_memory_stats()
-    print(f"Final Memory Network:")
-    print(f"  • Total memories: {final_stats['total_memories']}")
-    print(f"  • Average connections: {final_stats['average_links_per_memory']:.1f}")
-    print(f"  • Network density: {cortex.calculate_network_density():.3f}")
-    
-    # Show memory strength distribution
-    memory_strengths = cortex.get_memory_strength_distribution()
-    print(f"\nMemory Strength Distribution:")
-    print(f"  • Foundational (high activity): {memory_strengths['foundational']} memories")
-    print(f"  • Active (medium activity): {memory_strengths['active']} memories") 
-    print(f"  • Dormant (low activity): {memory_strengths['dormant']} memories")
-    
-    print(f"\n💡 KEY INSIGHTS:")
-    print(f"   • The system learned that bike rides, work stress, and evening walks")
-    print(f"     are recurring themes that trigger strong associations")
-    print(f"   • Foundational memories emerged through repeated references")
-    print(f"   • Weak memories were consolidated to prevent network bloat")
-    print(f"   • The memory network is becoming more organized and efficient")
-    
-    print("\n" + "=" * 80)
-    print("DEMO COMPLETED - MEMORY SYSTEM FUNCTIONING AS INTENDED!")
-    print("✅ Input → Associate → Save → Return Association → Build Foundations")
-    print("=" * 80)
-    
-    return cortex, reminder_memory
-
-
-class MockEmbedder:
-    """Mock embedder for demo when MxBaiEmbedder is not available"""
     
     def __init__(self):
-        self.emotions_initialized = True
-        self.model = "mock"
+        print("🧠 Initializing Brain-Like Memory System...")
         
-        # Simple emotion mappings for demo
-        self.emotion_keywords = {
-            'joy': ['wonderful', 'amazing', 'beautiful', 'laughed', 'happy'],
-            'stress': ['stressed', 'challenging', 'pressure', 'worried'],
-            'anticipation': ['upcoming', 'prepare', 'planning'],
-            'trust': ['friend', 'lunch', 'talked', 'memories'],
-            'serenity': ['sunset', 'peaceful', 'relaxing', 'walk']
+        # Initialize the embedder
+        self.embedder = MxBaiEmbedder()
+        self.embedder.load_model()
+        
+        # Initialize the memory systems
+        self.prefrontal_cortex = PrefrontalCortex(self.embedder)
+        self.hippocampus = Hippocampus(self.prefrontal_cortex)
+        
+        # Memory generation templates
+        self.simple_templates = [
+            "Working on {task} - feeling {emotion}",
+            "Just had {food} for {meal} - it was {quality}",
+            "Saw {person} at {location} - we talked about {topic}",
+            "Beautiful {weather} today - went for a {activity}",
+            "Listening to {music} while {activity}",
+            "Feeling {emotion} about {topic}",
+            "Quick break - checking {app} and {activity}",
+            "Meeting about {topic} - {outcome}",
+            "{weather} outside - staying {location}",
+            "Learning about {topic} - very {emotion}"
+        ]
+        
+        self.complex_templates = [
+            # Work scenarios
+            "Had a productive meeting with the design team about the new product features",
+            "Struggling with a difficult bug in the authentication system",
+            "Presentation went really well - got positive feedback from the stakeholders", 
+            "Feeling overwhelmed with the project deadline approaching next week",
+            "Collaborated with Sarah on the API integration - good progress",
+            "Coffee break conversation with Mike about improving our development process",
+            
+            # Personal life
+            "Went for a morning run in Central Park - beautiful weather today",
+            "Cooking dinner for friends tonight - trying a new pasta recipe",
+            "Called mom to check how she's doing after her doctor appointment",
+            "Finished reading 'Atomic Habits' - some really useful insights about behavior change",
+            "Grocery shopping took forever - the store was packed on Sunday afternoon",
+            "Watched an amazing documentary about ocean life with the kids",
+            
+            # Social interactions
+            "Lunch with college friends - caught up on everyone's life changes",
+            "Neighborhood barbecue was fun - met some new people from down the street",
+            "Helped Emma move to her new apartment - she's excited about the change",
+            "Game night at David's place - played some great board games",
+            "Birthday party for my nephew - he loved the LEGO set I got him",
+            
+            # Learning and growth
+            "Started learning Spanish using a new app - pronunciation is challenging",
+            "Attended a webinar about machine learning applications in healthcare",
+            "Practiced piano for an hour - finally getting the hang of that difficult piece",
+            "Read an interesting article about sustainable urban planning",
+            "Took an online course module about data visualization techniques",
+            
+            # Health and wellness
+            "Yoga class was particularly relaxing today - felt great afterward", 
+            "Dentist appointment went fine - no cavities this time",
+            "Tried meditation for 15 minutes this morning - still finding it difficult to focus",
+            "Made a healthy smoothie with spinach and berries for breakfast",
+            "Evening walk around the neighborhood - good way to decompress after work",
+            
+            # Travel and experiences
+            "Weekend trip to the mountains - stunning views from the hiking trail",
+            "Visited the art museum downtown - loved the contemporary photography exhibition",
+            "Flight was delayed by 2 hours but finally made it to the conference",
+            "Exploring the local farmers market - bought some amazing fresh produce",
+            "Road trip with friends to the coast - perfect weather for beach activities",
+            
+            # Technology and tools
+            "Set up a new productivity system using Notion - seems promising so far",
+            "Upgraded my laptop's RAM - noticeable improvement in performance",
+            "Discovered a useful VS Code extension for better code formatting",
+            "Smart home automation is working well - lights automatically adjust in the evening",
+            "Backing up photos to cloud storage - realized I have thousands of old pictures",
+            
+            # Random daily life
+            "Power went out for 3 hours - played board games by candlelight",
+            "Package delivery was left with the wrong neighbor again",
+            "Found a great new coffee shop on the way to work",
+            "Car inspection is due next month - need to schedule an appointment",
+            "Reorganized my bookshelf and found some books I forgot I owned"
+        ]
+        
+        # Sample values for simple templates
+        self.template_values = {
+            'tasks': ["coding", "design", "writing", "planning", "debugging"],
+            'emotions': ["focused", "tired", "excited", "stressed", "calm"],
+            'foods': ["coffee", "sandwich", "salad", "pasta", "soup"],
+            'meals': ["breakfast", "lunch", "dinner", "snack"],
+            'quality': ["delicious", "okay", "terrible", "amazing", "bland"],
+            'people': ["Sarah", "Mike", "Alex", "Emma", "David"],
+            'locations': ["office", "cafe", "park", "gym", "home"],
+            'topics': ["vacation", "work", "family", "technology", "movies"],
+            'weather': ["sunny", "rainy", "cloudy", "snowy", "windy"],
+            'activities': ["walk", "run", "read", "code", "rest"],
+            'music': ["jazz", "rock", "classical", "pop", "ambient"],
+            'apps': ["email", "news", "social media", "calendar", "messages"],
+            'outcomes': ["productive", "confusing", "helpful", "long", "brief"]
         }
     
-    def embed_text_string(self, text: str) -> np.ndarray:
-        """Generate deterministic mock embeddings based on text content"""
-        # Use hash for deterministic results
-        np.random.seed(hash(text) % 2**32)
-        embedding = np.random.normal(0, 1, 1024)  # Match MxBai dimensions
-        return embedding / np.linalg.norm(embedding)
+    def generate_memory_text(self) -> str:
+        """Generate a random memory text"""
+        if random.random() < 0.7:  # 70% chance of complex template
+            return random.choice(self.complex_templates)
+        else:  # 30% chance of simple template
+            template = random.choice(self.simple_templates)
+            # Fill in template with random values
+            for key, values in self.template_values.items():
+                if f"{{{key}}}" in template:
+                    template = template.replace(f"{{{key}}}", random.choice(values))
+            return template
     
-    def find_most_similar_emotion(self, text: str):
-        """Simple keyword-based emotion detection for demo"""
-        text_lower = text.lower()
+    def create_diverse_memories(self, num_memories: int = 50) -> List[str]:
+        """
+        Create diverse memories with text, and some with audio/image
         
-        for emotion, keywords in self.emotion_keywords.items():
-            if any(keyword in text_lower for keyword in keywords):
-                return emotion, 0.8, {'mood': emotion, 'thoughts': 'demo', 'responses': 'demo'}
+        Args:
+            num_memories: Number of memories to create
+            
+        Returns:
+            List[str]: List of created memory IDs
+        """
+        print(f"\n📝 Creating {num_memories} diverse memories...")
         
-        return 'neutral', 0.5, {'mood': 'neutral', 'thoughts': 'demo', 'responses': 'demo'}
+        memory_ids = []
+        start_time = time.time() - (7 * 24 * 3600)  # Start 7 days ago
+        
+        for i in range(num_memories):
+            # Generate memory text
+            text = self.generate_memory_text()
+            
+            # Add some temporal variation (memories spread over past week)
+            memory_time = start_time + (i * (7 * 24 * 3600) / num_memories)
+            
+            # Create memory page with text
+            memory_page = self.prefrontal_cortex.create_memory_page(
+                text=text,
+                auto_embed_text=True,
+                auto_detect_emotion=True
+            )
+            
+            # Override timestamp to spread memories over time
+            memory_page.timestamp = memory_time
+            
+            # 30% chance of adding audio file
+            if random.random() < 0.3:
+                audio_file = f"audio_recording_{i}.wav"
+                memory_page.audio_file = audio_file
+                memory_page.audio_embedding = pseudo_vggish_embed(audio_file)
+            
+            # 20% chance of adding image file
+            if random.random() < 0.2:
+                image_file = f"photo_{i}.jpg"
+                memory_page.image_file = image_file
+                memory_page.image_embedding = pseudo_beit_embed(image_file)
+            
+            # Store the memory
+            memory_id = self.prefrontal_cortex.store_memory(
+                memory_page, 
+                link_to_similar=True,
+                similarity_threshold=0.6
+            )
+            memory_ids.append(memory_id)
+            
+            # Progress indicator
+            if (i + 1) % 10 == 0:
+                print(f"  Created {i + 1}/{num_memories} memories...")
+        
+        print(f"✅ Created {len(memory_ids)} memories successfully!")
+        return memory_ids
+    
+    def demonstrate_memory_recall(self, num_queries: int = 5):
+        """Demonstrate memory recall functionality"""
+        print(f"\n🔍 Demonstrating Memory Recall...")
+        
+        query_examples = [
+            "working on coding projects",
+            "meeting with friends",
+            "feeling stressed about work",
+            "going for a walk",
+            "learning something new"
+        ]
+        
+        for i, query in enumerate(query_examples[:num_queries]):
+            print(f"\n--- Query {i+1}: '{query}' ---")
+            
+            # Search memories
+            results = self.prefrontal_cortex.search_text_with_breakdown(query, n=3)
+            
+            if results:
+                for j, (memory, score, breakdown) in enumerate(results):
+                    print(f"  Result {j+1} (Score: {score:.3f}):")
+                    print(f"    Text: {memory.text[:80]}...")
+                    print(f"    Time: {datetime.fromtimestamp(memory.timestamp).strftime('%Y-%m-%d %H:%M')}")
+                    print(f"    Emotion: {memory.emotion}")
+                    print(f"    Breakdown: {breakdown}")
+            else:
+                print("  No matching memories found.")
+    
+    def demonstrate_association_recall(self):
+        """Demonstrate the 'what does this remind me of' functionality"""
+        print(f"\n🧠 Demonstrating Association Recall...")
+        
+        test_inputs = [
+            "Had lunch with my colleague today",
+            "Feeling excited about the weekend",
+            "Working late on a difficult problem",
+            "Beautiful sunny weather outside"
+        ]
+        
+        for i, input_text in enumerate(test_inputs):
+            print(f"\n--- Input {i+1}: '{input_text}' ---")
+            
+            # Use the hippocampus association function
+            association = self.prefrontal_cortex.what_does_this_remind_me_of(
+                text=input_text,
+                similarity_threshold=0.6
+            )
+            
+            if association:
+                print(f"  🔗 This reminds me of:")
+                print(f"    Text: {association.text[:80]}...")
+                print(f"    Time: {datetime.fromtimestamp(association.timestamp).strftime('%Y-%m-%d %H:%M')}")
+                print(f"    Emotion: {association.emotion}")
+                print(f"    Access count: {association.access_count}")
+            else:
+                print("  No strong associations found.")
+    
+    def demonstrate_memory_consolidation(self):
+        """Demonstrate hippocampus memory consolidation"""
+        print(f"\n🏛️ Demonstrating Memory Consolidation (Hippocampus)...")
+        
+        # Show stats before consolidation
+        stats_before = self.prefrontal_cortex.get_memory_stats()
+        print(f"Before consolidation:")
+        print(f"  Total memories: {stats_before['total_memories']}")
+        print(f"  Text memories: {stats_before['text_memories']}")
+        print(f"  Average links per memory: {stats_before['average_links_per_memory']:.2f}")
+        
+        # Perform consolidation
+        print(f"\n🔄 Running memory consolidation...")
+        concepts_created = self.hippocampus.consolidate_memories(
+            min_age_hours=0.1,  # Very recent for demo
+            max_concepts_per_run=15
+        )
+        
+        # Show consolidation results
+        consolidation_stats = self.hippocampus.get_consolidation_stats()
+        print(f"\nConsolidation Results:")
+        print(f"  Concepts created: {concepts_created}")
+        print(f"  Total concepts: {consolidation_stats['total_concepts']}")
+        print(f"  Memories in concepts: {consolidation_stats['total_memories_in_concepts']}")
+        print(f"  Consolidation ratio: {consolidation_stats['consolidation_ratio']:.2%}")
+        print(f"  Average concept size: {consolidation_stats['average_concept_size']:.1f}")
+        
+        # Show some example concepts
+        print(f"\n📚 Example Memory Concepts:")
+        for i, (concept_id, concept) in enumerate(list(self.hippocampus.memory_concepts.items())[:5]):
+            print(f"\n  Concept {i+1}: {concept.theme}")
+            print(f"    Summary: {concept.summary[:100]}...")
+            print(f"    Memories: {len(concept.memory_ids)}")
+            print(f"    Key entities: {', '.join(concept.key_entities[:3])}")
+            print(f"    Time span: {concept.temporal_span_days:.1f} days")
+            print(f"    Importance: {concept.importance_score:.2f}")
+    
+    def demonstrate_concept_search(self):
+        """Demonstrate searching through consolidated concepts"""
+        print(f"\n🔎 Demonstrating Concept Search...")
+        
+        search_queries = [
+            "work meetings and collaboration",
+            "exercise and outdoor activities",
+            "learning and personal development"
+        ]
+        
+        for query in search_queries:
+            print(f"\n--- Searching concepts for: '{query}' ---")
+            
+            concept_results = self.hippocampus.search_concepts(query, n=3)
+            
+            if concept_results:
+                for i, (concept, score) in enumerate(concept_results):
+                    print(f"  Concept {i+1} (Score: {score:.3f}):")
+                    print(f"    Theme: {concept.theme}")
+                    print(f"    Summary: {concept.summary[:80]}...")
+                    print(f"    Memories: {len(concept.memory_ids)}")
+                    print(f"    Key entities: {', '.join(concept.key_entities[:3])}")
+                    
+                    # Show option to expand concept
+                    if i == 0:  # Expand the top result
+                        print(f"    \n    📖 Expanding top concept:")
+                        memories = self.hippocampus.expand_concept(concept.cluster_id)
+                        for j, memory in enumerate(memories[:3]):  # Show first 3 memories
+                            print(f"      Memory {j+1}: {memory.text[:60]}...")
+            else:
+                print("  No matching concepts found.")
+    
+    def demonstrate_memory_pruning(self):
+        """Demonstrate memory analysis and pruning"""
+        print(f"\n🌿 Demonstrating Memory Analysis & Pruning...")
+        
+        # Identify foundational memories
+        foundational = self.prefrontal_cortex.identify_foundational_memories(
+            min_references=2, 
+            min_connections=1
+        )
+        
+        print(f"Foundational Memories ({len(foundational)}):")
+        for i, (memory, stats) in enumerate(foundational[:3]):
+            print(f"  {i+1}. {memory.text[:60]}...")
+            print(f"     Access count: {stats['access_count']}, Connections: {stats['connections']}")
+            print(f"     Foundational score: {stats['foundational_score']:.2f}")
+        
+        # Identify weak memories
+        weak = self.prefrontal_cortex.identify_weak_memories(
+            max_references=1, 
+            max_connections=1,
+            min_age_days=0.1  # Very recent for demo
+        )
+        
+        print(f"\nWeak Memories ({len(weak)}):")
+        for i, (memory, stats) in enumerate(weak[:3]):
+            print(f"  {i+1}. {memory.text[:60]}...")
+            print(f"     Access count: {stats['access_count']}, Connections: {stats['connections']}")
+            print(f"     Weakness score: {stats['weakness_score']:.2f}")
+        
+        # Demonstrate memory consolidation (merging similar weak memories)
+        print(f"\n🔄 Attempting memory consolidation...")
+        merged_count = self.prefrontal_cortex.consolidate_similar_memories(
+            similarity_threshold=0.85,
+            max_merges=3
+        )
+        print(f"Merged {merged_count} similar memories")
+        
+        # Show memory strength distribution
+        strength_dist = self.prefrontal_cortex.get_memory_strength_distribution()
+        print(f"\nMemory Strength Distribution:")
+        print(f"  Foundational: {strength_dist['foundational']}")
+        print(f"  Active: {strength_dist['active']}")
+        print(f"  Dormant: {strength_dist['dormant']}")
+        
+        # Show network density
+        network_density = self.prefrontal_cortex.calculate_network_density()
+        print(f"  Network density: {network_density:.3f}")
+    
+    def generate_summary_report(self):
+        """Generate a comprehensive summary of the memory system state"""
+        print(f"\n📊 Memory System Summary Report")
+        print("=" * 50)
+        
+        # PrefrontalCortex stats
+        pfc_stats = self.prefrontal_cortex.get_memory_stats()
+        print(f"Raw Memory Statistics:")
+        print(f"  Total memories: {pfc_stats['total_memories']}")
+        print(f"  Text memories: {pfc_stats['text_memories']}")
+        print(f"  Audio memories: {pfc_stats['audio_memories']}")
+        print(f"  Image memories: {pfc_stats['image_memories']}")
+        print(f"  Total links: {pfc_stats['total_associative_links']}")
+        print(f"  Average links/memory: {pfc_stats['average_links_per_memory']:.2f}")
+        
+        # Hippocampus stats
+        hip_stats = self.hippocampus.get_consolidation_stats()
+        print(f"\nConceptual Memory Statistics:")
+        print(f"  Total concepts: {hip_stats['total_concepts']}")
+        print(f"  Memories in concepts: {hip_stats['total_memories_in_concepts']}")
+        print(f"  Consolidation ratio: {hip_stats['consolidation_ratio']:.2%}")
+        print(f"  Average concept size: {hip_stats['average_concept_size']:.1f}")
+        
+        # Memory strength analysis
+        strength_dist = self.prefrontal_cortex.get_memory_strength_distribution()
+        print(f"\nMemory Strength Distribution:")
+        for category, count in strength_dist.items():
+            percentage = (count / pfc_stats['total_memories']) * 100 if pfc_stats['total_memories'] > 0 else 0
+            print(f"  {category.title()}: {count} ({percentage:.1f}%)")
+        
+        # Network analysis
+        network_density = self.prefrontal_cortex.calculate_network_density()
+        print(f"\nNetwork Analysis:")
+        print(f"  Network density: {network_density:.3f}")
+        print(f"  Temporal chain length: {pfc_stats['temporal_chain_length']}")
+        
+        # Top concepts by importance
+        if self.hippocampus.memory_concepts:
+            print(f"\nTop Memory Concepts by Importance:")
+            concepts_by_importance = sorted(
+                self.hippocampus.memory_concepts.values(),
+                key=lambda c: c.importance_score,
+                reverse=True
+            )
+            for i, concept in enumerate(concepts_by_importance[:5]):
+                print(f"  {i+1}. {concept.theme} (importance: {concept.importance_score:.2f})")
+                print(f"     {len(concept.memory_ids)} memories, {len(concept.key_entities)} entities")
+
+
+def main():
+    """Main demo function"""
+    print("🧠 Brain-Like Memory System Demo")
+    print("=" * 40)
+    print("This demo showcases a memory system that mimics human cognition:")
+    print("- Creating diverse memories with multimodal content")
+    print("- Forming associative links between related memories")
+    print("- Consolidating memories into conceptual clusters")
+    print("- Demonstrating recall and search capabilities")
+    print("- Analyzing memory strength and pruning weak memories")
+    print()
+    
+    # Initialize the demo
+    demo = MemorySystemDemo()
+    
+    try:
+        # 1. Create diverse memories
+        memory_ids = demo.create_diverse_memories(num_memories=30)
+        
+        # 2. Demonstrate memory recall
+        demo.demonstrate_memory_recall(num_queries=3)
+        
+        # 3. Demonstrate association recall
+        demo.demonstrate_association_recall()
+        
+        # 4. Consolidate memories into concepts
+        demo.demonstrate_memory_consolidation()
+        
+        # 5. Search through concepts
+        demo.demonstrate_concept_search()
+        
+        # 6. Analyze and prune memories
+        demo.demonstrate_memory_pruning()
+        
+        # 7. Generate final summary
+        demo.generate_summary_report()
+        
+        print(f"\n✅ Demo completed successfully!")
+        print(f"📁 Memory data saved to:")
+        print(f"  - {demo.prefrontal_cortex.memory_store_file}")
+        print(f"  - {demo.hippocampus.concept_store_file}")
+        print(f"  - {demo.embedder.get_pickle_file_path()}")
+        
+    except Exception as e:
+        print(f"\n❌ Demo encountered an error: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
-    # Run the demo
-    try:
-        cortex, new_memory_id = demo_memory_system()
-        
-        print(f"\n🧠 Demo completed! New memory ID: {new_memory_id}")
-        print(f"💾 Memory store saved to: {cortex.memory_store_file}")
-        print(f"🔗 Memory network ready for further interactions!")
-        
-    except Exception as e:
-        print(f"\n❌ Demo failed with error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+    main()
