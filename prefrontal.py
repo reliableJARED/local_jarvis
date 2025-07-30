@@ -113,6 +113,14 @@ class PrefrontalCortex:
         self.emotion_boost_multiplier = 1.3  # Positive emotions get ranking boost
         self.relation_boost_factor = 0.1  # Each related memory adds 10% to rank
         
+        # Initialize entity clustering after hippocampus is available
+        self.entity_clustering = None
+
+    def set_hippocampus(self, hippocampus):
+        """Set hippocampus reference and initialize entity clustering"""
+        self.hippocampus = hippocampus
+        self.entity_clustering = EntityBasedClustering(self, hippocampus)
+
         # Positive emotions based on Plutchik's wheel
         self.positive_emotions = {
             'ecstasy', 'joy', 'serenity',
@@ -470,6 +478,55 @@ class PrefrontalCortex:
         print(f"Stored memory {memory_page.memory_id} with {len(memory_page.related_memory_ids)} links")
         return memory_page.memory_id
     
+    def _extract_entities(self, text: str) -> List[str]:
+        """Extract entities from text using the hippocampus NLP pipeline"""
+        if hasattr(self, 'hippocampus') and self.hippocampus.nlp and text:
+            doc = self.hippocampus.nlp(text)
+            return [ent.text.lower() for ent in doc.ents if ent.label_ in ["PERSON", "GPE", "LOC", "ORG"]]
+        return []
+
+    def _find_entity_based_memories(self, entities: List[str]) -> List[Dict]:
+        """Find memories based on entity matches"""
+        if hasattr(self, 'entity_clustering'):
+            return self.entity_clustering.find_entity_based_memories(entities)
+        return []
+
+    def _build_full_context(self, triggered_memories: List[Dict]) -> Dict[str, Any]:
+        """Build comprehensive context from triggered memories"""
+        
+        context = {
+            'total_triggered': len(triggered_memories),
+            'by_type': defaultdict(int),
+            'confidence_distribution': [],
+            'temporal_spread': {},
+            'key_entities': set(),
+            'representative_memories': []
+        }
+        
+        for tm in triggered_memories:
+            trigger_type = tm['trigger_type']
+            context['by_type'][trigger_type] += 1
+            context['confidence_distribution'].append(tm['confidence'])
+            
+            if 'memory' in tm:
+                memory = tm['memory']
+                context['representative_memories'].append({
+                    'text': memory.text[:100] + '...' if memory.text else '',
+                    'timestamp': memory.timestamp,
+                    'emotion': memory.emotion,
+                    'confidence': tm['confidence']
+                })
+                
+                # Extract entities from this memory
+                entities = self._extract_entities(memory.text or '')
+                context['key_entities'].update(entities)
+        
+        # Convert sets to lists for JSON serialization
+        context['key_entities'] = list(context['key_entities'])
+        context['by_type'] = dict(context['by_type'])
+        
+        return context
+
     def get_memory(self, memory_id: str) -> Optional[MemoryPage]:
         """
         Retrieve a memory page by ID and update access statistics
@@ -765,7 +822,152 @@ class PrefrontalCortex:
                 'active': len(self.memory_pages),
                 'dormant': 0
             }
+
+    def process_new_experience(self, 
+                           text: Optional[str] = None,
+                           image_file: Optional[str] = None,
+                           audio_file: Optional[str] = None,
+                           return_full_context: bool = False) -> Dict[str, Any]:
+        """
+        Core memory processing flow: Input → Trigger → Gist → Store
         
+        Args:
+            text: New text input
+            image_file: New image input
+            audio_file: New audio input  
+            return_full_context: Whether to return detailed context
+            
+        Returns:
+            Dict containing triggered memories, gist, and storage confirmation
+        """
+        
+        # Step 1: Create embeddings for new input (but don't store yet)
+        input_embeddings = {}
+        if text:
+            input_embeddings['text'] = self.embedder.embed_text_string(text)
+        if image_file:
+            input_embeddings['image'] = pseudo_beit_embed(image_file)
+        if audio_file:
+            input_embeddings['audio'] = pseudo_vggish_embed(audio_file)
+        
+        # Step 2: Find triggered memories across all modalities
+        triggered_memories = self._find_triggered_memories(
+            text=text,
+            embeddings=input_embeddings,
+            threshold=0.6
+        )
+        
+        # Step 3: Generate gist from triggered memories
+        gist = self._generate_memory_gist(triggered_memories, text)
+        
+        # Step 4: Store new input as memory
+        new_memory = self.create_memory_page(
+            text=text,
+            image_file=image_file, 
+            audio_file=audio_file,
+            auto_embed_text=True,
+            auto_detect_emotion=True
+        )
+        
+        memory_id = self.store_memory(new_memory, link_to_similar=True)
+        
+        # Return structured response
+        result = {
+            'triggered_memories': triggered_memories,
+            'gist': gist,
+            'new_memory_id': memory_id,
+            'storage_confirmed': True
+        }
+        
+        if return_full_context:
+            result['full_context'] = self._build_full_context(triggered_memories)
+            
+        return result
+
+    def _find_triggered_memories(self, text: str, embeddings: Dict, threshold: float) -> List[Dict]:
+        """Find memories triggered by new input across all modalities"""
+        
+        all_triggered = []
+        
+        # Text-based triggers
+        if text and 'text' in embeddings:
+            text_matches = self.search_text_with_breakdown(text, n=5)
+            for memory, score, breakdown in text_matches:
+                if score >= threshold:
+                    all_triggered.append({
+                        'memory': memory,
+                        'trigger_type': 'semantic',
+                        'confidence': score,
+                        'breakdown': breakdown
+                    })
+        
+        # Concept-based triggers (from hippocampus)
+        if hasattr(self, 'hippocampus') and text:
+            concept_matches = self.hippocampus.search_concepts(text, n=3)
+            for concept, score in concept_matches:
+                if score >= threshold:
+                    all_triggered.append({
+                        'concept': concept,
+                        'trigger_type': 'conceptual', 
+                        'confidence': score,
+                        'constituent_memories': len(concept.memory_ids)
+                    })
+        
+        # Entity-based triggers
+        entities = self._extract_entities(text) if text else []
+        if entities:
+            entity_matches = self._find_entity_based_memories(entities)
+            all_triggered.extend(entity_matches)
+        
+        # Sort by confidence and return top triggers
+        all_triggered.sort(key=lambda x: x['confidence'], reverse=True)
+        return all_triggered[:10]  # Top 10 triggers
+
+    def _generate_memory_gist(self, triggered_memories: List[Dict], current_input: str) -> Dict[str, str]:
+        """Generate gist/summary of triggered memories"""
+        
+        if not triggered_memories:
+            return {'summary': 'No related memories found', 'context': 'New experience'}
+        
+        # Separate memory types
+        semantic_memories = [tm for tm in triggered_memories if tm['trigger_type'] == 'semantic']  
+        conceptual_memories = [tm for tm in triggered_memories if tm['trigger_type'] == 'conceptual']
+        entity_memories = [tm for tm in triggered_memories if tm['trigger_type'] == 'entity']
+        
+        gist = {
+            'summary': '',
+            'semantic_context': '',
+            'conceptual_context': '', 
+            'entity_context': '',
+            'temporal_context': ''
+        }
+        
+        # Semantic gist
+        if semantic_memories:
+            top_semantic = semantic_memories[0]['memory']
+            gist['semantic_context'] = f"Similar to: {top_semantic.text[:100]}..."
+            gist['summary'] = f"Reminds me of {len(semantic_memories)} similar experiences"
+        
+        # Conceptual gist  
+        if conceptual_memories:
+            top_concept = conceptual_memories[0]['concept']
+            gist['conceptual_context'] = f"Related to concept: {top_concept.theme}"
+            gist['summary'] += f", connects to '{top_concept.theme}' pattern"
+            
+        # Entity gist
+        if entity_memories:
+            gist['entity_context'] = f"Involves familiar entities: {', '.join([em['entity'] for em in entity_memories[:3]])}"
+        
+        # Temporal gist
+        if semantic_memories:
+            recent_memories = [sm for sm in semantic_memories if (time.time() - sm['memory'].timestamp) < 86400]  # 1 day
+            if recent_memories:
+                gist['temporal_context'] = f"Similar to {len(recent_memories)} recent experiences"
+        
+        return gist
+
+
+
     def clear_all_memories(self):
         """Clear all stored memories"""
         self.memory_pages.clear()
@@ -791,6 +993,8 @@ class Hippocampus:
         self.prefrontal_cortex = prefrontal_cortex
         self.concept_store_file = concept_store_file
         self.memory_concepts: Dict[str, MemoryConcept] = {}
+        # Set bidirectional reference
+        prefrontal_cortex.set_hippocampus(self)
         
         # Initialize spaCy for noun extraction
         try:
@@ -809,6 +1013,50 @@ class Hippocampus:
         # Load existing concepts
         self._load_concept_store()
     
+    def auto_consolidate_all(self, min_age_hours: float = 1.0) -> Dict[str, int]:
+        """
+        Run all consolidation methods and return summary
+        
+        Args:
+            min_age_hours: Minimum age for consolidation
+            
+        Returns:
+            Dict with counts of different consolidation types
+        """
+        
+        results = {
+            'semantic_concepts': 0,
+            'entity_concepts': 0, 
+            'merged_memories': 0
+        }
+        
+        # 1. Semantic consolidation (existing method)
+        results['semantic_concepts'] = self.consolidate_memories(
+            min_age_hours=min_age_hours,
+            max_concepts_per_run=15
+        )
+        
+        # 2. Entity-based consolidation  
+        if hasattr(self.prefrontal_cortex, 'entity_clustering'):
+            results['entity_concepts'] = self.prefrontal_cortex.entity_clustering.auto_consolidate_entity_clusters(
+                max_clusters=10
+            )
+        
+        # 3. Merge similar weak memories
+        results['merged_memories'] = self.prefrontal_cortex.consolidate_similar_memories(
+            similarity_threshold=0.85,
+            max_merges=5
+        )
+        
+        total_changes = sum(results.values())
+        print(f"\nConsolidation Summary:")
+        print(f"  Semantic concepts: {results['semantic_concepts']}")  
+        print(f"  Entity concepts: {results['entity_concepts']}")
+        print(f"  Merged memories: {results['merged_memories']}")
+        print(f"  Total changes: {total_changes}")
+        
+        return results
+
     def _load_concept_store(self):
         """Load memory concepts from pickle file"""
         if os.path.exists(self.concept_store_file):
@@ -1284,6 +1532,266 @@ class Hippocampus:
         self._save_concept_store()
         print("All memory concepts cleared")
 
+
+class EntityBasedClustering:
+    """
+    Advanced clustering based on proper nouns, people, places, and temporal patterns
+    """
+    
+    def __init__(self, prefrontal_cortex, hippocampus):
+        self.prefrontal_cortex = prefrontal_cortex
+        self.hippocampus = hippocampus
+        self.entity_memory_index = defaultdict(list)  # entity -> memory_ids
+        self.temporal_clusters = defaultdict(list)    # time_bucket -> memory_ids
+        
+    def build_entity_index(self):
+        """Build searchable index of entities to memories"""
+        
+        self.entity_memory_index.clear()
+        
+        for memory_id, memory in self.prefrontal_cortex.memory_pages.items():
+            if not memory.text:
+                continue
+                
+            # Extract entities using spaCy
+            entities, nouns, people_places = self.hippocampus.extract_entities_and_nouns(memory.text)
+            
+            # Index by specific entity types
+            for entity in people_places:  # People, places, organizations
+                self.entity_memory_index[f"entity:{entity.lower()}"].append(memory_id)
+                
+            # Index by important nouns
+            for noun in nouns[:5]:  # Top 5 nouns per memory
+                self.entity_memory_index[f"noun:{noun.lower()}"].append(memory_id)
+                
+            # Index by time buckets (daily, weekly, monthly)
+            timestamp = memory.timestamp
+            date_key = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d')
+            week_key = datetime.fromtimestamp(timestamp).strftime('%Y-W%U')  
+            month_key = datetime.fromtimestamp(timestamp).strftime('%Y-%m')
+            
+            self.temporal_clusters[f"day:{date_key}"].append(memory_id)
+            self.temporal_clusters[f"week:{week_key}"].append(memory_id)
+            self.temporal_clusters[f"month:{month_key}"].append(memory_id)
+            
+        print(f"Built entity index with {len(self.entity_memory_index)} entity keys")
+        print(f"Built temporal index with {len(self.temporal_clusters)} time buckets")
+    
+    def find_entity_based_memories(self, entities: List[str], min_confidence: float = 0.7) -> List[Dict]:
+        """Find memories that share specific entities"""
+        
+        entity_matches = []
+        
+        for entity in entities:
+            entity_key = f"entity:{entity.lower()}"
+            if entity_key in self.entity_memory_index:
+                memory_ids = self.entity_memory_index[entity_key]
+                
+                for memory_id in memory_ids:
+                    memory = self.prefrontal_cortex.get_memory(memory_id)
+                    if memory:
+                        entity_matches.append({
+                            'memory': memory,
+                            'entity': entity,
+                            'trigger_type': 'entity',
+                            'confidence': min_confidence + 0.1  # Slight boost for exact entity match
+                        })
+        
+        return entity_matches
+    
+    def cluster_by_entity_and_time(self, time_window_days: int = 7) -> Dict[str, List[str]]:
+        """
+        Create clusters based on entity co-occurrence within time windows
+        
+        Args:
+            time_window_days: Days within which memories can be clustered
+            
+        Returns:
+            Dict mapping cluster_id to list of memory_ids
+        """
+        
+        clusters = {}
+        current_time = time.time()
+        processed_memories = set()
+        
+        # Group by major entities first
+        for entity_key, memory_ids in self.entity_memory_index.items():
+            if not entity_key.startswith('entity:') or len(memory_ids) < 2:
+                continue
+                
+            entity_name = entity_key.replace('entity:', '')
+            
+            # Sub-cluster by time within this entity group
+            time_buckets = defaultdict(list)
+            
+            for memory_id in memory_ids:
+                if memory_id in processed_memories:
+                    continue
+                    
+                memory = self.prefrontal_cortex.get_memory(memory_id)
+                if not memory:
+                    continue
+                    
+                # Find time bucket (weekly grouping)
+                week_key = datetime.fromtimestamp(memory.timestamp).strftime('%Y-W%U')
+                time_buckets[week_key].append(memory_id)
+            
+            # Create clusters for entity+time combinations
+            for week_key, week_memory_ids in time_buckets.items():
+                if len(week_memory_ids) >= 2:  # At least 2 memories
+                    cluster_id = f"{entity_name}_{week_key}"
+                    clusters[cluster_id] = week_memory_ids
+                    processed_memories.update(week_memory_ids)
+        
+        return clusters
+    
+    def auto_consolidate_entity_clusters(self, max_clusters: int = 20) -> int:
+        """
+        Automatically consolidate memories based on entity and temporal clustering
+        
+        Args:
+            max_clusters: Maximum number of clusters to process
+            
+        Returns:
+            int: Number of concepts created
+        """
+        
+        self.build_entity_index()
+        entity_clusters = self.cluster_by_entity_and_time()
+        
+        concepts_created = 0
+        
+        for cluster_id, memory_ids in list(entity_clusters.items())[:max_clusters]:
+            
+            # Skip if memories already in concepts
+            already_consolidated = any(
+                memory_id in concept.memory_ids 
+                for concept in self.hippocampus.memory_concepts.values()
+                for memory_id in memory_ids
+            )
+            
+            if already_consolidated:
+                continue
+            
+            try:
+                # Create concept with entity-aware theming
+                concept = self.create_entity_aware_concept(cluster_id, memory_ids)
+                self.hippocampus.memory_concepts[concept.cluster_id] = concept
+                concepts_created += 1
+                
+                print(f"Created entity-based concept: {concept.theme}")
+                
+            except Exception as e:
+                print(f"Error creating entity cluster {cluster_id}: {str(e)}")
+                
+        if concepts_created > 0:
+            self.hippocampus._save_concept_store()
+            
+        return concepts_created
+    
+    def create_entity_aware_concept(self, cluster_id: str, memory_ids: List[str]) -> 'MemoryConcept':
+        """Create a concept with entity-aware theming"""
+        
+        # Extract entity and time from cluster_id
+        parts = cluster_id.split('_')
+        entity_name = parts[0] if parts else "Unknown"
+        time_period = parts[1] if len(parts) > 1 else "Unknown"
+        
+        # Get memories for analysis
+        memories = [self.prefrontal_cortex.get_memory(mid) for mid in memory_ids]
+        memories = [m for m in memories if m and m.text]
+        
+        if not memories:
+            raise ValueError("No valid memories for concept creation")
+        
+        # Generate entity-focused theme and summary
+        theme = f"Experiences with {entity_name.title()}"
+        if time_period != "Unknown":
+            theme += f" during {time_period}"
+        
+        # Create summary focusing on the common entity
+        summary = f"Collection of {len(memories)} memories involving {entity_name}"
+        
+        # Extract all entities for this concept
+        all_entities = []
+        all_nouns = []
+        for memory in memories:
+            entities, nouns, people_places = self.hippocampus.extract_entities_and_nouns(memory.text)
+            all_entities.extend(people_places)
+            all_nouns.extend(nouns)
+        
+        key_entities = [entity for entity, count in Counter(all_entities).most_common(5)]
+        key_nouns = [noun for noun, count in Counter(all_nouns).most_common(10)]
+        
+        # Calculate temporal info
+        timestamps = [m.timestamp for m in memories]
+        earliest_time = min(timestamps)
+        latest_time = max(timestamps)
+        representative_time = sum(timestamps) / len(timestamps)
+        temporal_span_days = (latest_time - earliest_time) / (24 * 3600)
+        
+        # Create summary embedding
+        summary_embedding = None
+        try:
+            summary_embedding = self.prefrontal_cortex.embedder.embed_text_string(summary)
+        except Exception as e:
+            print(f"Error creating summary embedding: {str(e)}")
+        
+        # Calculate importance (entity-based concepts get bonus)
+        importance_score = (
+            len(memory_ids) * 0.4 +  # Size matters
+            len(key_entities) * 0.3 +  # Entity diversity
+            (1 / max(temporal_span_days + 1, 1)) * 0.2 +  # Temporal concentration
+            1.5  # Entity-based bonus
+        )
+        
+        # Create the concept
+        concept = MemoryConcept(
+            theme=theme,
+            summary=summary,
+            summary_embedding=summary_embedding,
+            memory_ids=memory_ids.copy(),
+            representative_time=representative_time,
+            earliest_memory=earliest_time,
+            latest_memory=latest_time,
+            temporal_span_days=temporal_span_days,
+            key_entities=key_entities,
+            key_nouns=key_nouns,
+            importance_score=importance_score,
+            consolidation_strength=min(len(memory_ids) / 10, 1.0)
+        )
+        
+        return concept
+    
+    def get_entity_statistics(self) -> Dict[str, Any]:
+        """Get statistics about entity-based clustering"""
+        
+        entity_counts = {}
+        for key, memory_ids in self.entity_memory_index.items():
+            entity_type = key.split(':')[0]
+            if entity_type not in entity_counts:
+                entity_counts[entity_type] = 0
+            entity_counts[entity_type] += len(memory_ids)
+        
+        temporal_counts = {}
+        for key, memory_ids in self.temporal_clusters.items():
+            time_type = key.split(':')[0]
+            if time_type not in temporal_counts:
+                temporal_counts[time_type] = 0
+            temporal_counts[time_type] += 1
+        
+        return {
+            'total_entities': len([k for k in self.entity_memory_index.keys() if k.startswith('entity:')]),
+            'total_nouns': len([k for k in self.entity_memory_index.keys() if k.startswith('noun:')]),
+            'entity_memory_distribution': entity_counts,
+            'temporal_bucket_distribution': temporal_counts,
+            'most_referenced_entities': sorted(
+                [(k.replace('entity:', ''), len(v)) for k, v in self.entity_memory_index.items() if k.startswith('entity:')],
+                key=lambda x: x[1], reverse=True
+            )[:10]
+        }
+
+
 ####################################
 
 #!/usr/bin/env python3
@@ -1302,7 +1810,8 @@ Usage:
 """
 
 
-# Pseudo embedding functions for audio and image
+# Pseudo embedding functions 
+#audio
 def pseudo_vggish_embed(audio_file: str) -> np.ndarray:
     """
     Pseudo VGGish audio embedding function
@@ -1315,7 +1824,7 @@ def pseudo_vggish_embed(audio_file: str) -> np.ndarray:
     embedding = embedding / np.linalg.norm(embedding)
     print(f"[VGGish] Generated audio embedding for {audio_file} (shape: {embedding.shape})")
     return embedding
-
+#image
 def pseudo_beit_embed(image_file: str) -> np.ndarray:
     """
     Pseudo BeiT-large-patch-22f image embedding function
@@ -1731,54 +2240,101 @@ class MemorySystemDemo:
                 print(f"     {len(concept.memory_ids)} memories, {len(concept.key_entities)} entities")
 
 
-def main():
-    """Main demo function"""
-    print("🧠 Brain-Like Memory System Demo")
-    print("=" * 40)
-    print("This demo showcases a memory system that mimics human cognition:")
-    print("- Creating diverse memories with multimodal content")
-    print("- Forming associative links between related memories")
-    print("- Consolidating memories into conceptual clusters")
-    print("- Demonstrating recall and search capabilities")
-    print("- Analyzing memory strength and pruning weak memories")
-    print()
+# Update the main demo class
+class EnhancedMemorySystemDemo(MemorySystemDemo):
+    """Enhanced demo with new functionality"""
     
-    # Initialize the demo
-    demo = MemorySystemDemo()
-    
-    try:
+    # Enhanced demo method
+    def demonstrate_enhanced_flow(self):
+        """Demonstrate the enhanced memory processing flow"""
+        
+        print(f"\n🧠 Enhanced Memory Processing Flow Demo")
+        print("=" * 50)
+        
+        test_inputs = [
+            "Had a great meeting with Sarah about the new project timeline",
+            "Went for lunch with Mike at that Italian place downtown", 
+            "Sarah called to discuss the budget concerns for next quarter",
+            "Meeting at the office ran late, missed dinner with the family"
+        ]
+        
+        for i, input_text in enumerate(test_inputs):
+            print(f"\n--- Processing Input {i+1}: '{input_text}' ---")
+            
+            # Use enhanced processing flow
+            result = self.prefrontal_cortex.process_new_experience(
+                text=input_text,
+                return_full_context=True
+            )
+            
+            # Display results
+            print(f"🔍 Triggered Memories: {len(result['triggered_memories'])}")
+            for j, tm in enumerate(result['triggered_memories'][:2]):  # Show top 2
+                if 'memory' in tm:
+                    print(f"  {j+1}. ({tm['trigger_type']}) {tm['memory'].text[:60]}...")
+                    print(f"     Confidence: {tm['confidence']:.3f}")
+                elif 'concept' in tm:
+                    print(f"  {j+1}. ({tm['trigger_type']}) Concept: {tm['concept'].theme}")
+                    print(f"     Confidence: {tm['confidence']:.3f}")
+            
+            print(f"\n💭 Generated Gist:")
+            gist = result['gist']
+            if gist['summary']:
+                print(f"  Summary: {gist['summary']}")
+            if gist['semantic_context']:
+                print(f"  Semantic: {gist['semantic_context']}")
+            if gist['entity_context']:
+                print(f"  Entities: {gist['entity_context']}")
+                
+            print(f"\n💾 Stored as: {result['new_memory_id'][:8]}...")
+            
+            # Show full context for last input
+            if i == len(test_inputs) - 1 and 'full_context' in result:
+                context = result['full_context']
+                print(f"\n📊 Full Context Analysis:")
+                print(f"  Total triggered: {context['total_triggered']}")
+                print(f"  By type: {context['by_type']}")
+                print(f"  Key entities: {', '.join(context['key_entities'][:5])}")
+        
+        # Demonstrate auto-consolidation
+        print(f"\n🔄 Running Enhanced Consolidation...")
+        consolidation_results = self.hippocampus.auto_consolidate_all(min_age_hours=0.01)
+        
+        # Show entity statistics
+        if hasattr(self.prefrontal_cortex, 'entity_clustering'):
+            entity_stats = self.prefrontal_cortex.entity_clustering.get_entity_statistics()
+            print(f"\n📈 Entity Statistics:")
+            print(f"  Total entities tracked: {entity_stats['total_entities']}")
+            print(f"  Most referenced: {', '.join([f'{name}({count})' for name, count in entity_stats['most_referenced_entities'][:5]])}")
+
+
+
+    def run_complete_demo(self):
+        """Run the complete enhanced demo"""
+        
+        print("🧠 Enhanced Brain-Like Memory System Demo")
+        print("=" * 50)
+        
         # 1. Create diverse memories
-        memory_ids = demo.create_diverse_memories(num_memories=30)
+        memory_ids = self.create_diverse_memories(num_memories=25)
         
-        # 2. Demonstrate memory recall
-        demo.demonstrate_memory_recall(num_queries=3)
+        # 2. Demonstrate enhanced processing flow  
+        self.demonstrate_enhanced_flow()
         
-        # 3. Demonstrate association recall
-        demo.demonstrate_association_recall()
+        # 3. Show all existing demos
+        self.demonstrate_memory_recall(num_queries=2)
+        self.demonstrate_association_recall()
+        self.demonstrate_memory_consolidation()
+        self.demonstrate_concept_search()
+        self.demonstrate_memory_pruning()
         
-        # 4. Consolidate memories into concepts
-        demo.demonstrate_memory_consolidation()
+        # 4. Generate final summary
+        self.generate_summary_report()
         
-        # 5. Search through concepts
-        demo.demonstrate_concept_search()
-        
-        # 6. Analyze and prune memories
-        demo.demonstrate_memory_pruning()
-        
-        # 7. Generate final summary
-        demo.generate_summary_report()
-        
-        print(f"\n✅ Demo completed successfully!")
-        print(f"📁 Memory data saved to:")
-        print(f"  - {demo.prefrontal_cortex.memory_store_file}")
-        print(f"  - {demo.hippocampus.concept_store_file}")
-        print(f"  - {demo.embedder.get_pickle_file_path()}")
-        
-    except Exception as e:
-        print(f"\n❌ Demo encountered an error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n✅ Enhanced demo completed successfully!")
+
 
 
 if __name__ == "__main__":
-    main()
+    demo = EnhancedMemorySystemDemo()
+    demo.run_complete_demo()
