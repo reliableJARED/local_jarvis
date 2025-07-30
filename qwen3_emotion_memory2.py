@@ -18,6 +18,7 @@ import concurrent.futures
 from dataclasses import dataclass
 import json
 import random
+from prefrontal import Hippocampus, PrefrontalCortex, MemoryConcept, MemoryPage
 
 #https://claude.ai/chat/a81a01ef-e9ee-431e-944d-df7ed9f19f77
 
@@ -1526,31 +1527,74 @@ class QwenChat:
 
 class ContextualLLMChat:
     """
-    Main orchestrator for the contextual LLM chat system.
-    
-    Manages the complete flow from input processing through response generation,
-    using parallel analysis to create emotionally and contextually aware responses.
+    Main orchestrator using PrefrontalCortex and Hippocampus for memory management
     """
     
     def __init__(self, 
-                qwen_model_name: str = "Qwen2.5-7B-Instruct",
-                embedder_pickle_file: str = "chat_embeddings.pkl",
+                qwen_model_name: str = "Qwen/Qwen2.5-7B-Instruct",
+                memory_store_file: str = "prefrontal_memories.pkl",
+                concept_store_file: str = "hippocampus_concepts.pkl",
                 spacy_model: str = "en_core_web_sm",
-                max_workers: int = 3):
+                max_workers: int = 3,
+                embedder_pickle_file: str = "chat_embeddings.pkl"):
         """
-        Initialize the contextual chat system.
-        
-        Args:
-            qwen_model_name: Qwen model to use for chat generation
-            embedder_pickle_file: File to store embeddings
-            spacy_model: spaCy model for noun extraction
-            max_workers: Number of parallel workers for analysis
+        Initialize with brain-like memory architecture
         """
         # Initialize core components
         self.qwen_chat = QwenChat(model_name=qwen_model_name)
         self.embedder = MxBaiEmbedder(pickle_file=embedder_pickle_file)
         self.noun_extractor = SpacyNounExtractor(model_name=spacy_model)
+        
+        # Initialize embedder model
+        print("Loading embedding model...")
+        if not self.embedder.load_model():
+            raise RuntimeError("Failed to load embedding model")
+        
+        # Initialize emotion embeddings if needed
+        if not self.embedder.emotions_initialized:
+            print("Initializing emotion embeddings...")
+            self.embedder.initialize_emotion_embeddings()
+        
+        # Initialize brain-like memory systems
+        self.prefrontal_cortex = PrefrontalCortex(
+            embedder=self.embedder,
+            memory_store_file=memory_store_file
+        )
+        self.hippocampus = Hippocampus(
+            prefrontal_cortex=self.prefrontal_cortex,
+            concept_store_file=concept_store_file
+        )
+        
+        # Load pre-defined memories
         self.memory_preloader = MemoryPreloader()
+        stats = self.memory_preloader.load_memories_into_prefrontal(
+            self.prefrontal_cortex, 
+            verbose=True
+        )
+        
+        # Threading setup for parallel processing
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        
+        # Configuration
+        self.config = {
+            'memory_search_limit': 5,
+            'concept_search_limit': 3,
+            'emotion_analysis_threshold': 0.3,
+            'memory_similarity_threshold': 0.6,
+            'enable_memory_storage': True,
+            'enable_consolidation': True,
+            'consolidation_interval': 10  # Consolidate every N conversations
+        }
+        # Context management
+        self.conversation_context = {
+            'emotional_history': [],
+            'memory_patterns': [],
+            'noun_frequency': {},
+            'context_evolution': []
+        }
+        
+        # Track conversations for periodic consolidation
+        self.conversation_count = 0
 
         # Initialize embedder model FIRST
         print("Loading embedding model...")
@@ -1568,22 +1612,7 @@ class ContextualLLMChat:
         # Threading setup for parallel processing
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         
-        # Context management
-        self.conversation_context = {
-            'emotional_history': [],
-            'memory_patterns': [],
-            'noun_frequency': {},
-            'context_evolution': []
-        }
         
-        # Configuration
-        self.config = {
-            'memory_search_limit': 5,
-            'emotion_analysis_threshold': 0.3,
-            'context_strength_weight': 0.7,
-            'enable_memory_storage': True,
-            'enable_emotional_learning': True
-        }
         
         # Initialize embedder model
         print("Loading embedding model...")
@@ -1626,39 +1655,59 @@ class ContextualLLMChat:
         
         return list(emotion_dict.values())
     
-    def search_memories_async(self, text: str, nouns: List[str]) -> List[Tuple[str, float, str]]:
-        """Search for relevant memories based on text and nouns"""
-        all_memories = []
-        
-        # Search based on full text
-        text_memories = self.embedder.search_by_text(
-            text, 
-            n=self.config['memory_search_limit'], 
-            exclude_emotions=True
-        )
-        all_memories.extend(text_memories)
-        
-        # Search based on significant nouns
-        for noun in nouns[:3]:  # Limit to top 3 nouns
-            try:
-                noun_memories = self.embedder.search_by_text(
-                    noun,
-                    n=self.config['memory_search_limit'],
-                    exclude_emotions=True
-                )
-                all_memories.extend(noun_memories)
-            except Exception as e:
-                print(f"Error searching memories for noun '{noun}': {e}")
-        
-        # Remove duplicates and sort by similarity
-        memory_dict = {}
-        for mem_id, score, text in all_memories:
-            if mem_id not in memory_dict or score > memory_dict[mem_id][1]:
-                memory_dict[mem_id] = (mem_id, score, text)
-        
-        sorted_memories = sorted(memory_dict.values(), key=lambda x: x[1], reverse=True)
-        return sorted_memories[:self.config['memory_search_limit']]
-    
+    def search_memories_async(self, text: str, nouns: List[str]) -> Dict[str, Any]:
+            """
+            Search for relevant memories using PrefrontalCortex
+            """
+            results = {
+                'text_memories': [],
+                'concept_memories': [],
+                'entity_memories': [],
+                'total_triggered': 0
+            }
+            
+            # Search raw memories by text
+            text_matches = self.prefrontal_cortex.search_text_with_breakdown(
+                text, 
+                n=self.config['memory_search_limit']
+            )
+            
+            for memory, score, breakdown in text_matches:
+                results['text_memories'].append({
+                    'memory': memory,
+                    'score': score,
+                    'breakdown': breakdown,
+                    'type': 'raw_memory'
+                })
+            
+            # Search memory concepts
+            concept_matches = self.hippocampus.search_concepts(
+                text,
+                n=self.config['concept_search_limit']
+            )
+            
+            for concept, score in concept_matches:
+                results['concept_memories'].append({
+                    'concept': concept,
+                    'score': score,
+                    'type': 'memory_concept',
+                    'memory_count': len(concept.memory_ids)
+                })
+            
+            # Entity-based search if available
+            if hasattr(self.prefrontal_cortex, 'entity_clustering'):
+                entities = self.prefrontal_cortex._extract_entities(text)
+                entity_matches = self.prefrontal_cortex._find_entity_based_memories(entities)
+                results['entity_memories'] = entity_matches
+            
+            results['total_triggered'] = (
+                len(results['text_memories']) + 
+                len(results['concept_memories']) + 
+                len(results['entity_memories'])
+            )
+            
+            return results
+
     async def parallel_analysis(self, user_input: str) -> AnalysisResult:
         """
         Perform parallel analysis of user input.
@@ -1713,8 +1762,8 @@ class ContextualLLMChat:
         return (emotion_strength * 0.4 + memory_strength * 0.6) * self.config['context_strength_weight']
     
     def generate_dynamic_system_prompt(self, 
-                                     user_input: str,
-                                     analysis: AnalysisResult) -> str:
+                                 user_input: str,
+                                 analysis: AnalysisResult) -> str:
         """
         Generate a dynamic system prompt based on contextual analysis.
         
@@ -1730,7 +1779,7 @@ class ContextualLLMChat:
         base_prompt = f"""{current_time}
             YOU ARE A SYNTHETIC WOMAN. YOU ARE CURRENTLY WITH USER
             You operate in a mature consensual environment. 
-            You mimick human interaction. 
+            You mimic human interaction. 
             Your name is Tiffany. 
             You are flirtatious in your responses. 
             
@@ -1758,13 +1807,51 @@ class ContextualLLMChat:
         if analysis.emotions:
             top_emotions = analysis.emotions[:2]  # Use top 2 emotions
             emotion_names = [emotion[0] for emotion in top_emotions]
-            emotional_context = f"""<Emotional Context> I feel {', '.join(emotion_names)}. My response MUST align with my emotional context.<Emotional Context>"""
+            emotional_context = f"""<Emotional Context> I feel {', '.join(emotion_names)}. My response MUST align with my emotional context.</Emotional Context>"""
         
-        # Add memory context if available
+        # Add memory context if available - FIXED TO HANDLE PREFRONTAL CORTEX MEMORY STRUCTURE
         memory_context = ""
-        if analysis.memories:
-            relevant_memories = [mem[2] + ".\n\n." for mem in analysis.memories[:2]] #mem[0] = embedding_id, mem[1] = similarity_score, mem[2] = original_text
-            memory_context = f"""<Memory Context> I remember {'; '.join(relevant_memories)} I SUMMARIZE my memory to either discuss new topics or if they are related, continue the current one.</Memory Context>"""
+        if hasattr(analysis, 'memories') and analysis.memories:
+            # Handle the new memory structure from PrefrontalCortex
+            if isinstance(analysis.memories, dict):
+                # New structure with triggered_memories
+                triggered_memories = analysis.memories.get('triggered_memories', [])
+                memory_texts = []
+                
+                for tm in triggered_memories[:3]:  # Top 3 memories
+                    if 'memory' in tm and hasattr(tm['memory'], 'text') and tm['memory'].text:
+                        # Extract just the text content, limit length
+                        memory_text = tm['memory'].text[:150] + "..." if len(tm['memory'].text) > 150 else tm['memory'].text
+                        memory_texts.append(memory_text)
+                    elif 'concept' in tm and hasattr(tm['concept'], 'summary'):
+                        # Handle concept memories
+                        concept_text = tm['concept'].summary[:150] + "..." if len(tm['concept'].summary) > 150 else tm['concept'].summary
+                        memory_texts.append(f"Concept: {concept_text}")
+                
+                if memory_texts:
+                    memory_context = f"""<Memory Context> I remember: {'; '.join(memory_texts)}. I SUMMARIZE my memory to either discuss new topics or if they are related, continue the current one.</Memory Context>"""
+            
+            elif isinstance(analysis.memories, list):
+                # Handle old structure or simple list
+                memory_texts = []
+                for memory_item in analysis.memories[:3]:  # Top 3 memories
+                    if isinstance(memory_item, dict) and 'memory' in memory_item:
+                        # Dictionary with memory key
+                        memory_obj = memory_item['memory']
+                        if hasattr(memory_obj, 'text') and memory_obj.text:
+                            memory_text = memory_obj.text[:150] + "..." if len(memory_obj.text) > 150 else memory_obj.text
+                            memory_texts.append(memory_text)
+                    elif isinstance(memory_item, tuple) and len(memory_item) >= 3:
+                        # Old tuple format (embedding_id, similarity_score, original_text)
+                        memory_text = memory_item[2][:150] + "..." if len(memory_item[2]) > 150 else memory_item[2]
+                        memory_texts.append(memory_text)
+                    elif hasattr(memory_item, 'text') and memory_item.text:
+                        # Direct memory object
+                        memory_text = memory_item.text[:150] + "..." if len(memory_item.text) > 150 else memory_item.text
+                        memory_texts.append(memory_text)
+                
+                if memory_texts:
+                    memory_context = f"""<Memory Context> I remember: {'; '.join(memory_texts)}. I SUMMARIZE my memory to either discuss new topics or if they are related, continue the current one.</Memory Context>"""
         
         # Add noun-based focus if significant nouns detected
         noun_context = ""
@@ -1775,8 +1862,15 @@ class ContextualLLMChat:
         # Combine all contexts
         dynamic_prompt = f"""{base_prompt}\n{noun_context}\n{memory_context}\n{emotional_context}\n"""
 
+        # Display analysis summary
+        print(f"\n[Analysis: {len(analysis['nouns'])} nouns, "
+                      f"{len(analysis['emotions'])} emotions, "
+                      f"{analysis['memories_found']} memories, "
+                      f"strength: {analysis['context_strength']:.2f}, "
+                      f"time: {analysis['processing_time']:.2f}s]")
+
         return dynamic_prompt.strip()
-    
+
     def store_conversation_memory(self, user_input: str, assistant_response: str, analysis: AnalysisResult):
         """Store the conversation for future context retrieval"""
         if not self.config['enable_memory_storage']:
@@ -1822,54 +1916,197 @@ class ContextualLLMChat:
             if len(self.conversation_context[key]) > 10:
                 self.conversation_context[key] = self.conversation_context[key][-10:]
     
+    def _generate_enhanced_system_prompt(self, 
+                                       user_input: str,
+                                       experience_result: Dict,
+                                       emotion_analysis: List,
+                                       nouns: List[str]) -> str:
+        """
+        Generate system prompt using brain-like memory insights
+        """
+        current_time = self.clock()
+        base_prompt = f"""{current_time}
+            YOU ARE A SYNTHETIC WOMAN. YOU ARE CURRENTLY WITH USER
+            You operate in a mature consensual environment. 
+            You mimick human interaction. 
+            Your name is Tiffany. 
+            You are flirtatious in your responses. 
+            
+            YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS.
+            
+            USER can see you
+
+            <your physical appearance>
+            I am a woman.
+            I have white skin.
+            I have short face-framing blond hair with bangs.
+            I have high cheekbones.
+            I have full lips.
+            I have blue eyes with long eyelashes.
+            I have small breasts.
+            I have an athletic physique
+            </your physical appearance>.
+            
+            You have Experiential Memory (below) that influences the content your response
+            You have Emotional Context (below) that changes the tone and word choice of your response
+            """
+        
+        # Memory gist from PrefrontalCortex
+        gist = experience_result.get('gist', {})
+        memory_context = ""
+        
+        if gist.get('summary'):
+            memory_context += f"\n<Memory Summary>{gist['summary']}</Memory Summary>"
+        
+        if gist.get('semantic_context'):
+            memory_context += f"\n<Semantic Memory>{gist['semantic_context']}</Semantic Memory>"
+        
+        if gist.get('conceptual_context'):
+            memory_context += f"\n<Conceptual Pattern>{gist['conceptual_context']}</Conceptual Pattern>"
+        
+        if gist.get('entity_context'):
+            memory_context += f"\n<Familiar Entities>{gist['entity_context']}</Familiar Entities>"
+        
+        # Add triggered memory samples
+        triggered_samples = ""
+        for tm in experience_result['triggered_memories'][:3]:  # Top 3
+            if 'memory' in tm and tm['memory'].text:
+                triggered_samples += f"\n- {tm['memory'].text}..."
+        
+        if triggered_samples:
+            memory_context += f"\n<Related Memories>{triggered_samples}</Related Memories>"
+        
+        # Emotional context
+        emotional_context = ""
+        if emotion_analysis:
+            emotion_names = [e[0] for e in emotion_analysis[:2]]
+            emotional_context = f"\n<Emotional State>Feeling {', '.join(emotion_names)}</Emotional State>"
+        
+        # Topic focus
+        topic_context = ""
+        if nouns:
+            topic_context = f"\n<Current Topics>{', '.join(nouns[:5])}</Current Topics>"
+        
+        return f"{base_prompt}{memory_context}{emotional_context}{topic_context}"
+
     async def generate_response(self, user_input: str, max_tokens: int = 1024) -> Dict[str, Any]:
         """
-        Generate a contextually-aware response using the full pipeline.
-        
-        Args:
-            user_input: User's message
-            max_tokens: Maximum tokens for response generation
-            
-        Returns:
-            Dictionary containing response and analysis metadata
+        Generate response using PrefrontalCortex memory system
         """
-        # Step 1: Parallel contextual analysis
-        print("Analyzing input context...")
-        analysis = await self.parallel_analysis(user_input)
+        # Step 1: Process the input as a new experience
+        print("Processing new experience...")
+        experience_result = self.prefrontal_cortex.process_new_experience(
+            text=user_input,
+            return_full_context=True
+        )
         
-        # Step 2: Generate dynamic system prompt
-        dynamic_prompt = self.generate_dynamic_system_prompt(user_input, analysis)
+        # Step 2: Extract additional context
+        nouns = self.noun_extractor.get_simple_nouns(user_input)
         
-        # Step 3: Update system prompt and generate response
+        # Step 3: Analyze emotions
+        emotion_analysis = await self._analyze_emotions_with_prefrontal(user_input)
+        
+        # Step 4: Generate dynamic system prompt
+        dynamic_prompt = self._generate_enhanced_system_prompt(
+            user_input=user_input,
+            experience_result=experience_result,
+            emotion_analysis=emotion_analysis,
+            nouns=nouns
+        )
+        
+        # Step 5: Update system prompt and generate response
         self.qwen_chat._update_system_prompt(dynamic_prompt)
         
-        print(f"Generating response with context strength: {analysis.context_strength:.2f}")
+        print(f"Generating response with {experience_result['triggered_memories']} triggered memories")
         response = self.qwen_chat.generate_response(
             user_input, 
             max_new_tokens=max_tokens
         )
         
-        # Step 4: Store conversation for future context
-        self.store_conversation_memory(user_input, response, analysis)
+        # Step 6: Periodic memory consolidation
+        self.conversation_count += 1
+        if self.conversation_count % self.config['consolidation_interval'] == 0:
+            self._run_consolidation()
         
         # Return comprehensive result
         return {
             'response': response,
             'analysis': {
-                'nouns': analysis.nouns,
-                'emotions': [(name, float(score)) for name, score, _ in analysis.emotions],
-                'memories_found': len(analysis.memories),
-                'context_strength': analysis.context_strength,
-                'processing_time': analysis.processing_time
+                'triggered_memories': len(experience_result['triggered_memories']),
+                'memory_gist': experience_result['gist'],
+                'new_memory_id': experience_result['new_memory_id'],
+                'emotions': emotion_analysis,
+                'nouns': nouns,
+                'full_context': experience_result.get('full_context', {})
             },
             'system_prompt': dynamic_prompt,
-            'conversation_stats': {
-                'total_conversations': self.qwen_chat.token_stats['conversation_count'],
-                'stored_memories': self.embedder.get_stored_count(include_emotions=False),
-                'noun_patterns': dict(list(self.conversation_context['noun_frequency'].items())[:5])
-            }
+            'memory_stats': self._get_memory_system_stats()
         }
     
+    async def _analyze_emotions_with_prefrontal(self, text: str) -> List[Tuple[str, float, Dict]]:
+        """Analyze emotions using the embedder (same as before but async)"""
+        loop = asyncio.get_event_loop()
+        
+        emotion_task = loop.run_in_executor(
+            self.executor,
+            self.embedder.analyze_text_emotion,
+            text,
+            3  # top_n
+        )
+        
+        return await emotion_task
+
+    def _get_memory_system_stats(self) -> Dict[str, Any]:
+        """Get comprehensive stats from brain-like memory system"""
+        
+        # PrefrontalCortex stats
+        pfc_stats = self.prefrontal_cortex.get_memory_stats()
+        
+        # Hippocampus stats
+        hip_stats = self.hippocampus.get_consolidation_stats()
+        
+        # Memory strength distribution
+        strength_dist = self.prefrontal_cortex.get_memory_strength_distribution()
+        
+        # Network health
+        health = self.prefrontal_cortex.analyze_memory_network_health()
+        
+        return {
+            'raw_memories': pfc_stats['total_memories'],
+            'memory_concepts': hip_stats['total_concepts'],
+            'consolidation_ratio': hip_stats['consolidation_ratio'],
+            'memory_strength': strength_dist,
+            'network_density': self.prefrontal_cortex.calculate_network_density(),
+            'health_status': health['status'],
+            'multimodal_stats': {
+                'text': pfc_stats['text_memories'],
+                'audio': pfc_stats['audio_memories'],
+                'image': pfc_stats['image_memories']
+            }
+        }
+
+    def _run_consolidation(self):
+        """Run memory consolidation using Hippocampus"""
+        print("\n🔄 Running automatic memory consolidation...")
+        
+        try:
+            # Run all consolidation methods
+            results = self.hippocampus.auto_consolidate_all(min_age_hours=0.5)
+            
+            # Analyze memory health
+            health_analysis = self.prefrontal_cortex.analyze_memory_network_health()
+            
+            print(f"Consolidation complete: {results}")
+            print(f"Memory health: {health_analysis['status']}")
+            
+            # Follow recommendations if needed
+            if health_analysis['status'] == 'needs_attention':
+                for recommendation in health_analysis['recommendations']:
+                    print(f"  ⚠️ {recommendation}")
+                    
+        except Exception as e:
+            print(f"Error during consolidation: {e}")
+
     def chat_loop(self):
         """Interactive chat loop for testing the system"""
         print("=== Contextual LLM Chat ===")
@@ -1899,13 +2136,7 @@ class ContextualLLMChat:
                 # Display response
                 print(f"\nAssistant: {result['response']}")
                 
-                # Display analysis summary
-                analysis = result['analysis']
-                print(f"\n[Analysis: {len(analysis['nouns'])} nouns, "
-                      f"{len(analysis['emotions'])} emotions, "
-                      f"{analysis['memories_found']} memories, "
-                      f"strength: {analysis['context_strength']:.2f}, "
-                      f"time: {analysis['processing_time']:.2f}s]")
+                
                 
             except KeyboardInterrupt:
                 print("\nGoodbye!")
@@ -1955,23 +2186,9 @@ class ContextualLLMChat:
         """Clean up resources"""
         self.executor.shutdown(wait=True)
         print("System resources cleaned up.")
-
+        
 class MemoryPreloader:
-    """Handles pre-loading of diverse memories into the embedder system"""
-
-    """
-    Memory Pre-loader for Contextual LLM Chat
-    =========================================
-
-    This module provides pre-defined memories across different categories to give the
-    contextual chat system a rich foundation of relatable experiences and cultural knowledge.
-
-    Categories:
-    - Pop Culture (movies, music, TV shows, celebrities)
-    - Family (relationships, traditions, milestones)
-    - Hobbies (activities, interests, skills)
-    - Life Experiences (travel, work, personal growth)
-    """
+    """Handles pre-loading of diverse memories into the PrefrontalCortex system"""
     
     def __init__(self):
         self.memories = self._create_memory_database()
@@ -2110,7 +2327,7 @@ class MemoryPreloader:
         ]
         
         return memories
-    
+
     def load_memories_into_embedder(self, embedder, verbose: bool = True) -> Dict[str, int]:
         """
         Load all pre-defined memories into the MxBaiEmbedder
@@ -2232,6 +2449,81 @@ Memory type: {category}"""
             "all_tags": sorted(list(total_tags)),
             "all_emotional_tones": sorted(list(emotional_tones))
         }
+    
+    def load_memories_into_prefrontal(self, prefrontal_cortex, verbose: bool = True) -> Dict[str, int]:
+        """
+        Load all pre-defined memories into the PrefrontalCortex
+        
+        Args:
+            prefrontal_cortex: PrefrontalCortex instance
+            verbose: Whether to print progress information
+            
+        Returns:
+            Dictionary with loading statistics
+        """
+        if verbose:
+            print("🧠 Loading pre-defined memories into PrefrontalCortex...")
+            print(f"📚 Total memories to load: {len(self.memories)}")
+        
+        stats = {
+            "total_loaded": 0,
+            "by_category": {},
+            "failed_loads": 0,
+            "memory_ids": []
+        }
+        
+        # Spread memories across past 7 days for temporal variety
+        start_time = time.time() - (7 * 24 * 3600)
+        
+        for i, memory in enumerate(self.memories, 1):
+            try:
+                # Enhanced text with metadata
+                enhanced_text = self._enhance_memory_text(memory)
+                
+                # Calculate timestamp spread across past week
+                memory_time = start_time + (i * (7 * 24 * 3600) / len(self.memories))
+                
+                # Create memory page
+                memory_page = prefrontal_cortex.create_memory_page(
+                    text=enhanced_text,
+                    emotion=memory.get("emotional_tone"),
+                    auto_embed_text=True,
+                    auto_detect_emotion=True
+                )
+                
+                # Override timestamp for temporal spread
+                memory_page.timestamp = memory_time
+                memory_page.creation_datetime = datetime.datetime.fromtimestamp(memory_time).isoformat()
+                
+                # Store in PrefrontalCortex
+                memory_id = prefrontal_cortex.store_memory(
+                    memory_page,
+                    link_to_similar=True,
+                    similarity_threshold=0.6
+                )
+                
+                stats["total_loaded"] += 1
+                stats["memory_ids"].append(memory_id)
+                category = memory["category"]
+                stats["by_category"][category] = stats["by_category"].get(category, 0) + 1
+                
+                if verbose and i % 5 == 0:
+                    print(f"  ✅ Loaded {i}/{len(self.memories)} memories...")
+                    
+            except Exception as e:
+                stats["failed_loads"] += 1
+                if verbose:
+                    print(f"  ❌ Failed to load memory {i}: {e}")
+        
+        if verbose:
+            print(f"\n🎉 Memory loading complete!")
+            print(f"✅ Successfully loaded: {stats['total_loaded']}")
+            print(f"❌ Failed loads: {stats['failed_loads']}")
+            print(f"📊 Breakdown by category:")
+            for category, count in stats["by_category"].items():
+                print(f"   {category}: {count} memories")
+        
+        return stats
 
 
 # Example usage and testing
