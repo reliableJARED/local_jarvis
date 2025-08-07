@@ -13,6 +13,11 @@ import torch
 from PIL import Image
 import uuid
 
+#multigpu support
+if torch.cuda.is_available():
+    # Set the default device to the first GPU
+    torch.cuda.set_device(0)  # or torch.cuda.set_device(1) for your second GPU
+
 class ImageGenerator:
     """
     A class for generating images using diffusion models.
@@ -640,10 +645,10 @@ class ImageGenerator:
 if __name__ == "__main__":
     
     # Initialize the generator (will auto-detect CUDA)
-    generator = ImageGenerator()
+    #generator = ImageGenerator()
     
     # Or explicitly enable/disable CUDA
-    # generator = ImageGenerator(use_cuda=True)  # Force CUDA if available
+    generator = ImageGenerator(use_cuda=True)  # Force CUDA if available
     # generator = ImageGenerator(use_cuda=False)  # Disable CUDA
     id = uuid.uuid4()
     output_path=f"{id}.png"
