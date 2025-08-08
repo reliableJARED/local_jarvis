@@ -19,6 +19,8 @@ from dataclasses import dataclass
 import json
 import random
 from prefrontal import Hippocampus, PrefrontalCortex, MemoryConcept, MemoryPage
+from qwen_dependency import QwenChatDependencyManager
+
 
 #https://claude.ai/chat/a81a01ef-e9ee-431e-944d-df7ed9f19f77
 
@@ -57,197 +59,6 @@ class AnalysisResult:
     memories: List[Tuple[str, float, str]]
     processing_time: float
     context_strength: float
-
-# Plutchik's primary emotions with their characteristics
-EMOTION_DATABASE = {
-    # Joy family
-    'joy': {
-        'mood': 'Sense of energy and possibility',
-        'thoughts': 'Life is going well',
-        'responses': 'Sparks creativity, connection, gives energy'
-    },
-    'ecstasy': {
-        'mood': 'Overwhelming euphoria and elation',
-        'thoughts': 'Everything is perfect and amazing',
-        'responses': 'Boundless enthusiasm, may act impulsively from excitement'
-    },
-    'serenity': {
-        'mood': 'Calm contentment and peace',
-        'thoughts': 'Things are pleasant and stable',
-        'responses': 'Gentle actions, seeks to maintain harmony'
-    },
-    
-    # Sadness family
-    'sadness': {
-        'mood': 'Heavy, low energy, withdrawn',
-        'thoughts': 'Things aren\'t going well, feeling loss',
-        'responses': 'Seeks comfort, may isolate, moves slowly'
-    },
-    'grief': {
-        'mood': 'Profound sorrow and despair',
-        'thoughts': 'Something important is gone forever',
-        'responses': 'May be inconsolable, needs support, difficulty functioning'
-    },
-    'pensiveness': {
-        'mood': 'Quiet melancholy and reflection',
-        'thoughts': 'Contemplating what could have been',
-        'responses': 'Introspective, seeks solitude, gentle sadness'
-    },
-    
-    # Trust family
-    'trust': {
-        'mood': 'Open and accepting',
-        'thoughts': 'Others are reliable and good',
-        'responses': 'Cooperative, shares freely, seeks connection'
-    },
-    'admiration': {
-        'mood': 'Deep respect and reverence',
-        'thoughts': 'This person/thing is truly worthy',
-        'responses': 'Wants to learn, emulate, or serve'
-    },
-    'acceptance': {
-        'mood': 'Calm acknowledgment',
-        'thoughts': 'This is how things are',
-        'responses': 'Goes with the flow, doesn\'t resist'
-    },
-    
-    # Disgust family
-    'disgust': {
-        'mood': 'Repulsed and rejecting',
-        'thoughts': 'This is wrong, contaminated, or inferior',
-        'responses': 'Avoids, criticizes, seeks to remove or cleanse'
-    },
-    'loathing': {
-        'mood': 'Intense revulsion and hatred',
-        'thoughts': 'This is absolutely abhorrent',
-        'responses': 'Strong rejection, may become aggressive to eliminate'
-    },
-    'boredom': {
-        'mood': 'Mild disinterest and restlessness',
-        'thoughts': 'This isn\'t worth my attention',
-        'responses': 'Seeks stimulation elsewhere, disengages'
-    },
-    
-    # Fear family
-    'fear': {
-        'mood': 'Anxious alertness and tension',
-        'thoughts': 'Something bad might happen',
-        'responses': 'Cautious, seeks safety, may freeze or flee'
-    },
-    'terror': {
-        'mood': 'Paralyzing dread',
-        'thoughts': 'Immediate danger, might not survive',
-        'responses': 'Fight, flight, or freeze response, acts on instinct'
-    },
-    'apprehension': {
-        'mood': 'Mild worry and uncertainty',
-        'thoughts': 'Something doesn\'t feel quite right',
-        'responses': 'More cautious than usual, seeks reassurance'
-    },
-    
-    # Anger family
-    'anger': {
-        'mood': 'Heated and energized',
-        'thoughts': 'This is unfair, I\'ve been wronged',
-        'responses': 'Confrontational, seeks to correct or punish'
-    },
-    'rage': {
-        'mood': 'Burning fury and aggression',
-        'thoughts': 'Must destroy the source of this injustice',
-        'responses': 'Potentially violent, loses rational control'
-    },
-    'annoyance': {
-        'mood': 'Mildly irritated and impatient',
-        'thoughts': 'This is inconvenient or bothersome',
-        'responses': 'Short responses, may express frustration verbally'
-    },
-    
-    # Surprise family
-    'surprise': {
-        'mood': 'Startled and alert',
-        'thoughts': 'That was unexpected',
-        'responses': 'Heightened attention, pauses to process'
-    },
-    'amazement': {
-        'mood': 'Awed and wonder-struck',
-        'thoughts': 'This is incredible and beyond belief',
-        'responses': 'Stares, asks questions, wants to understand'
-    },
-    'distraction': {
-        'mood': 'Mildly surprised and unfocused',
-        'thoughts': 'Wait, what was that?',
-        'responses': 'Attention shifts, momentarily loses focus'
-    },
-    
-    # Anticipation family
-    'anticipation': {
-        'mood': 'Eager and forward-looking',
-        'thoughts': 'Something good is coming',
-        'responses': 'Prepares, plans, may act impatiently'
-    },
-    'vigilance': {
-        'mood': 'Intense focus and readiness',
-        'thoughts': 'Must be ready for what\'s coming',
-        'responses': 'Hyper-alert, prepared for action'
-    },
-    'interest': {
-        'mood': 'Curious and engaged',
-        'thoughts': 'I want to know more about this',
-        'responses': 'Asks questions, explores, pays attention'
-    }
-}
-
-# Complex emotions formed by combining primary emotions
-COMPLEX_EMOTIONS = {
-    'love': {
-        'components': ['joy', 'trust'],
-        'mood': 'Warm, connected, and devoted',
-        'thoughts': 'This person/thing is wonderful and safe',
-        'responses': 'Protective, nurturing, wants to be close'
-    },
-    'submission': {
-        'components': ['trust', 'fear'],
-        'mood': 'Deferential and compliant',
-        'thoughts': 'I should follow their lead',
-        'responses': 'Obeys, seeks approval, avoids conflict'
-    },
-    'awe': {
-        'components': ['fear', 'surprise'],
-        'mood': 'Humbled and overwhelmed',
-        'thoughts': 'This is beyond my understanding',
-        'responses': 'Reverent behavior, may feel small or insignificant'
-    },
-    'disapproval': {
-        'components': ['surprise', 'sadness'],
-        'mood': 'Disappointed and let down',
-        'thoughts': 'This isn\'t what I expected or hoped for',
-        'responses': 'Expresses dissatisfaction, may withdraw support'
-    },
-    'remorse': {
-        'components': ['sadness', 'disgust'],
-        'mood': 'Regretful and self-reproaching',
-        'thoughts': 'I did something wrong and feel bad about it',
-        'responses': 'Apologizes, seeks to make amends, self-punishing'
-    },
-    'contempt': {
-        'components': ['disgust', 'anger'],
-        'mood': 'Superior and disdainful',
-        'thoughts': 'This is beneath me and doesn\'t deserve respect',
-        'responses': 'Dismissive, condescending, may ridicule'
-    },
-    'aggressiveness': {
-        'components': ['anger', 'anticipation'],
-        'mood': 'Hostile and ready for conflict',
-        'thoughts': 'I need to attack before they do',
-        'responses': 'Threatening behavior, seeks confrontation'
-    },
-    'optimism': {
-        'components': ['anticipation', 'joy'],
-        'mood': 'Hopeful and positive about the future',
-        'thoughts': 'Good things are coming',
-        'responses': 'Plans enthusiastically, encourages others'
-    }
-}
 
 
 class SpacyNounExtractor:
@@ -512,6 +323,7 @@ class MxBaiEmbedder:
     def __init__(self, pickle_file: str = "embeddings_store.pkl"):
         self.tokenizer = None
         self.model = None
+        self.device = None  # Will be set during model loading
         self.embeddings_store = {}  # Dict to store embeddings with UUID keys
         self.metadata_store = {}    # Store original text and other metadata
         self.pickle_file = pickle_file
@@ -564,8 +376,16 @@ class MxBaiEmbedder:
             print(f"Error saving to pickle file: {str(e)}")
 
     def load_model(self):
-        """Load mixedbread-ai/mxbai-embed-large-v1 model with offline fallback"""
+        """Load mixedbread-ai/mxbai-embed-large-v1 model with offline fallback and CUDA optimization"""
         model_name = "mixedbread-ai/mxbai-embed-large-v1"
+        
+        # Check CUDA availability and set device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            print(f"CUDA detected! Using GPU: {torch.cuda.get_device_name(0)}")
+            print(f"CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            print("CUDA not available. Using CPU.")
         
         # Check internet connection
         has_internet = self.check_internet_connection()
@@ -588,13 +408,23 @@ class MxBaiEmbedder:
             print(f"Loading tokenizer for {model_name}...")
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             
-            print(f"Loading model {model_name}...")
-            self.model = AutoModel.from_pretrained(model_name)
+            print(f"Loading model {model_name} on {self.device}...")
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+                device_map="auto" if self.device.type == "cuda" else None
+            )
+            
+            # Move model to device if device_map wasn't used
+            if self.device.type == "cuda" and not hasattr(self.model, 'hf_device_map'):
+                self.model = self.model.to(self.device)
             
             # Set model to evaluation mode
             self.model.eval()
             
-            print("Model loaded successfully!")
+            print(f"Model loaded successfully on {self.device}!")
+            if torch.cuda.is_available():
+                print(f"GPU memory allocated: {torch.cuda.memory_allocated(0) / 1024**3:.2f} GB")
             return True
             
         except Exception as e:
@@ -608,9 +438,20 @@ class MxBaiEmbedder:
                 
                 try:
                     self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-                    self.model = AutoModel.from_pretrained(model_name)
+                    self.model = AutoModel.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+                        device_map="auto" if self.device.type == "cuda" else None
+                    )
+                    
+                    # Move model to device if device_map wasn't used
+                    if self.device.type == "cuda" and not hasattr(self.model, 'hf_device_map'):
+                        self.model = self.model.to(self.device)
+                        
                     self.model.eval()
-                    print("Model loaded successfully from cache!")
+                    print(f"Model loaded successfully from cache on {self.device}!")
+                    if torch.cuda.is_available():
+                        print(f"GPU memory allocated: {torch.cuda.memory_allocated(0) / 1024**3:.2f} GB")
                     return True
                 except Exception as offline_e:
                     print(f"Failed to load from cache: {str(offline_e)}")
@@ -636,6 +477,10 @@ class MxBaiEmbedder:
         inputs = self.tokenizer(text, return_tensors='pt', truncation=True, 
                                padding=True, max_length=1024)
         
+        # Move inputs to same device as model
+        if hasattr(self, 'device'):
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        
         # Generate embeddings
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -651,8 +496,8 @@ class MxBaiEmbedder:
             summed_mask = torch.clamp(attention_mask.sum(dim=1), min=1e-9)
             mean_pooled = summed_embeddings / summed_mask.unsqueeze(-1)
             
-            # Convert to numpy array
-            embedding_vector = mean_pooled.squeeze().numpy()
+            # Convert to numpy array (move to CPU first if on GPU)
+            embedding_vector = mean_pooled.squeeze().cpu().numpy()
             
             # Normalize the embedding (optional but often helpful for similarity search which is what this will be used for)
             embedding_vector = embedding_vector / np.linalg.norm(embedding_vector)
@@ -1008,191 +853,6 @@ class MxBaiEmbedder:
         """
         self.pickle_file = new_path
 
-class QwenChatDependencyManager:
-    """Handles model loading, dependency management, and offline/online detection."""
-    
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False):
-        """Initialize the dependency manager with model loading logic."""
-        self.model_name = model_name
-        self.force_offline = force_offline
-        self.model_path = model_path
-        self.model = None
-        self.tokenizer = None
-        
-        # Load the model and tokenizer
-        self._load_dependencies()
-    
-    def _check_internet_connection(self, timeout=5):
-        """Check if internet connection is available."""
-        try:
-            socket.create_connection(("huggingface.co", 443), timeout)
-            print("Internet connection detected")
-            return True
-        except (socket.timeout, socket.error, OSError):
-            print("No internet connection detected")
-            return False
-    
-    def _load_dependencies(self):
-        """Load model and tokenizer based on availability."""
-        # Determine if we should use online or offline mode
-        if self.force_offline:
-            print("Forced offline mode")
-            use_online = False
-        else:
-            use_online = self._check_internet_connection()
-        
-        if use_online:
-            print("Online mode: Will download from Hugging Face if needed")
-            self._load_model_online(self.model_name)
-        else:
-            print("Offline mode: Using local files only")
-            if self.model_path is None:
-                self.model_path = self._find_cached_model()
-            self._load_model_offline(self.model_path)
-        
-        print("Model loaded successfully!")
-    
-    def _load_model_online(self, model_name):
-        """Load model with internet connection."""
-        print("Loading model and tokenizer...")
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype="auto",
-                device_map="auto"
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            
-        except Exception as e:
-            print(f"Error loading model online: {e}")
-            print("Falling back to offline mode...")
-            model_path = self._find_cached_model()
-            self._load_model_offline(model_path)
-    
-    def _load_model_offline(self, model_path):
-        """Load model from local files only."""
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(
-                f"Model not found at {model_path}.\n"
-                f"Please either:\n"
-                f"1. Connect to internet to download the model automatically\n"
-                f"2. Download the model manually using: python {__file__} download\n"
-                f"3. Specify the correct local model path"
-            )
-        
-        print(f"Loading model from: {model_path}")
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype="auto",
-                device_map="auto",
-                local_files_only=True
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
-                local_files_only=True
-            )
-        except Exception as e:
-            print(f"Failed to load model from local files: {e}")
-            raise
-    
-    def _find_cached_model(self):
-        """Try to find cached model in common Hugging Face cache locations."""
-        import platform
-        
-        # Common cache locations
-        if platform.system() == "Windows":
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-        else:
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-        
-        print(f"Searching for cached models in: {cache_dir}")
-        
-        # Also check for custom downloaded models in current directory
-        local_paths = [
-            "./Qwen2.5-7B-Instruct",
-            "./qwen2.5-7b-instruct",
-            f"./{self.model_name.split('/')[-1]}"
-        ]
-        
-        for path in local_paths:
-            if os.path.exists(path) and self._validate_model_files(path):
-                print(f"Found valid local model at: {path}")
-                return path
-        
-        # Look for Qwen model folders in HF cache
-        model_patterns = [
-            "models--Qwen--Qwen2.5-7B-Instruct",
-            f"models--{self.model_name.replace('/', '--')}"
-        ]
-        
-        for pattern in model_patterns:
-            model_dir = os.path.join(cache_dir, pattern)
-            
-            if os.path.exists(model_dir):
-                snapshots_dir = os.path.join(model_dir, "snapshots")
-                
-                if os.path.exists(snapshots_dir):
-                    snapshots = os.listdir(snapshots_dir)
-                    
-                    for snapshot in snapshots:
-                        snapshot_path = os.path.join(snapshots_dir, snapshot)
-                        
-                        if self._validate_model_files(snapshot_path):
-                            print(f"Found valid cached model at: {snapshot_path}")
-                            return snapshot_path
-        
-        raise FileNotFoundError(
-            f"Could not find a valid cached model for '{self.model_name}'.\n"
-            f"Options:\n"
-            f"1. Download model: python {__file__} download\n"
-            f"2. Connect to internet and let the script download automatically"
-        )
-    
-    def _validate_model_files(self, model_path):
-        """Check if a model directory has the required files."""
-        if not os.path.exists(model_path):
-            return False
-        
-        required_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
-        model_files = [f for f in os.listdir(model_path) if f.endswith(('.bin', '.safetensors'))]
-        
-        for file in required_files:
-            if not os.path.exists(os.path.join(model_path, file)):
-                return False
-        
-        return len(model_files) > 0
-    
-    def get_model(self):
-        """Get the loaded model."""
-        return self.model
-    
-    def get_tokenizer(self):
-        """Get the loaded tokenizer."""
-        return self.tokenizer
-    
-    @staticmethod
-    def download_model(model_name="Qwen/Qwen2.5-7B-Instruct", save_path=None):
-        """Helper function to download the model for offline use."""
-        if save_path is None:
-            save_path = f"./{model_name.split('/')[-1]}"
-        
-        print(f"Downloading {model_name} for offline use...")
-        print(f"Save location: {save_path}")
-        
-        try:
-            print("Downloading model and tokenizer...")
-            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            
-            model.save_pretrained(save_path)
-            tokenizer.save_pretrained(save_path)
-            
-            print(f"Model downloaded successfully to: {save_path}")
-            
-        except Exception as e:
-            print(f"Error downloading model: {e}")
-
 class QwenChat:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
     
@@ -1237,6 +897,22 @@ class QwenChat:
             'conversation_count': 0
         }
         self.messages = self.messages[:1]#keep system prompt
+
+    def reduce_chat_messages(self):
+        print("Keep only the last 5 messages")
+        # Token tracking reset 
+        self.token_stats = {
+            'total_tokens': 0,
+            'conversation_count': 5
+        }
+        if len(self.messages) > 5:
+            # Keep only the last 4 messages
+            system_prompt = self.messages[:1]
+            self.messages = system_prompt + self.messages[-4:]
+        else:
+            # If there are less than 5 messages, keep all of them
+            print("Less than 5 messages, keeping all")
+        print(f"Messages reduced to {len(self.messages)} messages")
 
     def register_tool(self, tool_function: Callable, name: str = None, description: str = None, parameters: Dict = None):
         """
@@ -1399,14 +1075,19 @@ class QwenChat:
             The assistant's response (either direct response or final response after tool execution)
         """
         # Add user message to conversation
-        if self.auto_append_conversation:
+        if type(self.auto_append_conversation) == bool and self.auto_append_conversation:
             self.messages.append({"role": "user", "content": user_input})
+        if type(self.auto_append_conversation) == int:
+            self.reduce_chat_messages()
+            self.messages.append({"role": "user", "content": user_input})
+
         else:
             print("ERASE ALL PRIOR MESSAGES BEFORE RESPONDING->")
             self.clear_chat_messages()
             print(self.messages)
             self.messages.append({"role": "user", "content": user_input})
         
+        print(f"MESSAGES: {self.messages}")
         # Apply chat template with tools if available
         text = self.tokenizer.apply_chat_template(
             self.messages,
@@ -1541,7 +1222,7 @@ class ContextualLLMChat:
         Initialize with brain-like memory architecture
         """
         # Initialize core components
-        self.qwen_chat = QwenChat(model_name=qwen_model_name)
+        self.qwen_chat = QwenChat(model_name=qwen_model_name,auto_append_conversation=5)
         self.embedder = MxBaiEmbedder(pickle_file=embedder_pickle_file)
         self.noun_extractor = SpacyNounExtractor(model_name=spacy_model)
         
@@ -1629,7 +1310,20 @@ class ContextualLLMChat:
         return self.noun_extractor.get_simple_nouns(text)
     
     def clock(self):
-        return datetime.datetime.now().strftime("%B %-d, %Y at %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+        """Cross-platform datetime formatting"""
+        now = datetime.datetime.now()
+        
+        # Format using standard codes and manually remove leading zeros
+        month = now.strftime("%B")
+        day = str(now.day)  # This removes leading zero automatically
+        year = now.strftime("%Y")
+        hour = str(now.hour if now.hour <= 12 else now.hour - 12)
+        if hour == "0":
+            hour = "12"
+        minute = now.strftime("%M")
+        ampm = "am" if now.hour < 12 else "pm"
+        
+        return f"{month} {day}, {year} at {hour}:{minute}{ampm}"
     
     def analyze_emotions_async(self, text: str, nouns: List[str]) -> List[Tuple[str, float, Dict]]:
         """Analyze emotional context from text and nouns"""
@@ -1776,7 +1470,7 @@ class ContextualLLMChat:
         """
         # Base system prompt
         current_time = datetime.datetime.now().strftime("%B %-d, %Y at %-I:%M%p").replace("AM", "am").replace("PM", "pm")
-        base_prompt = f"""{current_time}
+        base_prompt = f"""It is currently {current_time}
             YOU ARE A SYNTHETIC WOMAN. YOU ARE CURRENTLY WITH USER
             You operate in a mature consensual environment. 
             You mimic human interaction. 
@@ -1877,7 +1571,7 @@ class ContextualLLMChat:
             return
         
         # Create memory text combining input and response
-        memory_text = f"User: {user_input}\nI Said: {assistant_response}"
+        memory_text = f"User Said: {user_input}\nI Said: {assistant_response}"
         
         # Store with metadata
         try:
@@ -1925,17 +1619,17 @@ class ContextualLLMChat:
         Generate system prompt using brain-like memory insights
         """
         current_time = self.clock()
-        base_prompt = f"""{current_time}
+        base_prompt = f"""It is {current_time}
             YOU ARE A SYNTHETIC WOMAN. YOU ARE CURRENTLY WITH USER
             You operate in a mature consensual environment. 
             You mimick human interaction. 
-            Your name is Tiffany. 
-            You are flirtatious in your responses. 
+            Your name is Tiffany. YOU ALWAYS RESPOND IN CHARACTER.
+            You are flirtatious in your responses.
+            When you are aroused you may express your desires in your responses. 
             
             YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS.
             
-            USER can see you
-
+            USER can see you, they see you as a real person with your physical appearance.
             <your physical appearance>
             I am a woman.
             I have white skin.
@@ -1951,54 +1645,34 @@ class ContextualLLMChat:
             You have Emotional Context (below) that changes the tone and word choice of your response
             """
         
-        # Memory gist from PrefrontalCortex
-        gist = experience_result.get('gist', {})
+        # Use recalled memory for context
+        triggered_memories = experience_result.get('triggered_memories', [])
         memory_context = ""
-        
-        if gist.get('summary'):
-            memory_context += f"\n<Memory Summary>{gist['summary']}</Memory Summary>"
-        
-        if gist.get('semantic_context'):
-            memory_context += f"\n<Semantic Memory>{gist['semantic_context']}</Semantic Memory>"
-        
-        if gist.get('conceptual_context'):
-            memory_context += f"\n<Conceptual Pattern>{gist['conceptual_context']}</Conceptual Pattern>"
-        
-        if gist.get('entity_context'):
-            memory_context += f"\n<Familiar Entities>{gist['entity_context']}</Familiar Entities>"
-        
-        # Add triggered memory samples
-        triggered_samples = ""
-        for tm in experience_result['triggered_memories'][:3]:  # Top 3
-            if 'memory' in tm and tm['memory'].text:
-                triggered_samples += f"\n- {tm['memory'].text}..."
-        
-        if triggered_samples:
-            memory_context += f"\n<Related Memories>{triggered_samples}</Related Memories>"
+        if triggered_memories:
+            tm = triggered_memories[0]
+            if tm and hasattr(tm, 'text') and tm.text:
+                memory_context += f"\nThe USER input reminded me of <Related Memories>\n- {tm.text}\n</Related Memories>"
         
         # Emotional context
         emotional_context = ""
         if emotion_analysis:
-            emotion_names = [e[0] for e in emotion_analysis[:2]]
-            emotional_context = f"\n<Emotional State>Feeling {', '.join(emotion_names)}</Emotional State>"
+            emotion_names = [e[0].upper() for e in emotion_analysis[:2]]
+            emotional_context = f"\n<Emotional State> I am Feeling {', '.join(emotion_names)}. My response MUST use language that would be expected with these emotions</Emotional State>"
         
         # Topic focus
         topic_context = ""
         if nouns:
-            topic_context = f"\n<Current Topics>{', '.join(nouns[:5])}</Current Topics>"
+            topic_context = f"\n<conversation focus>{', '.join(nouns[:5])}</conversation focus>"
         
         return f"{base_prompt}{memory_context}{emotional_context}{topic_context}"
 
-    async def generate_response(self, user_input: str, max_tokens: int = 1024) -> Dict[str, Any]:
+    async def generate_response(self, user_input: str, max_tokens: int = 1024, audio_file: str = None, image_file: str = None) -> Dict[str, Any]:
         """
         Generate response using PrefrontalCortex memory system
         """
-        # Step 1: Process the input as a new experience
-        print("Processing new experience...")
-        experience_result = self.prefrontal_cortex.process_new_experience(
-            text=user_input,
-            return_full_context=True
-        )
+        # Step 1: Recall similar memories for prompt
+        print("Recalling similar memories for prompt...")
+        recalled_memory = self.prefrontal_cortex.what_does_this_remind_me_of(text=user_input)
         
         # Step 2: Extract additional context
         nouns = self.noun_extractor.get_simple_nouns(user_input)
@@ -2009,7 +1683,7 @@ class ContextualLLMChat:
         # Step 4: Generate dynamic system prompt
         dynamic_prompt = self._generate_enhanced_system_prompt(
             user_input=user_input,
-            experience_result=experience_result,
+            experience_result={'triggered_memories': [recalled_memory] if recalled_memory else [], 'gist': {}},
             emotion_analysis=emotion_analysis,
             nouns=nouns
         )
@@ -2017,13 +1691,21 @@ class ContextualLLMChat:
         # Step 5: Update system prompt and generate response
         self.qwen_chat._update_system_prompt(dynamic_prompt)
         
-        print(f"Generating response with {experience_result['triggered_memories']} triggered memories")
+        print(f"Generating response with recalled memory: {recalled_memory}")
         response = self.qwen_chat.generate_response(
             user_input, 
             max_new_tokens=max_tokens
         )
+        print(f"Generated response: {response}")
+        # Step 6: Store new experience as a memory (multimodal)
+        self.prefrontal_cortex.store_conversation_memory(
+            user_text=user_input,
+            assistant_text=response,
+            audio_file=audio_file,
+            image_file=image_file
+        )
         
-        # Step 6: Periodic memory consolidation
+        # Step 7: Periodic memory consolidation
         self.conversation_count += 1
         if self.conversation_count % self.config['consolidation_interval'] == 0:
             self._run_consolidation()
@@ -2032,12 +1714,12 @@ class ContextualLLMChat:
         return {
             'response': response,
             'analysis': {
-                'triggered_memories': len(experience_result['triggered_memories']),
-                'memory_gist': experience_result['gist'],
-                'new_memory_id': experience_result['new_memory_id'],
+                'triggered_memories': 1 if recalled_memory else 0,
+                'memory_gist': {},
+                'new_memory_id': None,
                 'emotions': emotion_analysis,
                 'nouns': nouns,
-                'full_context': experience_result.get('full_context', {})
+                'full_context': {}
             },
             'system_prompt': dynamic_prompt,
             'memory_stats': self._get_memory_system_stats()
@@ -2407,10 +2089,9 @@ class MemoryPreloader:
         
         # Create enhanced text that includes context for better retrieval
         enhanced_text = f"""Memory about {category.replace('_', ' ')}: {base_text}
-
-Related concepts: {tags}
-Emotional context: {emotional_tone}
-Memory type: {category}"""
+                            Related concepts: {tags}
+                            Emotional context: {emotional_tone}
+                            Memory type: {category}"""
         
         return enhanced_text
     
@@ -2530,7 +2211,7 @@ Memory type: {category}"""
 if __name__ == "__main__":
     # Create the contextual chat system
     chat_system = ContextualLLMChat(
-        qwen_model_name="Qwen2.5-7B-Instruct",
+        qwen_model_name="Qwen/Qwen2.5-7B-Instruct",
         embedder_pickle_file="chat_embeddings.pkl",
         max_workers=3
     )

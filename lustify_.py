@@ -13,10 +13,18 @@ import torch
 from PIL import Image
 import uuid
 
+#$env:CUDA_VISIBLE_DEVICES="0"
+#python lustify_xwork.py
+
 #multigpu support
 if torch.cuda.is_available():
-    # Set the default device to the first GPU
-    torch.cuda.set_device(0)  # or torch.cuda.set_device(1) for your second GPU
+    gpu_count = torch.cuda.device_count()
+    print(f"Number of GPUs available: {gpu_count}")
+    if gpu_count > 1:
+        print("Multiple GPUs detected. Using DataParallel for multi-GPU support.")
+        # Set environment variable to use all GPUs
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(gpu_count))
+
 
 class ImageGenerator:
     """

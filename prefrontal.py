@@ -90,6 +90,7 @@ class MemoryConcept:
 
 
 class PrefrontalCortex:
+    
     """
     Advanced memory management system that handles temporal association,
     memory condensation, and multimodal similarity search with decay functions.
@@ -116,6 +117,30 @@ class PrefrontalCortex:
         # Initialize entity clustering after hippocampus is available
         self.entity_clustering = None
 
+    def store_conversation_memory(self, user_text: str, assistant_text: str, audio_file: str = None, image_file: str = None) -> str:
+        """
+        Store a single conversation memory (user input and assistant reply), optionally with audio and image.
+        Returns the memory ID.
+        """
+        memory_text = f"USER said: {user_text}\nI replied: {assistant_text}"
+        audio_embedding = pseudo_vggish_embed(audio_file) if audio_file else None
+        image_embedding = pseudo_beit_embed(image_file) if image_file else None
+        memory_page = self.create_memory_page(
+            text=memory_text,
+            audio_file=audio_file,
+            audio_embedding=audio_embedding,
+            image_file=image_file,
+            image_embedding=image_embedding,
+            auto_embed_text=True,
+            auto_detect_emotion=True
+        )
+        memory_id = self.store_memory(
+            memory_page,
+            link_to_similar=True,
+            similarity_threshold=0.6
+        )
+        return memory_id
+    
     def set_hippocampus(self, hippocampus):
         """Set hippocampus reference and initialize entity clustering"""
         self.hippocampus = hippocampus
@@ -312,13 +337,14 @@ class PrefrontalCortex:
         results = self.search_text_with_breakdown(query_text, n)
         return [(memory, final_score) for memory, final_score, _ in results]
     
-    def search_text_with_breakdown(self, query_text: str, n: int = 5) -> List[Tuple[MemoryPage, float, Dict]]:
+    def search_text_with_breakdown(self, query_text: str, n: int = 5, similarity_threshold: float = 0.0) -> List[Tuple[MemoryPage, float, Dict]]:
         """
         Search memory pages by text similarity with detailed ranking breakdown
         
         Args:
             query_text: Text to search for
             n: Maximum number of results to return
+            similarity_threshold: Minimum score to include memory in results
             
         Returns:
             List[Tuple[MemoryPage, float, Dict]]: List of (memory_page, final_score, breakdown) tuples
@@ -338,7 +364,8 @@ class PrefrontalCortex:
                     similarity = np.dot(query_embedding, memory_page.text_embedding)
                     # Calculate comprehensive rank with breakdown
                     final_score, breakdown = self._calculate_memory_rank(memory_page, similarity)
-                    candidates.append((memory_page, final_score, breakdown))
+                    if final_score >= similarity_threshold:
+                        candidates.append((memory_page, final_score, breakdown))
             
             # Sort by final score and return top n
             candidates.sort(key=lambda x: x[1], reverse=True)
@@ -1170,7 +1197,7 @@ class PrefrontalCortex:
         
         # Sort by confidence and return top triggers
         all_triggered.sort(key=lambda x: x['confidence'], reverse=True)
-        return all_triggered[:10]  # Top 10 triggers
+        return all_triggered[:5]  # Top 5 triggers
 
     def _generate_memory_gist(self, triggered_memories: List[Dict], current_input: str) -> Dict[str, str]:
         """Generate gist/summary of triggered memories"""

@@ -14,6 +14,14 @@ from PIL import Image
 import uuid
 import time
 
+gpu_count = torch.cuda.device_count()
+print(f"Number of GPUs available: {gpu_count}")
+
+#when running in terminal use this to set the GPU
+#$env:CUDA_VISIBLE_DEVICES="0"
+#python lustify_xwork.py
+
+
 class ImageGenerator:
     """
     A class for generating images using diffusion models.
@@ -166,7 +174,7 @@ class ImageGenerator:
             
             # Set torch_dtype based on device
             if self.is_cuda:
-                kwargs["torch_dtype"] = torch.float16  # CUDA works well with float16
+                kwargs["torch_dtype"] = torch.float32  # CUDA works well with float16
             else:
                 kwargs["torch_dtype"] = torch.float32  # MPS and CPU work better with float32
             
@@ -329,7 +337,7 @@ class ImageGenerator:
                         result = pipe(prompt, **generation_kwargs)
                 elif self.is_cuda:
                     # Use autocast for CUDA to improve performance
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    with torch.autocast(device_type='cuda', dtype=torch.float32):
                         result = pipe(prompt, **generation_kwargs)
                 else:
                     # CPU inference
@@ -466,7 +474,7 @@ class ImageGenerator:
                     with torch.autocast(device_type='cpu', enabled=False):
                         result = pipe(prompt, **generation_kwargs)
                 elif self.is_cuda:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    with torch.autocast(device_type='cuda', dtype=torch.float32):
                         result = pipe(prompt, **generation_kwargs)
                 else:
                     result = pipe(prompt, **generation_kwargs)
@@ -566,7 +574,7 @@ class ImageGenerator:
                     with torch.autocast(device_type='cpu', enabled=False):
                         result = pipe(prompt, **generation_kwargs)
                 elif self.is_cuda:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    with torch.autocast(device_type='cuda', dtype=torch.float32):
                         result = pipe(prompt, **generation_kwargs)
                 else:
                     result = pipe(prompt, **generation_kwargs)
@@ -875,7 +883,7 @@ if __name__ == "__main__":
         generator = ImageGenerator()
 
         #defaults
-        style = "photograph, "
+        style = "photograph, photo of "
         lighting = "soft lighting, 8k"
 
         pose = {"p1":"on hands and knees,",
@@ -930,7 +938,7 @@ if __name__ == "__main__":
         pose = "keeling down, "#laying
         """
         #defaults
-        style = "photograph,"
+        style = "photograph, photo of "
         lighting = "soft dim lighting, 8k"
 
         pose = {"p1":"keeling down,"}
@@ -1034,7 +1042,7 @@ if __name__ == "__main__":
         generator = ImageGenerator()
         
         #defaults
-        style = "photograph, "
+        style = "photograph, photo of"
         lighting = "rays of sun light, 8k"
 
         pose = {"p1":"keeling down in a vast desert at sunset,",
@@ -1065,7 +1073,7 @@ if __name__ == "__main__":
         generator = ImageGenerator()
         
         #defaults
-        style = "photograph,"
+        style = "photograph, photo of"
         lighting = "rays of sunlight, 8k"
 
         pose = {"p1":"laying in grassy meadow at sunset,",}
@@ -1087,7 +1095,7 @@ if __name__ == "__main__":
         generator = ImageGenerator()
         
         #defaults
-        style = "photograph, "
+        style = "photograph, photo of"
         lighting = "sunny day, 8k"
 
         pose = {"p1":"on a yacht deck, open ocean, laying on lounge chair,",
@@ -1114,6 +1122,35 @@ if __name__ == "__main__":
         combos = ["p1a123f1c1","p1a45f2c1","p1a3f2c2","p2a678f4c3","p1a7f4c3","p1a8f5c3","p1a9f4c3","p2a0f5c3"]
 
         folder = "tartarus"
+        result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
+        print(result)
+    
+    def asclepius(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="black"):
+        generator = ImageGenerator()
+        
+        #defaults
+        style = "photograph, photo of"
+        lighting = "sunset light rays"
+
+        pose = {"p1":"A cobblestone street"}
+        action = {"a1":"she is sitting on a bench, legs slightly spread apart",
+                  "a2":"she is sitting on a bench touching her breasts",
+                  "a3":"she is sitting on a bench touching her thigh",
+                  "a4":"she is sitting on a bench pulling up her dress",
+                  "a5":"she is sitting on a bench showing between her legs",
+                  "a6":"she is sitting on a bench her lips around the shaft of his penis",
+                  "a7":"she is sitting on a bench deepthroating his penis",
+                  "a8":"she is sitting on a bench stroking and sucking his cock",
+                  "a9":"she is bent over bench dress lifted, he is fucking her from behind",
+                  "a0": "ejaculation in her open mouth, cum on her tounge and on her face,", #x5,
+                  }
+        framing = {"f1":"full body view from her front,",
+                   "f2":"view from behind her, she is looking back over shoulder",}
+        clothes = {"c1":f"strapless form fitting {fabric} dress"}# or naked, nude
+
+        combos = ["p1a1234567890f1c1","p1a9f2c1"]
+
+        folder = "asclepius"
         result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
         print(result)
 
@@ -1174,7 +1211,7 @@ if __name__ == "__main__":
         lips = "full lips,"
         chest = ""#don't always need this?"""
         #defaults
-        style = "photograph,"
+        style = "photograph, photo of"
         lighting = "sunlight from window"
 
         pose = {"p1":"leaning against a white wall,",
@@ -1606,7 +1643,21 @@ if __name__ == "__main__":
 
             return subject,skin,hair,face,eyes,attribute,lips,chest, name
     
+    def Calliope():
+        """ DONE """
+        name ="calliope"
+        
+        subject = "Irish woman"
+        skin = "light skin freckles"
+        hair = "short face-framing wavy black hair"#"face-framing blond hair"
+        face = "high cheekbones"#"dark eyeshadow"
+        eyes = "eye shadow"#"blue eys"
+        attribute = "long eyelashes"#glasses, etc
+        lips = "puckered lips"
+        chest = "full breasts"#"small breasts"#can actually be anything
 
+        return subject,skin,hair,face,eyes,attribute,lips,chest, name
+    
     def Taylor():
         """ DONE """
         name ="taylor"
@@ -1687,11 +1738,21 @@ if __name__ == "__main__":
  5. Photo of a [woman with a curvaceous figure], [with a tight, shiny bodysuit], [standing with one leg raised and one hand on her hip], [full body shot], [in a steamy bathroom with fogged mirrors and tiles], [soft and steamy lighting], [low-angle shot]
     """
     ##NEW
-    _ = photographModel(Scarlett,tartarus,fabric="gold")
+    _ = photographModel(Calliope,asclepius,fabric="black")
 
 
     # ALL MODELS ALL SHOOTS
     def runAll():
+        
+        _ = photographModel(Scarlett,poseidon,fabric="white")
+        _ = photographModel(Scarlett,tartarus,fabric="white")
+        _ = photographModel(Scarlett,dionysus,fabric="white")
+        _ = photographModel(Scarlett,apollo,fabric="white")
+        _ = photographModel(Scarlett,athena,fabric="white")
+        _ = photographModel(Scarlett,zeus,fabric="white")
+        _ = photographModel(Scarlett,pontus,fabric="white")
+        _ = photographModel(Scarlett,hera,fabric="white")
+        _ = photographModel(Scarlett,achlys,fabric="white")
 
         _ = photographModel(Evrynomi,poseidon,fabric="gold")
         _ = photographModel(Evrynomi,tartarus,fabric="gold")

@@ -1,0 +1,77 @@
+{
+  "memory_profiles": {
+    "ultra_low_memory": {
+      "description": "For GPUs with 8GB or less VRAM",
+      "settings": {
+        "size": "256*256",
+        "duration": 1,
+        "fps": 8,
+        "guidance_scale": 3.5,
+        "num_inference_steps": 8,
+        "additional_flags": [
+          "--enable_sequential_cpu_offload",
+          "--enable_model_cpu_offload",
+          "--enable_attention_slicing",
+          "--enable_vae_slicing", 
+          "--enable_vae_tiling",
+          "--low_mem_usage",
+          "--offload_model", "True",
+          "--convert_model_dtype",
+          "--t5_cpu"
+        ]
+      }
+    },
+    "low_memory": {
+      "description": "For GPUs with 12-16GB VRAM", 
+      "settings": {
+        "size": "512*512",
+        "duration": 2,
+        "fps": 12,
+        "guidance_scale": 4.5,
+        "num_inference_steps": 12,
+        "additional_flags": [
+          "--enable_sequential_cpu_offload",
+          "--enable_model_cpu_offload", 
+          "--enable_attention_slicing",
+          "--enable_vae_slicing",
+          "--enable_vae_tiling",
+          "--low_mem_usage",
+          "--offload_model", "True",
+          "--convert_model_dtype",
+          "--t5_cpu"
+        ]
+      }
+    },
+    "medium_memory": {
+      "description": "For GPUs with 16-24GB VRAM",
+      "settings": {
+        "size": "704*704", 
+        "duration": 3,
+        "fps": 16,
+        "guidance_scale": 5.5,
+        "num_inference_steps": 20,
+        "additional_flags": [
+          "--enable_attention_slicing",
+          "--enable_vae_slicing",
+          "--offload_model", "True", 
+          "--convert_model_dtype",
+          "--t5_cpu"
+        ]
+      }
+    },
+    "high_memory": {
+      "description": "For GPUs with 24GB+ VRAM",
+      "settings": {
+        "size": "1280*704",
+        "duration": 5,
+        "fps": 24,
+        "guidance_scale": 7.0,
+        "num_inference_steps": 30,
+        "additional_flags": [
+          "--offload_model", "True",
+          "--t5_cpu"
+        ]
+      }
+    }
+  }
+}
