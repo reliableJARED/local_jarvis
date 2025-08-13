@@ -156,7 +156,7 @@ class ImageGenerator:
             Pipeline object
         """
         from diffusers import DiffusionPipeline, AutoPipelineForInpainting, AutoPipelineForImage2Image
-        
+
         # Determine which model to use
         if pipeline_type == "inpainting":
             model_name = self.inpaint_model
@@ -188,6 +188,18 @@ class ImageGenerator:
                 pipe = DiffusionPipeline.from_pretrained(model_name, **kwargs)
             
             pipe = pipe.to(self.device)
+            
+            # Configure scheduler per documentation recommendations (DPM++ 2M SDE with Karras)
+            try:
+                from diffusers import DPMSolverMultistepScheduler
+                pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+                    pipe.scheduler.config,
+                    use_karras_sigmas=True,
+                    algorithm_type="sde-dpmsolver++"  # For DPM++ SDE variant
+                )
+                print("✓ Configured DPM++ 2M SDE scheduler with Karras sigmas")
+            except Exception as e:
+                print(f"⚠️  Could not configure DPM++ scheduler, using default: {e}")
             
             # Device-specific optimizations
             if self.is_cuda:
@@ -261,14 +273,14 @@ class ImageGenerator:
             raise ValueError(f"Unknown pipeline type: {pipeline_type}")
     
     def text_to_image(self, 
-                     prompt, 
-                     output_path="output.png",
-                     num_inference_steps=30,  # Model docs recommend 30 steps
-                     guidance_scale=5.5,     # Within the 4-7 range from docs
-                     width=1024,
-                     height=1024,
-                     use_enhanced_prompting=True,  # Use LUSTIFY-specific tags
-                     **kwargs):
+                 prompt, 
+                 output_path="output.png",
+                 num_inference_steps=30,  # Model docs recommend 30 steps
+                 guidance_scale=5.5,     # Within the 4-7 range from docs
+                 width=1024,
+                 height=1024,
+                 use_enhanced_prompting=True,  # Use LUSTIFY-specific tags
+                 **kwargs):
         """
         Generate image from text prompt
         
@@ -1092,7 +1104,7 @@ if __name__ == "__main__":
         print(result)
 
     def tartarus(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="yellow"):
-        generator = ImageGenerator()
+        #generator = ImageGenerator()
         
         #defaults
         style = "photograph, photo of"
@@ -1100,7 +1112,7 @@ if __name__ == "__main__":
 
         pose = {"p1":"on a yacht deck, open ocean, laying on lounge chair,",
                 "p2":"on a yacht deck,kneeling,open ocean,",}
-        action = {"a1":"legs slightly spread apart",
+        action = {"a1":"leg slightly spread apart",
                   "a2":"touching her breasts",
                   "a3":"touching her thigh",
                   "a4":"one knee bent",
@@ -1115,11 +1127,16 @@ if __name__ == "__main__":
                    "f2":"full body view from foot of chair",
                    "f3":"full body view from behind her chair",
                    "f4":"POV",
-                   "f5":"looking down at her"}
+                   "f5":"looking down at her",
+                   "f6":"ejaculation dripping from lips around penis",
+                   "f7":"facial expression orgasim",
+                   "f8":"gagging on penis",
+                   "f9":"POV leg in air",
+                   "f0":"cum dripping from vagina, screaming with pleasure"}
         clothes = {"c1":f"topless, {fabric} bikini bottom only",
                    "c2":f"sun bathing nude",
                    "c3":f"naked"}# or naked, nude
-        combos = ["p1a123f1c1","p1a45f2c1","p1a3f2c2","p2a678f4c3","p1a7f4c3","p1a8f5c3","p1a9f4c3","p2a0f5c3"]
+        combos = ["p1a123f1c1","p1a45f2c1","p1a3f2c2","p2a678f4c3","p1a7f4c3","p1a8f5c3","p1a9f4c3","p2a0f5c3","p2a678f6c3","p1a9f9c3","p1a9f0c3","p2a7f8c1"]
 
         folder = "tartarus"
         result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
@@ -1132,23 +1149,49 @@ if __name__ == "__main__":
         style = "photograph, photo of"
         lighting = "sunset light rays"
 
-        pose = {"p1":"A cobblestone street"}
-        action = {"a1":"she is sitting on a bench, legs slightly spread apart",
-                  "a2":"she is sitting on a bench touching her breasts",
-                  "a3":"she is sitting on a bench touching her thigh",
-                  "a4":"she is sitting on a bench pulling up her dress",
-                  "a5":"she is sitting on a bench showing between her legs",
-                  "a6":"she is sitting on a bench her lips around the shaft of his penis",
-                  "a7":"she is sitting on a bench deepthroating his penis",
-                  "a8":"she is sitting on a bench stroking and sucking his cock",
-                  "a9":"she is bent over bench dress lifted, he is fucking her from behind",
-                  "a0": "ejaculation in her open mouth, cum on her tounge and on her face,", #x5,
+        """ pose = {"p1":"sitting on a bench on a cobblestone street,"}
+        action = {"a1":"her legs are slightly spread apart, panties",
+                  "a2":"her hands squeezing her breasts",
+                  "a3":"hand pulling dress up her thigh",
+                  "a4":"legs spread, vagina pubic area visible, panties around her ankle",
+                  "a5":"opening her legs wide, vagina pubic area is visible",
+                  "a6":"man from waist down, penis performing fellatio",
+                  "a7":"POV, engaged in fellatio on his penis",
+                  "a8":"engaged in stroking and sucking his penis, fellatio",
+                  "a9":"intercourse, vagina pubic area",
+                  "a0": "man from wasit down, penis oozing ejaculation in her open mouth and tounge,", #x5,
                   }
-        framing = {"f1":"full body view from her front,",
-                   "f2":"view from behind her, she is looking back over shoulder",}
-        clothes = {"c1":f"strapless form fitting {fabric} dress"}# or naked, nude
+        framing = {"f1":"sensual gaze,",
+                   "f2":"view from behind her, she is looking back over shoulder orgasim",
+                   "f3":"looking down at her,"}
+        clothes = {"c1":f"strapless tight {fabric} dress"}# or naked, nude
 
-        combos = ["p1a1234567890f1c1","p1a9f2c1"]
+        combos = ["p1a123459f1c1","p1a6780f3c1","p1a9f2c1"]"""
+        pose = {"p1":"on a bench, cobblestone street, sitting,",
+                "p2":"on a cobblestone street, kneeling,",
+                "p3":"sitting on a bench on a cobblestone street,",
+                "p4":"walking on a cobblestone street towards viewer,"}
+        action = {"a1":"her legs are slightly spread apart, panties",
+                  "a2":"she is grabbing her breasts",
+                  "a3":"touching her inner thigh",
+                  "a4":"legs up on bench, vagina pubic hair,",
+                  "a5":"touching between her legs",
+                  "a6":"lips around shaft of his penis,",
+                  "a7":"deepthroating,",
+                  "a8":"stroking and sucking his penis,",
+                  "a9":"vaginal sex, she has orgasim,",
+                  "a0": "ejaculation dripping from mouth, milk on her face,", #x5,
+                  }
+        framing = {"f1":"full body view from the side,",
+                   "f2":"full body view from front of bench,",
+                   "f3":"full body view from behind her bench,",
+                   "f4":"POV,",
+                   "f5":"looking down at her,",
+                   "f6":"looking at her,"}
+        clothes = {"c1":f"strapless tight {fabric} dress",
+                   "c2":f"topless, {fabric} mini skirt",
+                   "c3":f"naked"}# or naked, nude
+        combos = ["p4a3f6c1","p3a2f5c1","p3a13f2c1","p1a45f2c1","p1a3f6c2","p2a678f4c3","p1a7f4c3","p1a8f5c3","p3a09f6c3","p2a0f5c3","p2a8f4c1","p1a0f6c2","p3a9f5c2","ap3a9f2c2","p3a9f4c3"]
 
         folder = "asclepius"
         result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
@@ -1343,7 +1386,33 @@ if __name__ == "__main__":
                     output_path=output_path
                 )"""
 
-    
+    def hades(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="white"):
+        #defaults
+        style = "photograph, photo of"
+        lighting ="soft lighting"
+
+        pose = {"p1":"laying on a bed,",
+                "p2":"laying on a bed topless,"}
+        #her legs are spread apart the camera is looking at her from the foot of the bed her vagina is visible and a penis is entering her vagina
+        action = {"a1": "legs spread apart, man's waist down, erect penis, sex,",
+                  "a2": "missionary sex, intercours,",
+                  "a3": "his penis pushing in to her vagina lips, pubic area,",
+                  "a4": "ejaculation oozing from her vagina, penis entering, sex,",
+                  "a5": "hardcore sexual intercourse,",
+                  "a6": "sodomy, his penis in her anal sex,",
+                   "a7": "his penis ejaculates cum on to her stomach,"  } 
+        framing ={"f1":"POV, having orgasim,",
+                  "f2":"she is gazing up at viewer, POV,",
+                  "f3":"looking down at her, face orgasim,",
+                  "f4":"view from over her, she is delighed",}
+        clothes = {"c1":f"wearing {fabric} lace lingerie,",
+                   "c2":"naked"}# or naked, she is naked nude #wearing the black lace lingerie,
+        
+
+        combos = ["p1a134567f1c1","p1a134567f2c1","p1a134567f1c2","p1a134567f2c2","p1a2f3c1","p2a2f3c2","p2a7f2c1"]
+        folder = "hades"
+        result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
+        print(result)
 
     
     def parse_combination(combination_string, pose, action, framing, clothes):
@@ -1647,14 +1716,14 @@ if __name__ == "__main__":
         """ DONE """
         name ="calliope"
         
-        subject = "Irish woman"
-        skin = "light skin freckles"
-        hair = "short face-framing wavy black hair"#"face-framing blond hair"
-        face = "high cheekbones"#"dark eyeshadow"
-        eyes = "eye shadow"#"blue eys"
+        subject = "an Irish woman"
+        skin = "tan skin, with freckles"
+        hair = "short wavy black hair with bangs"#"face-framing blond hair"
+        face = "hard facial features"#"dark eyeshadow"
+        eyes = "light blue eye"#"blue eys"
         attribute = "long eyelashes"#glasses, etc
-        lips = "puckered lips"
-        chest = "full breasts"#"small breasts"#can actually be anything
+        lips = "lips"
+        chest = "small breasts"#"small breasts"#can actually be anything
 
         return subject,skin,hair,face,eyes,attribute,lips,chest, name
     
@@ -1662,9 +1731,9 @@ if __name__ == "__main__":
         """ DONE """
         name ="taylor"
         
-        subject = "Taylor Swift"
+        subject = "face looks like Taylor Swift"
         skin = ""
-        hair = "face-framing blond hair"#"face-framing blond hair"
+        hair = "celebrity"#"face-framing blond hair"
         face = ""#"dark eyeshadow"
         eyes = ""#"blue eys"
         attribute = ""#"long eyelashes"#glasses, etc
@@ -1677,7 +1746,22 @@ if __name__ == "__main__":
         """ DONE """
         name ="scarlett"
         
-        subject = "Scarlett Johansson"
+        subject = "face looks like Scarlett Johansson"
+        skin = "celebrity"
+        hair = ""#"face-framing blond hair"
+        face = ""#"dark eyeshadow"
+        eyes = ""#"blue eys"
+        attribute = ""#"long eyelashes"#glasses, etc
+        lips = ""
+        chest = ""#"small breasts"#can actually be anything
+
+        return subject,skin,hair,face,eyes,attribute,lips,chest, name
+    
+    def Anne():
+        """ DONE """
+        name ="anne"
+        
+        subject = "facial features like Anne Hathaway"
         skin = ""
         hair = ""#"face-framing blond hair"
         face = ""#"dark eyeshadow"
@@ -1687,6 +1771,36 @@ if __name__ == "__main__":
         chest = ""#"small breasts"#can actually be anything
 
         return subject,skin,hair,face,eyes,attribute,lips,chest, name
+    
+    def Natalie():
+            """ DONE """
+            name ="natalie"
+            
+            subject = "facial features Natalie Portman"
+            skin = ""
+            hair = ""#"face-framing blond hair"
+            face = ""#"dark eyeshadow"
+            eyes = ""#"blue eys"
+            attribute = ""#"long eyelashes"#glasses, etc
+            lips = ""
+            chest = ""#"small breasts"#can actually be anything
+
+            return subject,skin,hair,face,eyes,attribute,lips,chest, name
+    
+    def Margot():
+            """ DONE """
+            name ="margot"
+            
+            subject = "facial features Margot Robbie"
+            skin = ""
+            hair = ""#"face-framing blond hair"
+            face = ""#"dark eyeshadow"
+            eyes = ""#"blue eys"
+            attribute = ""#"long eyelashes"#glasses, etc
+            lips = ""
+            chest = ""#"small breasts"#can actually be anything
+
+            return subject,skin,hair,face,eyes,attribute,lips,chest, name
     
     
 
@@ -1737,8 +1851,14 @@ if __name__ == "__main__":
  4. High-resolution photo of a [redhead woman], [with a tattooed back], [wearing a revealing black bodysuit], [kneeling on the floor with one hand on her head], [low-angle shot], [in a dark, industrial-style loft with exposed brick walls], [cool and stark lighting], [low-angle shot]
  5. Photo of a [woman with a curvaceous figure], [with a tight, shiny bodysuit], [standing with one leg raised and one hand on her hip], [full body shot], [in a steamy bathroom with fogged mirrors and tiles], [soft and steamy lighting], [low-angle shot]
     """
-    ##NEW
-    _ = photographModel(Calliope,asclepius,fabric="black")
+    ##NEW JUMP HERE
+    #_ = photographModel(Scarlett,asclepius,fabric="red")
+    #_ = photographModel(Margot,asclepius,fabric="white")
+    #_ = photographModel(Taylor,asclepius,fabric="silver")
+
+    _ = photographModel(Demetra,hades,fabric="pink")
+    #_ = photographModel(Calliope,hades,fabric="blue")
+
 
 
     # ALL MODELS ALL SHOOTS
@@ -1946,7 +2066,7 @@ if __name__ == "__main__":
                 photoshoot(prmpt,"style","lighting","subject","skin","hair","face","eyes","attribute","lips","chest","pose","action","framing","clothes",shoot_folder="demo_shoot",name="demo",test=True)
     #Test()
 
-    runAll()
+    #runAll()
 
     """while True:
         runAll()

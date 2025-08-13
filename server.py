@@ -345,10 +345,16 @@ def view_folder(folder_name, subfolder_name=None):
 def serve_image(folder_path, filename):
     """Serve individual image files from folder or subfolder."""
     full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
-    
-    #Caching for faster loads
     response = send_from_directory(full_folder_path, filename)
-    response.headers['Cache-Control'] = 'public, max-age=3600'
+    # Prevent browser cache if file is updated
+    response.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    # Add Last-Modified header based on file mtime
+    file_path = os.path.join(full_folder_path, filename)
+    if os.path.exists(file_path):
+        mtime = os.path.getmtime(file_path)
+        from datetime import datetime
+        last_modified = datetime.utcfromtimestamp(mtime).strftime('%a, %d %b %Y %H:%M:%S GMT')
+        response.headers['Last-Modified'] = last_modified
     return response
 
 @app.route('/api/favorite', methods=['POST'])

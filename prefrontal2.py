@@ -61,160 +61,166 @@ class EmotionEngine:
     def __init__(self,embedding_model: Type[MxBaiEmbedder] = None):
         self.embedding_model = embedding_model() #MxBaiEmbedder()
         
-        #lookup table for Plutchik's primary emotions to embeddings, these will be set with embedding_model
-        self.ee_emotion_embedding_lookup  = {"joy": np.random.normal(0, 1, 128),"ecstasy": np.random.normal(0, 1, 128),
-                                           "serenity": np.random.normal(0, 1, 128),"sadness": np.random.normal(0, 1, 128),
-                                           "grief": np.random.normal(0, 1, 128),"pensiveness": np.random.normal(0, 1, 128),
-                                           "trust": np.random.normal(0, 1, 128),"admiration": np.random.normal(0, 1, 128),
-                                           "acceptance": np.random.normal(0, 1, 128),"disgust": np.random.normal(0, 1, 128),
-                                             "loathing": np.random.normal(0, 1, 128),"boredom": np.random.normal(0, 1, 128),
-                                             "fear": np.random.normal(0, 1, 128),"terror": np.random.normal(0, 1, 128),
-                                             "apprehension": np.random.normal(0, 1, 128),"anger": np.random.normal(0, 1, 128),
-                                             "rage": np.random.normal(0, 1, 128),"annoyance": np.random.normal(0, 1, 128),
-                                             "surprise": np.random.normal(0, 1, 128),"amazement": np.random.normal(0, 1, 128),
-                                                "distraction": np.random.normal(0, 1, 128),"anticipation": np.random.normal(0, 1, 128),
-                                                "vigilance": np.random.normal(0, 1, 128),"interest": np.random.normal(0, 1, 128),
-                                             "love": np.random.normal(0, 1, 128),"submission": np.random.normal(0, 1, 128),
-                                                "awe": np.random.normal(0, 1, 128),"disapproval": np.random.normal(0, 1, 128),
-                                                "remorse": np.random.normal(0, 1, 128),"contempt": np.random.normal(0, 1, 128),
-                                                "aggressiveness": np.random.normal(0, 1, 128),"optimism": np.random.normal(0, 1, 128)}
-                                           
         # Plutchik's primary emotions with their characteristics
         self.ee_emotion_database = {
             # Joy family
             'joy': {
                 'mood': 'Sense of energy and possibility',
                 'thoughts': 'Life is going well',
-                'responses': 'Sparks creativity, connection, gives energy'
+                'responses': 'Sparks creativity, connection, gives energy',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'ecstasy': {
                 'mood': 'Overwhelming euphoria and elation',
                 'thoughts': 'Everything is perfect and amazing',
-                'responses': 'Boundless enthusiasm, may act impulsively from excitement'
+                'responses': 'Boundless enthusiasm, may act impulsively from excitement',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'serenity': {
                 'mood': 'Calm contentment and peace',
                 'thoughts': 'Things are pleasant and stable',
-                'responses': 'Gentle actions, seeks to maintain harmony'
+                'responses': 'Gentle actions, seeks to maintain harmony',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             
             # Sadness family
             'sadness': {
                 'mood': 'Heavy, low energy, withdrawn',
                 'thoughts': 'Things aren\'t going well, feeling loss',
-                'responses': 'Seeks comfort, may isolate, moves slowly'
+                'responses': 'Seeks comfort, may isolate, moves slowly',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'grief': {
                 'mood': 'Profound sorrow and despair',
                 'thoughts': 'Something important is gone forever',
-                'responses': 'May be inconsolable, needs support, difficulty functioning'
+                'responses': 'May be inconsolable, needs support, difficulty functioning',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'pensiveness': {
                 'mood': 'Quiet melancholy and reflection',
                 'thoughts': 'Contemplating what could have been',
-                'responses': 'Introspective, seeks solitude, gentle sadness'
+                'responses': 'Introspective, seeks solitude, gentle sadness',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             
             # Trust family
             'trust': {
                 'mood': 'Open and accepting',
                 'thoughts': 'Others are reliable and good',
-                'responses': 'Cooperative, shares freely, seeks connection'
+                'responses': 'Cooperative, shares freely, seeks connection',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'admiration': {
                 'mood': 'Deep respect and reverence',
                 'thoughts': 'This person/thing is truly worthy',
-                'responses': 'Wants to learn, emulate, or serve'
+                'responses': 'Wants to learn, emulate, or serve',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'acceptance': {
                 'mood': 'Calm acknowledgment',
                 'thoughts': 'This is how things are',
-                'responses': 'Goes with the flow, doesn\'t resist'
+                'responses': 'Goes with the flow, doesn\'t resist',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             
             # Disgust family
             'disgust': {
                 'mood': 'Repulsed and rejecting',
                 'thoughts': 'This is wrong, contaminated, or inferior',
-                'responses': 'Avoids, criticizes, seeks to remove or cleanse'
+                'responses': 'Avoids, criticizes, seeks to remove or cleanse',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'loathing': {
                 'mood': 'Intense revulsion and hatred',
                 'thoughts': 'This is absolutely abhorrent',
-                'responses': 'Strong rejection, may become aggressive to eliminate'
+                'responses': 'Strong rejection, may become aggressive to eliminate',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'boredom': {
                 'mood': 'Mild disinterest and restlessness',
                 'thoughts': 'This isn\'t worth my attention',
-                'responses': 'Seeks stimulation elsewhere, disengages'
+                'responses': 'Seeks stimulation elsewhere, disengages',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             
             # Fear family
             'fear': {
                 'mood': 'Anxious alertness and tension',
                 'thoughts': 'Something bad might happen',
-                'responses': 'Cautious, seeks safety, may freeze or flee'
+                'responses': 'Cautious, seeks safety, may freeze or flee',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'terror': {
                 'mood': 'Paralyzing dread',
                 'thoughts': 'Immediate danger, might not survive',
-                'responses': 'Fight, flight, or freeze response, acts on instinct'
+                'responses': 'Fight, flight, or freeze response, acts on instinct',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'apprehension': {
                 'mood': 'Mild worry and uncertainty',
                 'thoughts': 'Something doesn\'t feel quite right',
-                'responses': 'More cautious than usual, seeks reassurance'
+                'responses': 'More cautious than usual, seeks reassurance',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             
             # Anger family
             'anger': {
                 'mood': 'Heated and energized',
                 'thoughts': 'This is unfair, I\'ve been wronged',
-                'responses': 'Confrontational, seeks to correct or punish'
+                'responses': 'Confrontational, seeks to correct or punish',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'rage': {
                 'mood': 'Burning fury and aggression',
                 'thoughts': 'Must destroy the source of this injustice',
-                'responses': 'Potentially violent, loses rational control'
+                'responses': 'Potentially violent, loses rational control',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'annoyance': {
                 'mood': 'Mildly irritated and impatient',
                 'thoughts': 'This is inconvenient or bothersome',
-                'responses': 'Short responses, may express frustration verbally'
+                'responses': 'Short responses, may express frustration verbally',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             
             # Surprise family
             'surprise': {
                 'mood': 'Startled and alert',
                 'thoughts': 'That was unexpected',
-                'responses': 'Heightened attention, pauses to process'
+                'responses': 'Heightened attention, pauses to process',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'amazement': {
                 'mood': 'Awed and wonder-struck',
                 'thoughts': 'This is incredible and beyond belief',
-                'responses': 'Stares, asks questions, wants to understand'
+                'responses': 'Stares, asks questions, wants to understand',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'distraction': {
                 'mood': 'Mildly surprised and unfocused',
                 'thoughts': 'Wait, what was that?',
-                'responses': 'Attention shifts, momentarily loses focus'
+                'responses': 'Attention shifts, momentarily loses focus',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             
             # Anticipation family
             'anticipation': {
                 'mood': 'Eager and forward-looking',
                 'thoughts': 'Something good is coming',
-                'responses': 'Prepares, plans, may act impatiently'
+                'responses': 'Prepares, plans, may act impatiently',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'vigilance': {
                 'mood': 'Intense focus and readiness',
                 'thoughts': 'Must be ready for what\'s coming',
-                'responses': 'Hyper-alert, prepared for action'
+                'responses': 'Hyper-alert, prepared for action',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'interest': {
                 'mood': 'Curious and engaged',
                 'thoughts': 'I want to know more about this',
-                'responses': 'Asks questions, explores, pays attention'
+                'responses': 'Asks questions, explores, pays attention',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
         
         # Complex emotions formed by combining primary emotions
@@ -222,49 +228,57 @@ class EmotionEngine:
                 'components': ['joy', 'trust'],
                 'mood': 'Warm, connected, and devoted',
                 'thoughts': 'This person/thing is wonderful and safe',
-                'responses': 'Protective, nurturing, wants to be close'
+                'responses': 'Protective, nurturing, wants to be close',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'submission': {
                 'components': ['trust', 'fear'],
                 'mood': 'Deferential and compliant',
                 'thoughts': 'I should follow their lead',
-                'responses': 'Obeys, seeks approval, avoids conflict'
+                'responses': 'Obeys, seeks approval, avoids conflict',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'awe': {
                 'components': ['fear', 'surprise'],
                 'mood': 'Humbled and overwhelmed',
                 'thoughts': 'This is beyond my understanding',
-                'responses': 'Reverent behavior, may feel small or insignificant'
+                'responses': 'Reverent behavior, may feel small or insignificant',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'disapproval': {
                 'components': ['surprise', 'sadness'],
                 'mood': 'Disappointed and let down',
                 'thoughts': 'This isn\'t what I expected or hoped for',
-                'responses': 'Expresses dissatisfaction, may withdraw support'
+                'responses': 'Expresses dissatisfaction, may withdraw support',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'remorse': {
                 'components': ['sadness', 'disgust'],
                 'mood': 'Regretful and self-reproaching',
                 'thoughts': 'I did something wrong and feel bad about it',
-                'responses': 'Apologizes, seeks to make amends, self-punishing'
+                'responses': 'Apologizes, seeks to make amends, self-punishing',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'contempt': {
                 'components': ['disgust', 'anger'],
                 'mood': 'Superior and disdainful',
                 'thoughts': 'This is beneath me and doesn\'t deserve respect',
-                'responses': 'Dismissive, condescending, may ridicule'
+                'responses': 'Dismissive, condescending, may ridicule',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'aggressiveness': {
                 'components': ['anger', 'anticipation'],
                 'mood': 'Hostile and ready for conflict',
                 'thoughts': 'I need to attack before they do',
-                'responses': 'Threatening behavior, seeks confrontation'
+                'responses': 'Threatening behavior, seeks confrontation',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             },
             'optimism': {
                 'components': ['anticipation', 'joy'],
                 'mood': 'Hopeful and positive about the future',
                 'thoughts': 'Good things are coming',
-                'responses': 'Plans enthusiastically, encourages others'
+                'responses': 'Plans enthusiastically, encourages others',
+                'embedding': np.random.normal(0, 1, 128)  # Placeholder embedding
             }
         }
 
@@ -281,12 +295,11 @@ class EmotionEngine:
         """
        
         for emotion in self.ee_emotion_database.keys():
-            if emotion in self.ee_emotion_embedding_lookup:
-                # Generate embedding using the embedding model
-                em = self.ee_emotion_database[emotion]
-                embedding = self.embedding_model.embed_text_string(em['mood'] + "," + em['thoughts'] + "," + em['responses'])
-                self.ee_emotion_embedding_lookup[emotion] = embedding
-                print(f"Initialized embedding for emotion: {emotion} (shape: {embedding.shape})")
+            # Generate embedding using the embedding model
+            em = self.ee_emotion_database[emotion]
+            embedding = self.embedding_model.embed_text_string(em['mood'] + "," + em['thoughts'] + "," + em['responses'])
+            self.ee_emotion_database[emotion]['embedding'] = embedding
+            print(f"Initialized embedding for emotion: {emotion} (shape: {embedding.shape})")
     
     def get_emotional_reaction(self,text: str) -> Tuple[str, np.ndarray]:
         """
@@ -296,10 +309,11 @@ class EmotionEngine:
             text: Input text to analyze emotion ebedding similarity
             
         Returns:
-            Tuple[str, np.ndarray]: (emotion, embedding)
+            Tuple[str, Dict]: (emotion, emotion data)
         """
-        #ebedd the input text with the same model used for emotions
+        #embed the input text with the same model used for emotions
         input_embedding = self.embedding_model.embed_text_string(text)
+
         # Check if input_embedding is valid
         if input_embedding is None:
             print("Error: Input text embedding is None")
@@ -313,17 +327,24 @@ class EmotionEngine:
             return self.default_emotion, self.ee_emotion_database[self.default_emotion]
         
         # Find the closest emotion embedding
-        closest_emotion = None
-        closest_similarity = -1.0
-        for emotion, embedding in self.ee_emotion_embedding_lookup.items():
-            similarity = cosine_similarity([input_embedding], [embedding])[0][0]
-            if similarity > closest_similarity:
-                closest_similarity = similarity
-                closest_emotion = emotion
-        if closest_emotion:
-            return closest_emotion, self.ee_emotion_database[closest_emotion]
-        else:
-            return self.default_emotion, self.ee_emotion_database[self.default_emotion]
+        best_emotion = self.default_emotion
+        best_similarity = -1.0
+        for emotion, data in self.ee_emotion_database.items():
+            emotion_embedding = data['embedding']
+            if emotion_embedding is None or emotion_embedding.shape != (128,):
+                continue
+            
+            # Calculate cosine similarity between input and emotion embeddings
+            similarity = np.dot(input_embedding, emotion_embedding) / (
+                np.linalg.norm(input_embedding) * np.linalg.norm(emotion_embedding)
+            )
+            
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_emotion = emotion
+        
+        print(f"Best matching emotion: {best_emotion} (similarity: {best_similarity:.3f})")
+        return best_emotion, self.ee_emotion_database[best_emotion]
         
         
         
@@ -394,6 +415,16 @@ class MemoryConcept:
     sub_concepts: List[str] = field(default_factory=list)  # Child concept IDs
     parent_concept: Optional[str] = None  # Parent concept ID
 
+    # Multimodal embedding lists
+    text_embeddings: List[np.ndarray] = field(default_factory=list)
+    image_embeddings: List[np.ndarray] = field(default_factory=list)
+    audio_embeddings: List[np.ndarray] = field(default_factory=list)
+    
+    # Computed average embeddings for quick similarity checks
+    text_embedding: Optional[np.ndarray] = None
+    image_embedding: Optional[np.ndarray] = None
+    audio_embedding: Optional[np.ndarray] = None
+
 
 
 class Hippocampus:
@@ -402,19 +433,32 @@ class Hippocampus:
     Inherits from PrefrontalCortex to access the memory store and embeddings.
     """
     
-    def __init__(self, prefrontal_cortex, concept_store_file: str = "concept_store.pkl"):
+    def __init__(self, audio_embedder: Type[pseudo_vggish_embed],img_embedder: Type[pseudo_beit_embed], txt_embedder: Type[MxBaiEmbedder] = MxBaiEmbedder, memory_store_file: str = "memory_store.pkl",concept_store_file: str = "concept_store.pkl"):
         """
         Initialize Hippocampus with access to PrefrontalCortex
         
-        Args:
-            prefrontal_cortex: Instance of PrefrontalCortex class
+        Args:            
+            audio_embedder: Class for audio embedding (e.g., pseudo_vggish_embed)
+            img_embedder: Class for image embedding (e.g., pseudo_beit_embed)
+            txt_embedder: Class for text embedding (e.g., MxBaiEmbedder)
+            memory_store_file: Path to pickle file for persistent memory storage
             concept_store_file: Path to pickle file for persistent concept storage
         """
-        self.prefrontal_cortex = prefrontal_cortex
+
+        self.txt_embedder = txt_embedder
+        self.audio_embedder = audio_embedder
+        self.img_embedder = img_embedder
         self.concept_store_file = concept_store_file
-        self.memory_concepts: Dict[str, MemoryConcept] = {}
-        # Set bidirectional reference
-        prefrontal_cortex.set_hippocampus(self)
+        
+        # Load the text embedding model
+        print("Loading text embedding model...")
+        if not self.txt_embedder.load_model():
+            print("Warning: Failed to load text embedding model. Text embeddings may not work properly.")
+        else:
+            print("Text embedding model loaded successfully.")
+
+        self.memories = []  # List of MemoryPage objects
+        self.memory_concepts = []  # List of MemoryConcept objects
         
         # Initialize spaCy for noun extraction
         try:
@@ -429,527 +473,716 @@ class Hippocampus:
         self.min_cluster_size = 2
         self.max_cluster_size = 10
         self.entity_weight = 0.3  # How much to weight entity differences
+
+        self._memory_save_file = memory_store_file
+        self._concept_save_file = concept_store_file
+
+        self._load_memory_store()
         
-        # Load existing concepts
-        self._load_concept_store()
-    
-    def auto_consolidate_all(self, min_age_hours: float = 1.0) -> Dict[str, int]:
+       
+    def process_multimodal_input(self, 
+                               text: Optional[str] = None, 
+                               image_file: Optional[str] = None, 
+                               audio_file: Optional[str] = None) -> Dict[str, Any]:
         """
-        Run all consolidation methods and return summary
+        Process multimodal input and manage memory, focus, and concept associations
         
         Args:
-            min_age_hours: Minimum age for consolidation
+            text: Optional text input
+            image_file: Optional image file path
+            audio_file: Optional audio file path
             
         Returns:
-            Dict with counts of different consolidation types
+            Dict containing:
+            - 'memory_page': Created MemoryPage
+            - 'similar_memories': List of similar MemoryPages
+            - 'similar_concepts': List of similar MemoryConcepts
+            - 'new_focus': Suggested focus (if any)
         """
+        # Create embeddings for input
+        text_embedding = self.embed_text_string(text) if text else None
+        image_embedding = self.embed_image_file(image_file) if image_file else None
+        audio_embedding = self.embed_audio_file(audio_file) if audio_file else None
         
-        results = {
-            'semantic_concepts': 0,
-            'entity_concepts': 0, 
-            'merged_memories': 0
+        # Create a new memory page
+        memory_page = MemoryPage(
+            text=text,
+            text_embedding=text_embedding,
+            image_file=image_file,
+            image_embedding=image_embedding,
+            audio_file=audio_file,
+            audio_embedding=audio_embedding,
+            emotion=self.emotional_state,
+            emotion_embedding=self.emotional_state_vector,
+            timestamp=time.time()
+        )
+        
+        # Search for similar memories
+        similar_memories = self._find_similar_memories(memory_page)
+        
+        # Search for similar concepts
+        similar_concepts = self._find_similar_concepts(memory_page)
+        
+        # Determine potential focus
+        new_focus = self._determine_focus(memory_page, similar_memories, similar_concepts)
+        
+        # Update memory store and concepts
+        self._update_memory_store(memory_page, similar_memories, similar_concepts)
+        
+        # Return processing results
+        return {
+            'memory_page': memory_page,
+            'similar_memories': similar_memories,
+            'similar_concepts': similar_concepts,
+            'new_focus': new_focus
         }
+
+    def _find_similar_memories(self, memory_page: MemoryPage, similarity_threshold: float = 0.7) -> List[MemoryPage]:
+        """
+        Find similar memories across multiple modalities
         
-        # 1. Semantic consolidation (existing method)
-        results['semantic_concepts'] = self.consolidate_memories(
-            min_age_hours=min_age_hours,
-            max_concepts_per_run=15
-        )
+        Args:
+            memory_page: Input memory page to compare
+            similarity_threshold: Minimum similarity to consider
+            
+        Returns:
+            List of similar MemoryPages
+        """
+        similar_memories = []
         
-        # 2. Entity-based consolidation  
-        if hasattr(self.prefrontal_cortex, 'entity_clustering'):
-            results['entity_concepts'] = self.prefrontal_cortex.entity_clustering.auto_consolidate_entity_clusters(
-                max_clusters=10
-            )
+        for existing_memory in self.hippocampus.memories:
+            similarities = []
+            
+            # Text similarity
+            if (memory_page.text_embedding is not None and 
+                existing_memory.text_embedding is not None):
+                text_sim = cosine_similarity(
+                    [memory_page.text_embedding], 
+                    [existing_memory.text_embedding]
+                )[0][0]
+                similarities.append(text_sim)
+            
+            # Image similarity
+            if (memory_page.image_embedding is not None and 
+                existing_memory.image_embedding is not None):
+                image_sim = cosine_similarity(
+                    [memory_page.image_embedding], 
+                    [existing_memory.image_embedding]
+                )[0][0]
+                similarities.append(image_sim)
+            
+            # Audio similarity
+            if (memory_page.audio_embedding is not None and 
+                existing_memory.audio_embedding is not None):
+                audio_sim = cosine_similarity(
+                    [memory_page.audio_embedding], 
+                    [existing_memory.audio_embedding]
+                )[0][0]
+                similarities.append(audio_sim)
+            
+            # Compute overall similarity
+            if similarities and np.mean(similarities) >= similarity_threshold:
+                similar_memories.append(existing_memory)
         
-        # 3. Merge similar weak memories
-        results['merged_memories'] = self.prefrontal_cortex.consolidate_similar_memories(
-            max_merges=5
-        )
+        return similar_memories
+
+
+    def search_similar_text_memories(self, text: str) -> List[MemoryPage]:
+        """
+        Search for similar memories based on text content.
         
-        total_changes = sum(results.values())
-        print(f"\nConsolidation Summary:")
-        print(f"  Semantic concepts: {results['semantic_concepts']}")  
-        print(f"  Entity concepts: {results['entity_concepts']}")
-        print(f"  Merged memories: {results['merged_memories']}")
-        print(f"  Total changes: {total_changes}")
+        Args:
+            text: Text content to search for
+            
+        Returns:
+            List[MemoryPage]: List of matching MemoryPage objects
+        """
+        if not self.memories:
+            print("No memories stored yet.")
+            return []
+        
+        # Embed the input text
+        text_embedding = self.txt_embedder.embed_text_string(text)
+        
+        results = []
+        
+        for memory in self.memories:
+            if memory.text_embedding is None:
+                continue
+            
+            # Calculate cosine similarity
+            similarity = cosine_similarity([text_embedding], [memory.text_embedding])[0][0]
+            
+            if similarity >= self.semantic_similarity_threshold:
+                results.append(memory)
         
         return results
 
-    def _load_concept_store(self):
-        """Load memory concepts from pickle file"""
-        if os.path.exists(self.concept_store_file):
-            try:
-                with open(self.concept_store_file, 'rb') as f:
-                    self.memory_concepts = pickle.load(f)
-                print(f"Loaded {len(self.memory_concepts)} memory concepts from {self.concept_store_file}")
-            except Exception as e:
-                print(f"Error loading concept store: {str(e)}")
-                self.memory_concepts = {}
-        else:
-            print(f"No existing concept store found at {self.concept_store_file}")
-    
-    def _save_concept_store(self):
-        """Save memory concepts to pickle file"""
-        try:
-            with open(self.concept_store_file, 'wb') as f:
-                pickle.dump(self.memory_concepts, f)
-            print(f"Saved {len(self.memory_concepts)} memory concepts to {self.concept_store_file}")
-        except Exception as e:
-            print(f"Error saving concept store: {str(e)}")
-    
-    def extract_entities_and_nouns(self, text: str) -> Tuple[List[str], List[str], List[str]]:
+    def search_similar_image_memories(self, image_file: str) -> List[MemoryPage]:
         """
-        Extract entities, nouns, and key people/places from text using spaCy
+        Search for similar memories based on image content.
+        
+        Args:
+            image_file: Path to the image file to search for
+            
+        Returns:
+            List[MemoryPage]: List of matching MemoryPage objects
+        """
+        if not self.memories:
+            print("No memories stored yet.")
+            return []
+        
+        # Embed the input image
+        image_embedding = self.img_embedder.pseudo_beit_embed(image_file)
+        
+        results = []
+        
+        for memory in self.memories:
+            if memory.image_embedding is None:
+                continue
+            
+            # Calculate cosine similarity
+            similarity = cosine_similarity([image_embedding], [memory.image_embedding])[0][0]
+            
+            if similarity >= self.semantic_similarity_threshold:
+                results.append(memory)
+        
+        return results
+    
+    def search_similar_audio_memories(self, audio_file: str) -> List[MemoryPage]:
+        """
+        Search for similar memories based on audio content.
+        
+        Args:
+            audio_file: Path to the audio file to search for
+            
+        Returns:
+            List[MemoryPage]: List of matching MemoryPage objects
+        """
+        if not self.memories:
+            print("No memories stored yet.")
+            return []
+        
+        # Embed the input audio
+        audio_embedding = self.audio_embedder.pseudo_vggish_embed(audio_file)
+        
+        results = []
+        
+        for memory in self.memories:
+            if memory.audio_embedding is None:
+                continue
+            
+            # Calculate cosine similarity
+            similarity = cosine_similarity([audio_embedding], [memory.audio_embedding])[0][0]
+            
+            if similarity >= self.semantic_similarity_threshold:
+                results.append(memory)
+        
+        return results
+
+    def search_similar_memories(self,text: str, image_file: Optional[str] = None, audio_file: Optional[str] = None) -> List[MemoryPage]:
+        """
+        Search for similar memories based on text, image, or audio content.
+        
+        Args:
+            text: Text content to search for
+            image_file: Optional path to an image file
+            audio_file: Optional path to an audio file
+            
+        Returns:
+            List[MemoryPage]: List of matching MemoryPage objects
+        """
+        if not self.memories:
+            print("No memories stored yet.")
+            return []
+        
+        # Embed the input text, image, and audio
+        text_embedding = self.txt_embedder.embed_text_string(text) if text else None
+        image_embedding = self.img_embedder.pseudo_beit_embed(image_file) if image_file else None
+        audio_embedding = self.audio_embedder.pseudo_vggish_embed(audio_file) if audio_file else None
+        
+        results = []
+        
+        for memory in self.memories:
+            # Calculate similarity scores
+            text_similarity = cosine_similarity([text_embedding], [memory.text_embedding])[0][0] if text_embedding is not None and memory.text_embedding is not None else 0.0
+            image_similarity = cosine_similarity([image_embedding], [memory.image_embedding])[0][0] if image_embedding is not None and memory.image_embedding is not None else 0.0
+            audio_similarity = cosine_similarity([audio_embedding], [memory.audio_embedding])[0][0] if audio_embedding is not None and memory.audio_embedding is not None else 0.0
+            
+            # Combine scores with weights
+            combined_score = (text_similarity + image_similarity + audio_similarity) / 3
+            
+            if combined_score >= self.semantic_similarity_threshold:
+                results.append(memory)
+        
+        return results
+
+    def create_memory_concepts(self):
+        """
+        Create conceptual clusters from individual memories.
+        
+        This method groups memories into concepts based on semantic similarity,
+        temporal proximity, and other heuristics.
+        """
+        if not self.memories:
+            print("No memories to cluster.")
+            return
+        
+        print(f"Processing {len(self.memories)} memories for concept formation...")
+        
+        # Load existing concepts
+        self._load_concept_store()
+        
+        # Process each memory to find matching concepts or create new ones
+        for memory in self.memories:
+            if memory.text_embedding is None:
+                continue  # Skip memories without text embeddings
+            
+            # Extract key entities and nouns from the memory
+            entities, nouns = self._extract_entities_and_nouns(memory.text)
+            
+            # Find existing concepts that might match this memory
+            matching_concept = self._find_matching_concept(memory, entities, nouns)
+            
+            if matching_concept:
+                # Update existing concept with new information
+                self._update_concept_with_memory(matching_concept, memory, entities, nouns)
+                print(f"Updated concept '{matching_concept.theme}' with memory from {memory.creation_datetime}")
+            else:
+                # Check if this memory should start a new concept by finding similar memories
+                similar_memories = self._find_similar_memories_for_concept(memory)
+                
+                if len(similar_memories) >= self.min_cluster_size:
+                    # Create new concept from similar memories
+                    new_concept = self._create_new_concept(similar_memories, entities, nouns)
+                    self.memory_concepts.append(new_concept)
+                    print(f"Created new concept '{new_concept.theme}' with {len(similar_memories)} memories")
+        
+        # Post-process concepts: merge very similar ones and update hierarchies
+        self._merge_similar_concepts()
+        
+        # Update concept importance scores
+        self._update_concept_importance()
+        
+        # Save updated concepts
+        self._save_concept_store()
+        
+        print(f"Concept formation complete. Total concepts: {len(self.memory_concepts)}")
+    
+    def _extract_entities_and_nouns(self, text: str) -> Tuple[List[str], List[str]]:
+        """
+        Extract named entities and nouns from text using spaCy.
         
         Args:
             text: Input text to analyze
             
         Returns:
-            Tuple[List[str], List[str], List[str]]: (entities, nouns, people_places)
+            Tuple[List[str], List[str]]: (entities, nouns)
         """
+        entities = []
+        nouns = []
+        
         if not self.nlp or not text:
-            return [], [], []
-        
-        doc = self.nlp(text)
-        
-        # Extract named entities
-        entities = [ent.text.lower() for ent in doc.ents]
-        
-        # Extract nouns (both common and proper)
-        nouns = [token.lemma_.lower() for token in doc 
-                if token.pos_ in ["NOUN", "PROPN"] and not token.is_stop]
-        
-        # Extract people and places specifically
-        people_places = [ent.text.lower() for ent in doc.ents 
-                        if ent.label_ in ["PERSON", "GPE", "LOC", "ORG"]]
-        
-        return entities, nouns, people_places
-    
-    def calculate_entity_similarity(self, entities1: List[str], entities2: List[str]) -> float:
-        """
-        Calculate similarity between two sets of entities
-        
-        Args:
-            entities1: First set of entities
-            entities2: Second set of entities
-            
-        Returns:
-            float: Similarity score (0-1)
-        """
-        if not entities1 and not entities2:
-            return 1.0
-        if not entities1 or not entities2:
-            return 0.0
-        
-        set1 = set(entities1)
-        set2 = set(entities2)
-        
-        intersection = len(set1.intersection(set2))
-        union = len(set1.union(set2))
-        
-        return intersection / union if union > 0 else 0.0
-    
-    def calculate_temporal_similarity(self, timestamp1: float, timestamp2: float) -> float:
-        """
-        Calculate temporal similarity between two timestamps
-        
-        Args:
-            timestamp1: First timestamp
-            timestamp2: Second timestamp
-            
-        Returns:
-            float: Similarity score (0-1) based on temporal distance
-        """
-        time_diff_hours = abs(timestamp1 - timestamp2) / 3600
-        
-        if time_diff_hours <= self.temporal_window_hours:
-            # Linear decay within the temporal window
-            return 1.0 - (time_diff_hours / self.temporal_window_hours)
-        else:
-            # Exponential decay beyond the window
-            return 0.1 * math.exp(-time_diff_hours / (self.temporal_window_hours * 2))
-    
-    def calculate_composite_similarity(self, memory1, memory2) -> Tuple[float, Dict[str, float]]:
-        """
-        Calculate composite similarity between two memories considering:
-        - Semantic embedding similarity
-        - Entity/noun overlap
-        - Temporal proximity
-        
-        Args:
-            memory1: First MemoryPage
-            memory2: Second MemoryPage
-            
-        Returns:
-            Tuple[float, Dict[str, float]]: (composite_score, breakdown)
-        """
-        breakdown = {}
-        
-        # 1. Semantic similarity from embeddings
-        semantic_sim = 0.0
-        if memory1.text_embedding is not None and memory2.text_embedding is not None:
-            semantic_sim = np.dot(memory1.text_embedding, memory2.text_embedding)
-        breakdown['semantic'] = semantic_sim
-        
-        # 2. Entity similarity
-        entities1, nouns1, people_places1 = self.extract_entities_and_nouns(memory1.text or "")
-        entities2, nouns2, people_places2 = self.extract_entities_and_nouns(memory2.text or "")
-        
-        entity_sim = self.calculate_entity_similarity(people_places1, people_places2)
-        noun_sim = self.calculate_entity_similarity(nouns1, nouns2)
-        breakdown['entities'] = entity_sim
-        breakdown['nouns'] = noun_sim
-        
-        # 3. Temporal similarity
-        temporal_sim = self.calculate_temporal_similarity(memory1.timestamp, memory2.timestamp)
-        breakdown['temporal'] = temporal_sim
-        
-        # 4. Composite score with weights
-        # If entities are very different (different people/places), reduce semantic weight
-        entity_penalty = 1.0
-        if entity_sim < 0.2 and semantic_sim > 0.7:
-            entity_penalty = 0.5  # Reduce importance of semantic similarity
-        
-        composite_score = (
-            semantic_sim * 0.4 * entity_penalty +
-            entity_sim * 0.3 +
-            noun_sim * 0.2 +
-            temporal_sim * 0.1
-        )
-        
-        breakdown['composite'] = composite_score
-        breakdown['entity_penalty'] = entity_penalty
-        
-        return composite_score, breakdown
-    
-    def cluster_memories_by_similarity(self, memory_ids: List[str]) -> List[List[str]]:
-        """
-        Cluster memories using composite similarity (semantic + entity + temporal)
-        
-        Args:
-            memory_ids: List of memory IDs to cluster
-            
-        Returns:
-            List[List[str]]: List of clusters, each containing memory IDs
-        """
-        if len(memory_ids) < 2:
-            return [memory_ids] if memory_ids else []
-        
-        # Get memory objects
-        memories = [self.prefrontal_cortex.get_memory(mid) for mid in memory_ids]
-        memories = [m for m in memories if m is not None]
-        
-        if len(memories) < 2:
-            return [[m.memory_id for m in memories]] if memories else []
-        
-        # Calculate pairwise similarity matrix
-        n = len(memories)
-        similarity_matrix = np.zeros((n, n))
-        
-        for i in range(n):
-            for j in range(i + 1, n):
-                sim_score, _ = self.calculate_composite_similarity(memories[i], memories[j])
-                similarity_matrix[i][j] = sim_score
-                similarity_matrix[j][i] = sim_score
-        
-        # Use DBSCAN clustering for flexible cluster sizes
-        # Convert similarity to distance (1 - similarity)
-        distance_matrix = 1 - similarity_matrix
-        
-        # DBSCAN parameters
-        eps = 1 - self.semantic_similarity_threshold  # Distance threshold
-        min_samples = self.min_cluster_size
+            return entities, nouns
         
         try:
-            clustering = DBSCAN(eps=eps, min_samples=min_samples, metric='precomputed')
-            cluster_labels = clustering.fit_predict(distance_matrix)
+            doc = self.nlp(text)
+            print(f"Extracting entities and nouns from text: {text[:50]}...")
             
-            # Group memories by cluster label
-            clusters = defaultdict(list)
-            for i, label in enumerate(cluster_labels):
-                if label >= 0:  # -1 indicates noise/outlier
-                    clusters[label].append(memories[i].memory_id)
-                else:
-                    # Create singleton cluster for outliers
-                    clusters[f"outlier_{i}"] = [memories[i].memory_id]
+            # Extract named entities (people, places, organizations, etc.)
+            for ent in doc.ents:
+                print(f"Found entity: {ent.text} ({ent.label_})")
+                if ent.label_ in ["PERSON", "ORG", "GPE", "EVENT", "PRODUCT"]:
+                    entities.append(ent.text.lower())
             
-            return list(clusters.values())
+            # Extract important nouns
+            for token in doc:
+                if (token.pos_ == "NOUN" and 
+                    not token.is_stop and 
+                    len(token.text) > 2 and
+                    token.text.lower() not in entities):
+                    nouns.append(token.text.lower())
             
         except Exception as e:
-            print(f"Error in clustering: {str(e)}")
-            # Fallback: return individual memories as separate clusters
-            return [[m.memory_id] for m in memories]
+            print(f"Error extracting entities: {e}")
+        
+        return list(set(entities)), list(set(nouns))
     
-    def generate_concept_summary(self, memory_ids: List[str]) -> Tuple[str, str, List[str], List[str]]:
+    def _find_matching_concept(self, memory: MemoryPage, entities: List[str], nouns: List[str]) -> Optional[MemoryConcept]:
         """
-        Generate theme and summary for a memory concept
+        Find an existing concept that matches the given memory.
         
         Args:
-            memory_ids: List of memory IDs in the concept
+            memory: Memory to find concept for
+            entities: Extracted entities from memory
+            nouns: Extracted nouns from memory
             
         Returns:
-            Tuple[str, str, List[str], List[str]]: (theme, summary, key_entities, key_nouns)
+            Optional[MemoryConcept]: Matching concept if found
         """
-        # Get memory texts
-        memories = [self.prefrontal_cortex.get_memory(mid) for mid in memory_ids]
-        memories = [m for m in memories if m and m.text]
+        best_match = None
+        best_score = 0.0
         
-        if not memories:
-            return "Empty Concept", "No text content available", [], []
+        for concept in self.memory_concepts:
+            score = 0.0
+            
+            # Semantic similarity via embedding
+            if concept.summary_embedding is not None and memory.text_embedding is not None:
+                semantic_sim = cosine_similarity([memory.text_embedding], [concept.summary_embedding])[0][0]
+                score += semantic_sim * 0.6  # 60% weight on semantic similarity
+            
+            # Entity overlap
+            entity_overlap = len(set(entities) & set(concept.key_entities))
+            if concept.key_entities:
+                entity_sim = entity_overlap / len(concept.key_entities)
+                score += entity_sim * 0.3  # 30% weight on entity similarity
+            
+            # Noun overlap
+            noun_overlap = len(set(nouns) & set(concept.key_nouns))
+            if concept.key_nouns:
+                noun_sim = noun_overlap / len(concept.key_nouns)
+                score += noun_sim * 0.1  # 10% weight on noun similarity
+            
+            # Prefer concepts that have been updated recently or have high importance
+            recency_boost = max(0, 1 - (time.time() - concept.last_updated) / (7 * 24 * 3600))  # Decay over week
+            score += recency_boost * 0.1
+            
+            if score > best_score and score >= 0.6:  # Threshold for matching
+                best_score = score
+                best_match = concept
         
-        # Combine all texts
-        combined_text = " ".join([m.text for m in memories])
+        return best_match
+    
+    def _find_similar_memories_for_concept(self, target_memory: MemoryPage) -> List[MemoryPage]:
+        """
+        Find memories similar to the target memory for potential concept creation.
         
-        # Extract common entities and nouns
-        all_entities = []
-        all_nouns = []
+        Args:
+            target_memory: Memory to find similar memories for
+            
+        Returns:
+            List[MemoryPage]: List of similar memories including target
+        """
+        similar_memories = [target_memory]
+        
+        if target_memory.text_embedding is None:
+            return similar_memories
+        
+        for memory in self.memories:
+            if (memory.memory_id == target_memory.memory_id or 
+                memory.text_embedding is None):
+                continue
+            
+            # Calculate similarity
+            similarity = cosine_similarity([target_memory.text_embedding], [memory.text_embedding])[0][0]
+            
+            if similarity >= self.semantic_similarity_threshold:
+                similar_memories.append(memory)
+                
+                # Limit cluster size
+                if len(similar_memories) >= self.max_cluster_size:
+                    break
+        
+        return similar_memories
+    
+    def _create_new_concept(self, memories: List[MemoryPage], entities: List[str], nouns: List[str]) -> MemoryConcept:
+        """
+        Create a new MemoryConcept from a group of similar memories.
+        
+        Args:
+            memories: List of memories to include in concept
+            entities: Entities extracted from memories
+            nouns: Nouns extracted from memories
+            
+        Returns:
+            MemoryConcept: New concept
+        """
+        # Collect all entities and nouns from all memories
+        all_entities = set(entities)
+        all_nouns = set(nouns)
+        all_texts = []
+        
         for memory in memories:
-            entities, nouns, people_places = self.extract_entities_and_nouns(memory.text)
-            all_entities.extend(people_places)  # Focus on people/places for key entities
-            all_nouns.extend(nouns)
+            if memory.text:
+                all_texts.append(memory.text)
+                mem_entities, mem_nouns = self._extract_entities_and_nouns(memory.text)
+                all_entities.update(mem_entities)
+                all_nouns.update(mem_nouns)
         
-        # Find most common entities and nouns
-        entity_counts = Counter(all_entities)
-        noun_counts = Counter(all_nouns)
+        # Generate theme and summary
+        theme = self._generate_concept_theme(list(all_entities), list(all_nouns))
+        summary = self._generate_concept_summary(all_texts, theme)
         
-        key_entities = [entity for entity, count in entity_counts.most_common(5)]
-        key_nouns = [noun for noun, count in noun_counts.most_common(10)]
+        # Calculate temporal span
+        timestamps = [memory.timestamp for memory in memories if hasattr(memory, 'timestamp')]
+        if not timestamps:
+            timestamps = [time.time()]
         
-        # Generate simple theme based on most common elements
-        if key_entities:
-            theme = f"Activities involving {', '.join(key_entities[:3])}"
-        elif key_nouns:
-            theme = f"Experiences related to {', '.join(key_nouns[:3])}"
-        else:
-            theme = "General memories"
+        earliest = min(timestamps)
+        latest = max(timestamps)
+        representative = sum(timestamps) / len(timestamps)
         
-        # Generate simple summary
-        if len(memories) == 1:
-            summary = f"Single memory: {memories[0].text[:100]}..."
-        else:
-            summary = f"Collection of {len(memories)} related memories"
-            if key_entities:
-                summary += f" involving {', '.join(key_entities[:2])}"
-            if key_nouns:
-                summary += f" focused on {', '.join(key_nouns[:3])}"
-        
-        return theme, summary, key_entities, key_nouns
-    
-    def create_memory_concept(self, memory_ids: List[str]) -> MemoryConcept:
-        """
-        Create a MemoryConcept from a cluster of memory IDs
-        
-        Args:
-            memory_ids: List of memory IDs to include in the concept
-            
-        Returns:
-            MemoryConcept: The created concept
-        """
-        if not memory_ids:
-            raise ValueError("Cannot create concept from empty memory list")
-        
-        # Get memory objects for temporal analysis
-        memories = [self.prefrontal_cortex.get_memory(mid) for mid in memory_ids]
-        memories = [m for m in memories if m]
-        
-        if not memories:
-            raise ValueError("No valid memories found for concept creation")
-        
-        # Calculate temporal statistics
-        timestamps = [m.timestamp for m in memories]
-        earliest_time = min(timestamps)
-        latest_time = max(timestamps)
-        representative_time = sum(timestamps) / len(timestamps)  # Average timestamp
-        temporal_span_days = (latest_time - earliest_time) / (24 * 3600)
-        
-        # Generate concept summary and theme
-        theme, summary, key_entities, key_nouns = self.generate_concept_summary(memory_ids)
-        
-        # Create summary embedding from combined text
-        summary_embedding = None
-        if summary:
-            try:
-                summary_embedding = self.prefrontal_cortex.embedder.embed_text_string(summary)
-            except Exception as e:
-                print(f"Error creating summary embedding: {str(e)}")
-        
-        # Calculate importance score based on various factors
-        importance_score = (
-            len(memory_ids) * 0.3 +  # More memories = more important
-            len(key_entities) * 0.2 +  # More entities = more important
-            (1 / max(temporal_span_days + 1, 1)) * 0.3 +  # Recent clusters more important
-            len(set(key_nouns)) * 0.2  # Diverse nouns = more important
-        )
-        
-        # Create the concept
+        # Create concept
         concept = MemoryConcept(
             theme=theme,
             summary=summary,
-            summary_embedding=summary_embedding,
-            memory_ids=memory_ids.copy(),
-            representative_time=representative_time,
-            earliest_memory=earliest_time,
-            latest_memory=latest_time,
-            temporal_span_days=temporal_span_days,
-            key_entities=key_entities,
-            key_nouns=key_nouns,
-            importance_score=importance_score,
-            consolidation_strength=min(len(memory_ids) / self.max_cluster_size, 1.0)
+            summary_embedding=self.txt_embedder.embed_text_string(summary) if summary else None,
+            memory_ids=[mem.memory_id for mem in memories],
+            key_entities=list(all_entities)[:10],  # Limit to top 10
+            key_nouns=list(all_nouns)[:15],  # Limit to top 15
+            representative_time=representative,
+            earliest_memory=earliest,
+            latest_memory=latest,
+            temporal_span_days=(latest - earliest) / (24 * 3600),
+            consolidation_strength=min(1.0, len(memories) / self.max_cluster_size)
         )
         
         return concept
     
-    def consolidate_memories(self, min_age_hours: float = 1.0, max_concepts_per_run: int = 10) -> int:
+    def _update_concept_with_memory(self, concept: MemoryConcept, memory: MemoryPage, entities: List[str], nouns: List[str]):
         """
-        Main consolidation function: cluster recent memories into concepts
+        Update an existing concept with information from a new memory.
         
         Args:
-            min_age_hours: Minimum age of memories to consolidate (in hours)
-            max_concepts_per_run: Maximum number of concepts to create in one run
-            
-        Returns:
-            int: Number of concepts created
+            concept: Concept to update
+            memory: New memory to incorporate
+            entities: Entities from new memory
+            nouns: Nouns from new memory
         """
-        current_time = time.time()
-        cutoff_time = current_time - (min_age_hours * 3600)
+        # Add memory to concept
+        if memory.memory_id not in concept.memory_ids:
+            concept.memory_ids.append(memory.memory_id)
         
-        # Find memories that are old enough to consolidate but not already in concepts
-        already_conceptualized = set()
-        for concept in self.memory_concepts.values():
-            already_conceptualized.update(concept.memory_ids)
+        # Update entities and nouns
+        concept.key_entities.extend([e for e in entities if e not in concept.key_entities])
+        concept.key_nouns.extend([n for n in nouns if n not in concept.key_nouns])
         
-        candidate_memories = []
-        for memory_id, memory in self.prefrontal_cortex.memory_pages.items():
-            if (memory.timestamp < cutoff_time and 
-                memory_id not in already_conceptualized and
-                memory.text is not None):  # Only consolidate memories with text
-                candidate_memories.append(memory_id)
+        # Limit list sizes
+        concept.key_entities = concept.key_entities[:10]
+        concept.key_nouns = concept.key_nouns[:15]
         
-        if len(candidate_memories) < self.min_cluster_size:
-            print(f"Not enough candidate memories for consolidation: {len(candidate_memories)}")
-            return 0
+        # Update temporal information
+        memory_time = getattr(memory, 'timestamp', time.time())
+        concept.latest_memory = max(concept.latest_memory, memory_time)
+        concept.earliest_memory = min(concept.earliest_memory, memory_time)
+        concept.temporal_span_days = (concept.latest_memory - concept.earliest_memory) / (24 * 3600)
         
-        print(f"Consolidating {len(candidate_memories)} candidate memories...")
+        # Recalculate representative time
+        all_times = [concept.representative_time] + [memory_time]
+        concept.representative_time = sum(all_times) / len(all_times)
         
-        # Cluster the candidate memories
-        clusters = self.cluster_memories_by_similarity(candidate_memories)
+        # Update summary if significant new information
+        if memory.text and len(concept.memory_ids) % 3 == 0:  # Update every 3 new memories
+            all_texts = [memory.text]  # Include new memory text
+            updated_summary = self._generate_concept_summary(all_texts, concept.theme)
+            if updated_summary:
+                concept.summary = updated_summary
+                concept.summary_embedding = self.txt_embedder.embed_text_string(updated_summary)
         
-        # Filter clusters by size and create concepts
-        concepts_created = 0
-        for cluster in clusters:
-            if (len(cluster) >= self.min_cluster_size and 
-                len(cluster) <= self.max_cluster_size and
-                concepts_created < max_concepts_per_run):
-                
-                try:
-                    concept = self.create_memory_concept(cluster)
-                    self.memory_concepts[concept.cluster_id] = concept
-                    concepts_created += 1
-                    print(f"Created concept: {concept.theme} ({len(cluster)} memories)")
-                except Exception as e:
-                    print(f"Error creating concept from cluster: {str(e)}")
-        
-        if concepts_created > 0:
-            self._save_concept_store()
-        
-        print(f"Consolidation complete: {concepts_created} concepts created")
-        return concepts_created
+        # Update metadata
+        concept.last_updated = time.time()
+        concept.consolidation_strength = min(1.0, len(concept.memory_ids) / self.max_cluster_size)
     
-    def search_concepts(self, query_text: str, n: int = 5) -> List[Tuple[MemoryConcept, float]]:
+    def _generate_concept_theme(self, entities: List[str], nouns: List[str]) -> str:
         """
-        Search memory concepts by text similarity
+        Generate a theme description for a concept based on entities and nouns.
         
         Args:
-            query_text: Text to search for
-            n: Maximum number of results to return
+            entities: List of entities
+            nouns: List of nouns
             
         Returns:
-            List[Tuple[MemoryConcept, float]]: List of (concept, similarity_score) tuples
+            str: Generated theme
         """
-        if not query_text.strip() or not self.memory_concepts:
-            return []
+        # Simple heuristic-based theme generation
+        # In practice, you might use an LLM for this
         
+        if entities:
+            primary_entities = entities[:3]  # Top 3 entities
+            if len(primary_entities) == 1:
+                theme = f"Conversations about {primary_entities[0]}"
+            else:
+                theme = f"Discussions involving {', '.join(primary_entities)}"
+        elif nouns:
+            primary_nouns = nouns[:3]  # Top 3 nouns
+            theme = f"Topics related to {', '.join(primary_nouns)}"
+        else:
+            theme = "General conversation"
+        
+        return theme
+    
+    def _generate_concept_summary(self, texts: List[str], theme: str) -> str:
+        """
+        Generate a summary for a concept based on memory texts.
+        
+        Args:
+            texts: List of text content from memories
+            theme: Theme of the concept
+            
+        Returns:
+            str: Generated summary
+        """
+        if not texts:
+            return f"A concept about {theme}"
+        
+        # Simple extractive summary - take first few sentences
+        # In practice, you might use an LLM for better summarization
+        combined_text = " ".join(texts)
+        sentences = combined_text.split(". ")[:3]  # First 3 sentences
+        summary = ". ".join(sentences)
+        
+        if len(summary) > 200:
+            summary = summary[:200] + "..."
+        
+        return summary
+    
+    def _merge_similar_concepts(self):
+        """
+        Merge concepts that are very similar to avoid duplication.
+        """
+        concepts_to_remove = set()
+        
+        for i, concept1 in enumerate(self.memory_concepts):
+            if concept1.cluster_id in concepts_to_remove:
+                continue
+                
+            for j, concept2 in enumerate(self.memory_concepts[i+1:], i+1):
+                if concept2.cluster_id in concepts_to_remove:
+                    continue
+                
+                # Check similarity between concepts
+                if (concept1.summary_embedding is not None and 
+                    concept2.summary_embedding is not None):
+                    
+                    similarity = cosine_similarity([concept1.summary_embedding], 
+                                                 [concept2.summary_embedding])[0][0]
+                    
+                    # High similarity threshold for merging
+                    if similarity >= 0.9:
+                        # Merge concept2 into concept1
+                        concept1.memory_ids.extend(concept2.memory_ids)
+                        concept1.memory_ids = list(set(concept1.memory_ids))  # Remove duplicates
+                        
+                        # Merge entities and nouns
+                        concept1.key_entities.extend(concept2.key_entities)
+                        concept1.key_nouns.extend(concept2.key_nouns)
+                        concept1.key_entities = list(set(concept1.key_entities))[:10]
+                        concept1.key_nouns = list(set(concept1.key_nouns))[:15]
+                        
+                        # Update temporal information
+                        concept1.earliest_memory = min(concept1.earliest_memory, concept2.earliest_memory)
+                        concept1.latest_memory = max(concept1.latest_memory, concept2.latest_memory)
+                        concept1.temporal_span_days = (concept1.latest_memory - concept1.earliest_memory) / (24 * 3600)
+                        
+                        # Mark concept2 for removal
+                        concepts_to_remove.add(concept2.cluster_id)
+                        
+                        print(f"Merged concept '{concept2.theme}' into '{concept1.theme}'")
+        
+        # Remove merged concepts
+        self.memory_concepts = [c for c in self.memory_concepts if c.cluster_id not in concepts_to_remove]
+    
+    def _update_concept_importance(self):
+        """
+        Update importance scores for all concepts based on various factors.
+        """
+        for concept in self.memory_concepts:
+            score = 0.0
+            
+            # More memories = higher importance
+            score += len(concept.memory_ids) * 0.1
+            
+            # Recent activity = higher importance
+            days_since_update = (time.time() - concept.last_updated) / (24 * 3600)
+            recency_score = max(0, 1 - days_since_update / 30)  # Decay over 30 days
+            score += recency_score * 0.3
+            
+            # Longer temporal span = potentially more important
+            temporal_score = min(1.0, concept.temporal_span_days / 7)  # Normalize to week
+            score += temporal_score * 0.2
+            
+            # Rich entity/noun content = higher importance
+            content_richness = min(1.0, (len(concept.key_entities) + len(concept.key_nouns)) / 15)
+            score += content_richness * 0.2
+            
+            # Consolidation strength
+            score += concept.consolidation_strength * 0.2
+            
+            concept.importance_score = min(1.0, score)
+    
+    def _save_concept_store(self):
+        """Save all concepts to the persistent store"""
         try:
-            # Get query embedding
-            query_embedding = self.prefrontal_cortex.embedder.embed_text_string(query_text)
-            
-            # Calculate similarity with concept summaries
-            candidates = []
-            for concept in self.memory_concepts.values():
-                if concept.summary_embedding is not None:
-                    similarity = np.dot(query_embedding, concept.summary_embedding)
-                    # Boost by importance score
-                    weighted_score = similarity * (1 + concept.importance_score * 0.1)
-                    candidates.append((concept, weighted_score))
-            
-            # Sort by similarity and return top n
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            return candidates[:n]
-            
+            with open(self._concept_save_file, 'wb') as f:
+                pickle.dump(self.memory_concepts, f)
+            print(f"Saved {len(self.memory_concepts)} concepts to {self._concept_save_file}")
         except Exception as e:
-            print(f"Error in concept search: {str(e)}")
-            return []
+            print(f"Error saving concept store: {str(e)}")
+    
+    def _load_concept_store(self):
+        """Load concepts from the persistent store"""
+        try:
+            if os.path.exists(self._concept_save_file):
+                with open(self._concept_save_file, 'rb') as f:
+                    self.memory_concepts = pickle.load(f)
+                print(f"Loaded {len(self.memory_concepts)} concepts from {self._concept_save_file}")
+            else:
+                print(f"No existing concept store found at {self._concept_save_file}")
+                self.memory_concepts = []
+        except Exception as e:
+            print(f"Error loading concept store: {str(e)}")
+            self.memory_concepts = []
     
     def get_concept_by_id(self, concept_id: str) -> Optional[MemoryConcept]:
-        """Get a concept by its ID and update access statistics"""
-        if concept_id in self.memory_concepts:
-            concept = self.memory_concepts[concept_id]
-            concept.access_count += 1
-            concept.last_updated = time.time()
-            return concept
-        return None
-    
-    def expand_concept(self, concept_id: str) -> List:
         """
-        Expand a concept to retrieve its constituent memories
+        Retrieve a concept by its ID.
         
         Args:
-            concept_id: ID of the concept to expand
+            concept_id: ID of the concept to retrieve
             
         Returns:
-            List[MemoryPage]: List of memory pages in the concept
+            Optional[MemoryConcept]: The concept if found
         """
-        concept = self.get_concept_by_id(concept_id)
-        if not concept:
-            return []
+        for concept in self.memory_concepts:
+            if concept.cluster_id == concept_id:
+                return concept
+        return None 
+       
+    def save_memory_page(self, memory_page: MemoryPage):
+        """
+        Save a single memory page to the memory store
         
-        memories = []
-        for memory_id in concept.memory_ids:
-            memory = self.prefrontal_cortex.get_memory(memory_id)
-            if memory:
-                memories.append(memory)
+        Args:
+            memory_page: MemoryPage object to save
+        """
+        if not isinstance(memory_page, MemoryPage):
+            raise ValueError("memory_page must be an instance of MemoryPage")
         
-        # Sort by timestamp for chronological order
-        memories.sort(key=lambda m: m.timestamp)
-        return memories
+        self.memories.append(memory_page)
+        
+        # Save to persistent storage
+        self._save_memory_store()
     
-    def get_consolidation_stats(self) -> Dict[str, Any]:
-        """Get statistics about memory consolidation"""
-        total_concepts = len(self.memory_concepts)
-        total_memories_in_concepts = sum(len(c.memory_ids) for c in self.memory_concepts.values())
-        total_raw_memories = len(self.prefrontal_cortex.memory_pages)
-        
-        consolidation_ratio = total_memories_in_concepts / total_raw_memories if total_raw_memories > 0 else 0
-        
-        # Concept size distribution
-        concept_sizes = [len(c.memory_ids) for c in self.memory_concepts.values()]
-        avg_concept_size = sum(concept_sizes) / len(concept_sizes) if concept_sizes else 0
-        
-        return {
-            'total_concepts': total_concepts,
-            'total_memories_in_concepts': total_memories_in_concepts,
-            'total_raw_memories': total_raw_memories,
-            'consolidation_ratio': consolidation_ratio,
-            'average_concept_size': avg_concept_size,
-            'concept_size_distribution': Counter(concept_sizes)
-        }
-    
-    def clear_all_concepts(self):
-        """Clear all stored concepts"""
-        self.memory_concepts.clear()
-        self._save_concept_store()
-        print("All memory concepts cleared")
+    def _save_memory_store(self):
+        """Save all memory pages to the persistent store"""
+        try:
+            with open(self._memory_save_file, 'wb') as f:
+                pickle.dump(self.memories, f)
+            print(f"Saved {len(self.memories)} memory pages to {self._memory_save_file}")
+        except Exception as e:
+            print(f"Error saving memory store: {str(e)}")
+
+    def _load_memory_store(self):
+        """Load memory pages from the persistent store"""
+        try:
+            if os.path.exists(self._memory_save_file):
+                with open(self._memory_save_file, 'rb') as f:
+                    self.memories = pickle.load(f)
+                print(f"Loaded {len(self.memories)} memory pages from {self._memory_save_file}")
+            else:
+                print(f"No existing memory store found at {self._memory_save_file}")
+        except Exception as e:
+            print(f"Error loading memory store: {str(e)}")
 
 
 
@@ -968,10 +1201,20 @@ class PrefrontalCortex(EmotionEngine):
             embedders: Instances for embedding operations
             memory_store_file: Path to pickle file for persistent memory storage
         """
+        # Initialize embedders as instances
+        self.txt_embedder = txt_embedder()
+        self.audio_embedder = audio_embedder()
+        self.img_embedder = img_embedder()
+        
+        # Load the text embedding model
+        print("Loading text embedding model for PrefrontalCortex...")
+        if not self.txt_embedder.load_model():
+            print("Warning: Failed to load text embedding model for PrefrontalCortex. Text embeddings may not work properly.")
+        else:
+            print("Text embedding model loaded successfully for PrefrontalCortex.")
+        
         super().__init__(embedding_model=txt_embedder)#EmotionEngine initialization
-        self.txt_embedder = txt_embedder
-        self.audio_embedder = audio_embedder
-        self.img_embedder = img_embedder
+        
         self.memory_store_file = memory_store_file
         self.memory_pages: Dict[str, MemoryPage] = {}
         self.temporal_chain: List[str] = []  # Ordered list of recent memory IDs by time (short term memory list)
@@ -981,15 +1224,17 @@ class PrefrontalCortex(EmotionEngine):
         self.temporal_boost_decay_rate = 0.1  #Rate at which recent memories lose relevance 'boost'
         self.emotion_boost_multiplier = 1.3  # Positive emotions get ranking boost
         self.foundational_memory_preference = 0.85  #Rate at which foundational memories are preferred, else pick a different memory from returned similarity search
-        self.current_emotional_state_vector: Optional[np.ndarray] = None # Current emotional state vector for contextual memory retrieval
-        self.current_emotion_state: Optional[str] = None  # Current emotional state as a string (e.g., "happy", "sad")
         
         # Initialize conversation focus
-        self.focus =  Optional[MemoryConcept] = None # Current conversation focus concept such as a person, place, or event
-        self.gaze = Tuple[int, int] = (0, 0)  # Current gaze coordinates (x, y) for visual focus
+        self.focus: Optional[List[MemoryConcept]] = None # Current conversation focus concept such as a person, place, or event. can focus on multiple things suchs as a person in a place where the person and place are concepts 
+        self.gaze: Tuple[int, int] = (500, 500)  # Current gaze coordinates (x, y) for visual focus, default to center of screen
         self.boot_timestamp = self.clock()  # Current timestamp in human-readable format
 
         self.ee_initialize_emotion_embeddings() #inherited from EmotionEngine
+        self.emotional_state = self.default_emotion #set initial emotional state to default
+        self.emotional_state_data = self.ee_emotion_database[self.emotional_state]  # Get initial emotion data
+        self.emotional_state_vector = self.emotional_state_data['embedding']  # Set initial emotional state vector, short cut since this info is also in the _state_data dict 
+
         
     def clock(self):
         """Cross-platform datetime formatting"""
@@ -1006,6 +1251,7 @@ class PrefrontalCortex(EmotionEngine):
         ampm = "am" if now.hour < 12 else "pm"
         
         return f"{month} {day}, {year} at {hour}:{minute}{ampm}"
+    
     
     def embed_text_string(self, text: str) -> np.ndarray:
         """
@@ -1075,12 +1321,12 @@ class PrefrontalCortex(EmotionEngine):
             audio_embedding= self.embed_audio_file(audio_file) if audio_file else None,
             image_file=image_file,
             audio_file=audio_file,
-            emotion_embedding=self.current_emotional_state_vector if self.current_emotional_state_vector is not None else None,
-            emotion=self.current_emotion_state if self.current_emotion_state is not None else emotion,
+            emotion_embedding=self.emotional_state_vector if self.emotional_state_vector is not None else None,
+            emotion=self.emotional_state if self.emotional_state is not None else emotion,
             timestamp=self.clock()
         )
         #send to hippocampus for consolidation
-        memory_id = self.hippocampus.create_memory_concept(memory_page)
+        memory_id = self.hippocampus.save_memory_page(memory_page)
 
         return memory_id
     
@@ -1094,21 +1340,91 @@ class PrefrontalCortex(EmotionEngine):
         Returns:
             str: Detected emotion
         """
-        # Placeholder for actual emotion detection logic
-        # For demonstration, we'll use a simple keyword-based approach
-        positive_keywords = ["happy", "joy", "love", "excited", "great", "fantastic"]
-        negative_keywords = ["sad", "angry", "hate", "terrible", "bad", "upset"]
+        emotion, emotion_data = self.get_emotional_reaction(text)
+        if set_emotional_state:
+            self.set_emotional_state(emotion, emotion_data)
+
+    def set_emotional_state(self, emotion: str) -> None:
+        """
+        Set the current emotional state and update the emotional state vector
         
-        text_lower = text.lower()
-        if any(word in text_lower for word in positive_keywords):
-            detected_emotion = "happy"
-            self.current_emotional_state_vector = np.array([1.0, 0.0, 0.0])
+        Args:
+            emotion: New emotional state (e.g., "happy", "sad")
+            emotion_data: Optional additional data for the emotion {'mood': str, 'embedding': np.ndarray, 'thoughts': str, 'responses': str}
+        """
+        if emotion not in self.ee_emotion_database:
+            raise ValueError(f"Unknown emotion: {emotion}")
+        
+        self.emotional_state = emotion
+        self.emotional_state_data = self.ee_emotion_database[emotion]
+        self.emotional_state_vector = self.emotional_state_data['embedding']
 
-
+    def set_focus(self, concept_id: str) -> None:
+        """
+        Set the current conversation focus to a specific memory concept
+        
+        Args:
+            concept_id: ID of the MemoryConcept to focus on
+        """
+        concept = self.hippocampus.get_concept_by_id(concept_id)
+        if not concept:
+            raise ValueError(f"Concept with ID {concept_id} not found")
+        
+        self.focus = [concept]
+        print(f"Focus set to concept: {concept.theme} (ID: {concept.cluster_id})")
     
-    def clear_all_memories(self):
-        """Clear all stored memories"""
-        self.memory_pages.clear()
-        self.temporal_chain.clear()
-        self._save_memory_store()
-        print("All memories cleared")
+    def add_to_focus(self, concept_id: str) -> None:
+        """
+        Add a MemoryConcept to the current conversation focus
+        
+        Args:
+            concept_id: ID of the MemoryConcept to add
+        """
+        concept = self.hippocampus.get_concept_by_id(concept_id)
+        if not concept:
+            raise ValueError(f"Concept with ID {concept_id} not found")
+        
+        if self.focus is None:
+            self.focus = []
+        
+        # Avoid duplicates
+        if concept not in self.focus:
+            self.focus.append(concept)
+            print(f"Added concept to focus: {concept.theme} (ID: {concept.cluster_id})")
+
+    def remove_from_focus(self, concept_id: str) -> None:
+        """
+        Remove a MemoryConcept from the current conversation focus
+        
+        Args:
+            concept_id: ID of the MemoryConcept to remove
+        """
+        if self.focus is None:
+            print("No current focus to remove from")
+            return
+        
+        concept = self.hippocampus.get_concept_by_id(concept_id)
+        if not concept:
+            raise ValueError(f"Concept with ID {concept_id} not found")
+        
+        if concept in self.focus:
+            self.focus.remove(concept)
+            print(f"Removed concept from focus: {concept.theme} (ID: {concept.cluster_id})")
+        else:
+            print(f"Concept {concept.theme} (ID: {concept.cluster_id}) not in current focus")
+
+        # If focus is empty, reset it
+        if not self.focus:
+            self.focus = None
+            print("Focus cleared")
+    
+    def set_gaze(self, x: int, y: int) -> None:
+        """
+        Set the current gaze coordinates for visual focus
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate
+        """
+        self.gaze = (x, y)
+        print(f"Gaze set to coordinates: ({x}, {y})")

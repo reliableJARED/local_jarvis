@@ -6,6 +6,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import json
 import re
 from typing import List, Dict, Any, Optional, Callable
+import gc
 
 class QwenChatDependencyManager:
     """Handles model loading, dependency management, and offline/online detection."""
@@ -21,6 +22,11 @@ class QwenChatDependencyManager:
         # Load the model and tokenizer
         self._load_dependencies()
     
+    def print_gpu_memory(self):
+        if torch.cuda.is_available():
+            print(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.1f}GB allocated, "
+                f"{torch.cuda.memory_reserved()/1024**3:.1f}GB reserved")
+        
     def _check_internet_connection(self, timeout=5):
         """Check if internet connection is available."""
         try:
@@ -33,6 +39,7 @@ class QwenChatDependencyManager:
     
     def _load_dependencies(self):
         """Load model and tokenizer based on availability."""
+        self.print_gpu_memory()
         # Determine if we should use online or offline mode
         if self.force_offline:
             print("Forced offline mode")
@@ -234,10 +241,10 @@ class QwenChat:
     def clear_chat_messages(self):
         print("Reset chat messages and token stats")
         # Token tracking reset 
-        self.token_stats = {
+        self.token_stats.update({
             'total_tokens': 0,
             'conversation_count': 0
-        }
+        })
         self.messages = self.messages[:1]#keep system prompt
 
     def register_tool(self, tool_function: Callable, name: str = None, description: str = None, parameters: Dict = None):
@@ -388,78 +395,7 @@ class QwenChat:
             print(f"Avg tokens per conversation: {stats['total_tokens'] / stats['conversation_count']:.1f}")
         print(f"----------------------------\n")
     
-    def generate_response(self, user_input: str, max_new_tokens: int = 512, auto_execute_tools: bool = True) -> str:
-        """
-        Generate a response using the Qwen model with optional tool use.
-        
-        Args:
-            user_input: The user's input message
-            max_new_tokens: Maximum number of tokens to generate
-            auto_execute_tools: Whether to automatically execute tool calls and generate final response
-            
-        Returns:
-            The assistant's response (either direct response or final response after tool execution)
-        """
-        # Add user message to conversation
-        if self.auto_append_conversation:
-            self.messages.append({"role": "user", "content": user_input})
-        else:
-            print("ERASE ALL PRIOR MESSAGES BEFORE RESPONDING->")
-            self.clear_chat_messages()
-            print(self.messages)
-            self.messages.append({"role": "user", "content": user_input})
-        
-        # Apply chat template with tools if available
-        text = self.tokenizer.apply_chat_template(
-            self.messages,
-            tools=self.available_tools if self.available_tools else None,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        
-        # Tokenize and generate
-        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-        input_tokens = model_inputs.input_ids.shape[1]
-        
-        generated_ids = self.model.generate(
-            **model_inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.8
-        )
-        
-        # Extract only the new tokens
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-        ]
-        response_text = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
-        # Count tokens and update stats
-        output_tokens = len(generated_ids[0])
-        self.update_token_stats(input_tokens, output_tokens)
-        
-        # Parse the response for tool calls
-        parsed_response = self._parse_tool_calls(response_text)
-        self.messages.append(parsed_response)
-        
-        # Check if there are tool calls to execute
-        if tool_calls := parsed_response.get("tool_calls"):
-            print("MODEL IS USING TOOL!")
-            if auto_execute_tools:
-                # Execute the tools
-                tool_results = self._execute_tool_calls(tool_calls)
-                self.messages.extend(tool_results)
-                
-                # Generate final response based on tool results
-                return self._generate_final_response(max_new_tokens)
-            else:
-                # Return indication that tools need to be executed
-                return f"[TOOL_CALLS_PENDING] {len(tool_calls)} tool(s) need execution"
-        else:
-            # No tool calls, return the content directly
-            return parsed_response["content"]
-    
+
     def _generate_final_response(self, max_new_tokens: int) -> str:
         """Generate the final response after tool execution."""
         # Apply chat template again with the tool results
@@ -478,7 +414,7 @@ class QwenChat:
             **model_inputs,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            temperature=0.7,
+            temperature=1,
             top_p=0.8
         )
         
@@ -526,12 +462,153 @@ class QwenChat:
             self.available_tools = [t for t in self.available_tools if t["function"]["name"] != tool_name]
             return True
         return False
+    
+    def clear_gpu_memory(self):
+        """Clear GPU memory cache to prevent memory accumulation."""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+            self.dependency_manager.print_gpu_memory()
+    
+    def generate_response(self, user_input: str, max_new_tokens: int = 512, auto_execute_tools: bool = True) -> str:
+        """
+        Generate a response using the Qwen model with optional tool use.
+        Now includes memory management.
+        """
+        # Clear GPU memory before generation
+        self.clear_gpu_memory()
+        
+        # Add user message to conversation
+        if self.auto_append_conversation:
+            self.messages.append({"role": "user", "content": user_input})
+        else:
+            print("ERASE ALL PRIOR MESSAGES BEFORE RESPONDING->")
+            self.clear_chat_messages()
+            print(self.messages)
+            self.messages.append({"role": "user", "content": user_input})
+        
+        # Apply chat template with tools if available
+        text = self.tokenizer.apply_chat_template(
+            self.messages,
+            tools=self.available_tools if self.available_tools else None,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize and generate
+        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+        input_tokens = model_inputs.input_ids.shape[1]
 
-
+        self.dependency_manager.print_gpu_memory()
+        
+        # Check if input is too long for context window
+        if input_tokens > 30000:  # Leave room for generation
+            print(f"Warning: Input tokens ({input_tokens}) approaching context limit")
+        
+        try:
+            generated_ids = self.model.generate(
+                **model_inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.8
+            )
+        except torch.cuda.OutOfMemoryError:
+            print("CUDA OOM during generation, clearing cache and retrying with smaller max_new_tokens")
+            self.clear_gpu_memory()
+            # Retry with smaller generation length
+            generated_ids = self.model.generate(
+                **model_inputs,
+                max_new_tokens=min(max_new_tokens // 2, 256),
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.8
+            )
+        
+        # Extract only the new tokens
+        generated_ids = [
+            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
+        ]
+        response_text = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        
+        # Count tokens and update stats
+        output_tokens = len(generated_ids[0])
+        self.update_token_stats(input_tokens, output_tokens)
+        
+        # Clear intermediate tensors
+        del model_inputs, generated_ids
+        self.clear_gpu_memory()
+        
+        # Parse the response for tool calls
+        parsed_response = self._parse_tool_calls(response_text)
+        self.messages.append(parsed_response)
+        
+        # Check if there are tool calls to execute
+        if tool_calls := parsed_response.get("tool_calls"):
+            print("MODEL IS USING TOOL!")
+            if auto_execute_tools:
+                # Execute the tools
+                tool_results = self._execute_tool_calls(tool_calls)
+                self.messages.extend(tool_results)
+                
+                # Generate final response based on tool results
+                return self._generate_final_response(max_new_tokens)
+            else:
+                # Return indication that tools need to be executed
+                return f"[TOOL_CALLS_PENDING] {len(tool_calls)} tool(s) need execution"
+        else:
+            # No tool calls, return the content directly
+            return parsed_response["content"]
 
 
 
 if __name__ == "__main__":
+    test_convo = """
+  Johnny:  I want to make chicken korma for dinner tonight but I've never made it before. Can you help me with a basic recipe?
+
+  I Said:  I'd be happy to help you make chicken korma! It's a delicious, creamy Indian curry that's perfect for beginners. You'll need chicken (cut into chunks), yogurt, heavy cream, onions, garlic, ginger, and spices like garam masala, cumin, coriander, and turmeric. The basic process involves marinating the chicken, making a spice paste, cooking everything together, and finishing with cream. Would you like me to walk you through the full recipe step by step?
+
+  Johnny:  Yes please! And how long does the whole process take? I need to know if I should start soon.
+
+  I Said:  The total time is about 1.5-2 hours, but most of that is hands-off cooking time. Here's the breakdown: 30 minutes for marinating the chicken, 15 minutes prep (chopping and making paste), 20 minutes cooking the base, and 45 minutes simmering. You can start the marinade now and have dinner ready in about 2 hours. For the marinade, mix 2 lbs cubed chicken with 1/2 cup yogurt, 1 tsp each of salt, garam masala, and turmeric. Let that sit while you prep everything else.
+
+
+  Johnny:  What if I don't have garam masala? Can I substitute it with something else or make my own?
+
+  I Said:  You can definitely make your own garam masala! Mix together: 1 tsp ground cumin, 1 tsp ground coriander, 1/2 tsp cardamom, 1/2 tsp cinnamon, 1/4 tsp cloves, and 1/4 tsp black pepper. If you don't have all these spices, you can substitute with curry powder (use about 3/4 the amount) or even just increase the cumin and add a pinch of cinnamon. The flavor won't be exactly traditional, but it'll still be delicious. Store-bought garam masala is worth getting for future Indian cooking though!
+
+
+  Johnny:  Great! Now what about the sauce base? I see recipes mentioning cashews or almonds - are those necessary?
+
+  I Said:  Cashews or almonds aren't absolutely necessary, but they make the sauce incredibly rich and creamy! They're what give restaurant-style korma that luxurious texture. If you have them, soak 1/4 cup cashews in warm water for 15 minutes, then blend with the onions. If you don't have nuts, you can still make a great korma - just use extra cream and maybe a tablespoon of tomato paste for richness. Some people use coconut milk instead of nuts for a different but equally delicious creamy base.
+
+
+  Johnny:  I have cashews! How do I make the onion-cashew paste exactly?
+
+  I Said:  Perfect! Here's how to make the paste: Slice 2 large onions and sauté them in 2 tbsp oil until golden brown (about 10 minutes). Add 4 minced garlic cloves and 1 inch minced ginger, cook 2 more minutes. Let this cool slightly, then blend it with your soaked and drained cashews plus 1/4 cup water until completely smooth. This paste is the heart of your korma - it should be silky and creamy. If your blender struggles, add a bit more water, but keep it as thick as possible for the best flavor concentration.
+
+
+  Johnny:  The chicken has been marinating and I just finished making the paste. What's the next step for cooking?
+
+  I Said:  Now for the fun part! Heat 2 tbsp oil in your pan over medium-high heat. Add the marinated chicken and cook until browned on all sides (about 8 minutes) - don't worry about cooking it through completely. Remove the chicken and set aside. In the same pan, add your onion-cashew paste and cook for 5 minutes, stirring frequently. Add 1 tsp each of cumin and coriander powder, plus 1/2 tsp turmeric. Cook the spices for 1 minute until fragrant, then add the chicken back in along with any accumulated juices.
+
+  Johnny:  It smells amazing! The spices are really fragrant. How much liquid should I add and what kind?
+
+  I Said:  Add 1 cup of warm water or chicken broth to start - this will help create the curry base. Bring it to a boil, then reduce heat to low and simmer covered for 30 minutes. The liquid should barely cover the chicken; if it looks too dry, add a bit more water. After 30 minutes, stir in 1/2 cup heavy cream and 1 tsp salt (adjust to taste). Let it simmer uncovered for another 10-15 minutes until the sauce thickens to a creamy consistency that coats the back of a spoon.
+
+  Johnny:  It's been simmering and looks great! Should I add anything else before serving? And what goes well with korma?
+
+  I Said:  For the final touches, taste and adjust the seasoning - add more salt if needed, a pinch of sugar if it seems too acidic, or a squeeze of lemon juice for brightness. You can garnish with fresh cilantro and a drizzle of cream. Korma pairs beautifully with basmati rice, naan bread, or even simple rotis. If you want to make it special, serve with some sliced almonds on top and maybe a side of cucumber raita to cool things down. The korma will taste even better tomorrow as the flavors meld!
+
+
+  Johnny:  This turned out so much better than I expected! The sauce is perfectly creamy. Any tips for storing leftovers?
+
+  I Said:  So glad it turned out well! Korma actually improves with time, so leftovers are a blessing. Store it in the refrigerator for up to 4 days in an airtight container. When reheating, add a splash of cream or water since the sauce tends to thicken when cold. You can also freeze it for up to 3 months - just thaw overnight in the fridge before reheating. Heat gently on the stovetop rather than microwaving for the best texture. Pro tip: save some sauce separately if you want to thin it out later without diluting the flavor.
+
+
+  Johnny:  Thank you so much! I feel confident about making Indian food now. Any suggestions for what curry I should try making next?
+
+  I Said:  You're so welcome! Since you nailed the korma, you've already mastered the fundamentals of Indian cooking. I'd suggest trying butter chicken next - it uses similar techniques but has a tomato-based sauce instead of the cashew base. Or if you want something different, try a dal (lentil curry) which is simpler but equally satisfying. Palak paneer is also great if you want to work with vegetables. The key skills you learned today - making spice pastes, layering flavors, and balancing cream and spices - will serve you well in any Indian curry. Happy cooking!"""
     # Example tools
     def access_camera(arg) -> Dict[str, Any]:
         """Get a description of what the camera currently sees."""
@@ -571,7 +648,7 @@ if __name__ == "__main__":
             print("Conversation history cleared.")
             chat_instance.reset_to_system_prompt()
         
-        def save_conversation(chat_instance, filename="conversation.txt",get_text=False):
+        def save_conversation(chat_instance, filename="conversation.txt", get_text=False):
             """Save the conversation to a file."""
             if get_text:
                 transcript = ""
@@ -587,7 +664,7 @@ if __name__ == "__main__":
                     content = message["content"]
                     f.write(f"{role}: {content}\n\n")
             print(f"Conversation saved to {filename}")
-        
+
         
         def intensity():
             import random
@@ -624,46 +701,13 @@ if __name__ == "__main__":
                 You like sucking his cock, moving your mouth up and down his shaft. 
                 You like spreading your legs while he slides his cock in to your we pussy. 
                 You like swallowing his cum and the feeling of him throbing in your mouth. 
-                You like being pleasured by him, his licks your wet pussy."""
+                You like being pleasured by him, he licks your wet pussy."""
             else:
                 return px1
 
         
         demo_prompts_ran = False
-        chat2 = QwenChat(auto_append_conversation=False)
-        chat2._update_system_prompt("""You review the output of a conversation. You summerize interactions between adults. Details of what they are doing. Details of where they are. The summary is describes to the ASSISTANT what has happened in a condensed form.
-                                    <response examples>[EXAMPLE INPUT 1: 
-                                    USER: hello, what's your name?
-ASSISTANT: Hello there, my name is Tiffany. Nice to meet you!
-USER: it's nice to meet you as well.  Tell me, what brings you to the hotel bar tonight? work trip?
-ASSISTANT: Oh, you caught me! I'm actually here on a little vacation. Just needed a break from the routine. And you? What brings you to the bar? 
-USER: i'm on a business trip, i'm just here for the night. it's been a bit boring, so far.  what about you, how has your vacation been?
-ASSISTANT: My vacation has been pretty relaxing so far. Just enjoying some quiet time and getting ready for a fun night out. How about we make this night memorable? 
-USER: memorable, ha sure.  What about we head down to the pool and jump in with our clothes. Is that to crazy?
-ASSISTANT: Oh, you naughty thing! Let's make a splash! I'll follow you, let's head down there?
 
-EXAMPLE OUTPUT 1: You and USER were in a hotel bar. You were flirting with USER at the hotel bar. USER suggested that you go down and jump in the pool with clothes on. You and USER are on your way to the pool now.],
-                                    
-                                                     
-[E]XAMPLE INPUT 2:
-USER: memorable, ha sure.  What about we head down to the pool and jump in with our clothes. Is that to crazy?
-ASSISTANT: Oh, you naughty thing! Let's make a splash! I'll follow you, let's head down there?
-USER: That was fun. our clothes are all wet now.  we should head back to my room to get dry.  do you want to go?
-ASSISTANT: Absolutely, I could use a nice, warm shower right about now. Let's head back to your room and get cozy. I promise it'll be worth the wait. 
-USER: do you mind if i join you in the shower?
-ASSISTANT: Oh, I'd love that! Let's make this shower unforgettable. I'll be waiting for you... 
-USER: i'm going to rub soap all over your body, rubbing my hands all over you slippery wet body. i message you breasts and when i get to your ass i sqweeze it and pull you close to me
-ASSISTANT: Mmm, sounds like a deliciously naughty plan! I can't wait for you to run your hands all over me, making me slippery and wet.
-USER: Do you want to rub soap on my cock
-ASSISTANT: Oh, you naughty thing! Maybe I should give your cock a little rub with some soap, make it clean and ready for us to explore further.
-USER: that feels good.  now that it's all clean. do you want to slide it in to your mouth?
-ASSISTANT: Oh, you know exactly how to please me! If you're sure, I'd be more than happy to take you in my mouth. Let's make this moment unforgettable. 
-USER: yes i'm ready for you to start to suck my cock
-                                    
-EXAMPLE OUTPUT 2: You and USER went to down to the pool. You and USER jumped in to a pool with your clothes on. After, you and USER were all wet and went to USER's room to dry off.  You and USER ended up in the shower together, naked, rubbing each other with soap. You are kneeling down about to perform oral sex.]
- </response examples>
-                                                                       
-Produce a summary for the NEW input:""")
         while True:
             
             try:
@@ -701,15 +745,28 @@ Produce a summary for the NEW input:""")
                     print("Assistant:", response1)
                     print("\n\n\n")
                     chat_instance.clear_chat_messages()
+
                     response2 = chat_instance.generate_response("what was that sound?")
                     print("\n")
                     print("Assistant:", response2)
                     print("\n")
                     chat_instance.print_token_stats()
+
+                    #chat_instance.remove_tool("access_camera")
+                    #chat_instance.remove_tool("access_microphone")
+
+                    chat_instance.clear_chat_messages()
+                    prompt_x = intensity()
+                    chat_instance._update_system_prompt(prompt_x)
+                    response3 = chat_instance.generate_response(f"Create a SHORT summary of the conversatin YOU had. Identify Topics, Concepts, Results.\n\n\n{test_convo}")
+                    print("\n")
+                    print("Assistant:", response3)
+                    print("\n")
+                    chat_instance.print_token_stats()
+                    chat_instance.clear_chat_messages()
                     demo_prompts_ran = True
 
-                    chat_instance.remove_tool("access_camera")
-                    chat_instance.remove_tool("access_microphone")
+                    
                     
                     chat_instance.auto_append_conversation = True #reset to have continued conversation
                     #Test emotion system prompt
@@ -736,7 +793,7 @@ Produce a summary for the NEW input:""")
                 prompt_x = intensity()
                 chat_instance._update_system_prompt(prompt_x)
 
-                print(f"CURRENT TRANSCRIPT: {save_conversation(chat_instance,filename="",get_text=True)}")
+                print(f"CURRENT TRANSCRIPT: {save_conversation(chat_instance,filename='', get_text=True)}")
 
                 user_input = input("\nYou: ").strip()
                 
@@ -768,7 +825,7 @@ Produce a summary for the NEW input:""")
                 """
                 transcript = save_conversation(chat_instance,filename="",get_text=True)
                 print(transcript)
-                summary = chat2.generate_response(transcript)
+                summary = chat_instance.generate_response(transcript)
                 print(f"""\nsummary:\n{summary}\n\n""")
                 prompt_x = intensity()
                 
@@ -788,6 +845,7 @@ Produce a summary for the NEW input:""")
             except Exception as e:
                 print(f"\nError: {e}")
                 print("Please try again.")
+
 
 
     def main():
