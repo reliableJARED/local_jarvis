@@ -1727,82 +1727,7 @@ if __name__ == "__main__":
 
         return subject,skin,hair,face,eyes,attribute,lips,chest, name
     
-    def Taylor():
-        """ DONE """
-        name ="taylor"
-        
-        subject = "face looks like Taylor Swift"
-        skin = ""
-        hair = "celebrity"#"face-framing blond hair"
-        face = ""#"dark eyeshadow"
-        eyes = ""#"blue eys"
-        attribute = ""#"long eyelashes"#glasses, etc
-        lips = ""
-        chest = ""#"small breasts"#can actually be anything
-
-        return subject,skin,hair,face,eyes,attribute,lips,chest, name
-    
-    def Scarlett():
-        """ DONE """
-        name ="scarlett"
-        
-        subject = "face looks like Scarlett Johansson"
-        skin = "celebrity"
-        hair = ""#"face-framing blond hair"
-        face = ""#"dark eyeshadow"
-        eyes = ""#"blue eys"
-        attribute = ""#"long eyelashes"#glasses, etc
-        lips = ""
-        chest = ""#"small breasts"#can actually be anything
-
-        return subject,skin,hair,face,eyes,attribute,lips,chest, name
-    
-    def Anne():
-        """ DONE """
-        name ="anne"
-        
-        subject = "facial features like Anne Hathaway"
-        skin = ""
-        hair = ""#"face-framing blond hair"
-        face = ""#"dark eyeshadow"
-        eyes = ""#"blue eys"
-        attribute = ""#"long eyelashes"#glasses, etc
-        lips = ""
-        chest = ""#"small breasts"#can actually be anything
-
-        return subject,skin,hair,face,eyes,attribute,lips,chest, name
-    
-    def Natalie():
-            """ DONE """
-            name ="natalie"
-            
-            subject = "facial features Natalie Portman"
-            skin = ""
-            hair = ""#"face-framing blond hair"
-            face = ""#"dark eyeshadow"
-            eyes = ""#"blue eys"
-            attribute = ""#"long eyelashes"#glasses, etc
-            lips = ""
-            chest = ""#"small breasts"#can actually be anything
-
-            return subject,skin,hair,face,eyes,attribute,lips,chest, name
-    
-    def Margot():
-            """ DONE """
-            name ="margot"
-            
-            subject = "facial features Margot Robbie"
-            skin = ""
-            hair = ""#"face-framing blond hair"
-            face = ""#"dark eyeshadow"
-            eyes = ""#"blue eys"
-            attribute = ""#"long eyelashes"#glasses, etc
-            lips = ""
-            chest = ""#"small breasts"#can actually be anything
-
-            return subject,skin,hair,face,eyes,attribute,lips,chest, name
-    
-    
+   
 
     def photographModel(xmodel,xshoot,fabric=None):
 
@@ -1864,15 +1789,7 @@ if __name__ == "__main__":
     # ALL MODELS ALL SHOOTS
     def runAll():
         
-        _ = photographModel(Scarlett,poseidon,fabric="white")
-        _ = photographModel(Scarlett,tartarus,fabric="white")
-        _ = photographModel(Scarlett,dionysus,fabric="white")
-        _ = photographModel(Scarlett,apollo,fabric="white")
-        _ = photographModel(Scarlett,athena,fabric="white")
-        _ = photographModel(Scarlett,zeus,fabric="white")
-        _ = photographModel(Scarlett,pontus,fabric="white")
-        _ = photographModel(Scarlett,hera,fabric="white")
-        _ = photographModel(Scarlett,achlys,fabric="white")
+
 
         _ = photographModel(Evrynomi,poseidon,fabric="gold")
         _ = photographModel(Evrynomi,tartarus,fabric="gold")
@@ -2004,15 +1921,7 @@ if __name__ == "__main__":
         _ = photographModel(Hemera,achlys)
         _ = photographModel(Hemera,poseidon,fabric="orange")
 
-        _ = photographModel(Taylor,dionysus)
-        _ = photographModel(Taylor,hera)
-        _ = photographModel(Taylor,apollo)
-        _ = photographModel(Taylor,athena)
-        _ = photographModel(Taylor,zeus)
-        _ = photographModel(Taylor,pontus)
-        _ = photographModel(Taylor,tartarus,fabric="blue")
-        _ = photographModel(Taylor,achlys)
-        _ = photographModel(Taylor,poseidon,fabric="white")
+
         
         _ = photographModel(Thalassa,dionysus)
         _ = photographModel(Thalassa,hera)
