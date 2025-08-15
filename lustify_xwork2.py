@@ -13,6 +13,8 @@ import torch
 from PIL import Image
 import uuid
 import time
+from diffusers import DiffusionPipeline, AutoPipelineForInpainting, AutoPipelineForImage2Image
+from lustify_xwork import ImageGenerator
 
 gpu_count = torch.cuda.device_count()
 print(f"Number of GPUs available: {gpu_count}")
@@ -155,7 +157,7 @@ class ImageGenerator:
         Returns:
             Pipeline object
         """
-        from diffusers import DiffusionPipeline, AutoPipelineForInpainting, AutoPipelineForImage2Image
+        
 
         # Determine which model to use
         if pipeline_type == "inpainting":
@@ -1964,7 +1966,8 @@ if __name__ == "__main__":
                     #"photograph of a sexy nymph elf with long flowing brown hair, green eyes, long eyelashes, puckered lips and high cheek bones, natural breasts, laying on a grassy hilltop, legs outstreched, arms back, wearing a strapless blue skirt, looking up at viewer seductivly, rays of sunlight reflecting, sunset, 8k",
                     #"photograph of a sexy nymph elf with long flowing brown hair, green eyes, long eyelashes, puckered lips and high cheek bones, natural breasts, sitting crosslegged on a boulder on a grassy hilltop, wearing a strapless blue skirt, looking up at viewer intimately, rays of sunlight reflecting, sunset, 8k",
                     #"photograph of a sexy nymph elf with long flowing brown hair, green eyes, long eyelashes, puckered lips and high cheek bones, natural breasts, sitting on a grassy hilltop, knees bent, arms back, wearing a strapless blue skirt, looking up at viewer sentually, rays of sunlight reflecting, sunset, 8k",
-                    #"photograph of a sexy nymph elf with long flowing brown hair, green eyes, long eyelashes, puckered lips and high cheek bones, natural breasts, bent over on a boulder on a grassy hilltop, wearing a strapless blue dress, penis entering her vagina from behind, she is looking back over her shoulder, rays of sunlight reflecting, sunset, 8k",
+                    #"photograph of a sexy nymph elf with long flowing brown hair, green eyenugent
+                    # s, long eyelashes, puckered lips and high cheek bones, natural breasts, bent over on a boulder on a grassy hilltop, wearing a strapless blue dress, penis entering her vagina from behind, she is looking back over her shoulder, rays of sunlight reflecting, sunset, 8k",
                     #"photograph of a sexy nymph elf with long flowing brown hair, green eyes, long eyelashes, puckered lips and high cheek bones, natural breasts, bent over on a boulder on a grassy hilltop, wearing a strapless blue dress, penis penitrating her vagina from behind, she is looking down, rays of sunlight reflecting, sunset, 8k",
                     #"photograph of Adriana Chechik, on her knees looking up at the camera, her hands are around his penis which is deep inside her mouth, 8k image",
                     "photograph, photo of a sexy woman, short blond hair with bangs, high cheekbones, full lips, blue eyes with long eyelashes, small breasts, athletic physique, open jaw deepthroating a penis her lips near the base, kneeling down looking up at viewer, soft lighting from window, 8k image"]

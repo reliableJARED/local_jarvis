@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 import torch
 from PIL import Image
+#from PIL.PngImagePlugin import PngInfo
+
 import uuid
 import time
 
@@ -339,6 +341,16 @@ class ImageGenerator:
             # Save image
             image.save(output_path)
             print(f"✅ Image saved to: {output_path}")
+
+            """# Save image with prompt metadata
+            if output_path.lower().endswith('.png'):
+                # For PNG files
+                pnginfo = PngInfo()
+                pnginfo.add_text("prompt", prompt)
+                image.save(output_path, pnginfo=pnginfo)
+            else:
+                # For other formats, just save normally
+                image.save(output_path)"""
             return image
             
         except Exception as e:
