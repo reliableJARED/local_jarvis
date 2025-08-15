@@ -25,14 +25,14 @@ logging.basicConfig(level=logging.DEBUG)
 
 class MxBaiEmbedder:
     """
-    A class to handle embedding and similarity operations using the MxBai model.
+    MxBai embedding, generates 384-dimensional embeddings for input strings.
     """
-    def __init__(self, model_name: str = "mixedbread-ai/mxbai-embed-xsmall-v1"):
+    def __init__(self, model_name: str = "mixedbread-ai/mxbai-embed-xsmall-v1", cuda_device = None):
         self.model_name = model_name
         self.device = None
         self.model = None
         self.tokenizer = None
-        
+        self.cuda_device = cuda_device
         self._check_and_install_dependencies(model_name)
         
        
@@ -47,9 +47,10 @@ class MxBaiEmbedder:
             torch.device: Best available device
         """
         if torch.cuda.is_available():
+            self._configure_cuda(torch)
             device = torch.device("cuda")
             gpu_name = torch.cuda.get_device_name(0)
-            logging.debug(f"CUDA available - Using GPU: {gpu_name}")
+            logging.debug(f"CUDA available - MxBai Embedder Using GPU {self.cuda_device}: {gpu_name}")
             return device
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             device = torch.device("mps")
@@ -60,6 +61,23 @@ class MxBaiEmbedder:
             logging.debug("Using CPU")
             return device
     
+    def _configure_cuda(self, torch):
+        """Configure CUDA device for the entire process."""
+        import os
+        if self.cuda_device is not None and torch.cuda.is_available():
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(self.cuda_device)
+            logging.info(f"Set CUDA_VISIBLE_DEVICES to {self.cuda_device}")
+        else:
+            # Check if CUDA is available
+            if torch.cuda.is_available():
+                # Use the first available GPU
+                os.environ['CUDA_VISIBLE_DEVICES'] = "0"
+                logging.info("CUDA is available. Using GPU device 0")
+            else:
+                # Use CPU
+                os.environ['CUDA_VISIBLE_DEVICES'] = ""
+                logging.info("CUDA not available. Using CPU")
+
     def use_local_files(self, host="8.8.8.8", port=53, timeout=3):
         """
         Check internet connectivity by attempting to connect to DNS server.

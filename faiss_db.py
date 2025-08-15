@@ -22,7 +22,7 @@ import pickle
 import subprocess
 import sys
 from typing import Dict, List, Tuple, Optional, Any
-
+import logging
 
 # Non standard library Dependencies will be imported and checked during initialization
 
@@ -176,6 +176,7 @@ class MemRecall:
             setattr(self, f"{database_name}_db", data)
             
             print(f"Database '{database_name}' saved successfully to {filename}")
+            return True
 
         except Exception as e:
             print(f"Error saving database '{database_name}': {str(e)}")
@@ -348,7 +349,7 @@ class MemRecall:
             return results
             
         except Exception as e:
-            print(f"Error performing similarity search in database '{database_name}': {str(e)}")
+            logging.error(f"Error performing similarity search in database '{database_name}': {str(e)}")
             return []
     
     def get_database_info(self, database_name: str) -> Dict[str, Any]:

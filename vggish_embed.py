@@ -10,11 +10,12 @@ class VGGishEmbedder:
     """
     A class for generating audio embeddings using the VGGish model.
     Supports both WAV files and sounddevice audio data.
+    This version is configured to use CPU only to avoid device conflicts with tensor and numpy returning from gpu/cpu.
     """
     
     def __init__(self, use_local_files: bool = False):
         """
-        Initialize the VGGish embedder.
+        VGGish embedder for audio embeddings. 128-dimensional embeddings are generated from audio data.
         
         Args:
             use_local_files: Whether to use local model files only
@@ -36,14 +37,9 @@ class VGGishEmbedder:
         """Check if we should use local files only."""
         return self.use_local_files_flag
     
-    def _get_best_device(self, torch_module):
-        """Determine the best available device (CUDA > MPS > CPU)."""
-        if torch_module.cuda.is_available():
-            return torch_module.device("cuda")
-        elif hasattr(torch_module.backends, 'mps') and torch_module.backends.mps.is_available():
-            return torch_module.device("mps")
-        else:
-            return torch_module.device("cpu")
+    def _get_cpu_device(self, torch_module):
+        """Force CPU device usage only."""
+        return torch_module.device("cpu")
     
     def _check_and_install_dependencies(self) -> None:
         """
@@ -56,7 +52,8 @@ class VGGishEmbedder:
         try:
             import torch
             self.torch = torch
-            self.device = self._get_best_device(torch)
+            # Force CPU usage
+            self.device = self._get_cpu_device(torch)
             logging.debug(f"Using device: {self.device}")
         except ImportError:
             if not offline_mode:
@@ -65,7 +62,8 @@ class VGGishEmbedder:
                 try:
                     import torch
                     self.torch = torch
-                    self.device = self._get_best_device(torch)
+                    # Force CPU usage
+                    self.device = self._get_cpu_device(torch)
                     logging.debug(f"Using device: {self.device}")
                 except ImportError:
                     raise ImportError("WARNING! Failed to install or import PyTorch")
@@ -124,22 +122,27 @@ class VGGishEmbedder:
             else:
                 raise ImportError("torchvggish not found and offline mode is enabled")
         
-      
-    
     def _load_model(self):
-        """Load and initialize the VGGish model."""
+        """Load and initialize the VGGish model on CPU."""
         if self.vggish is None:
             raise RuntimeError("VGGish dependencies not properly loaded")
         
+        # Force CPU usage by setting map_location
         self.model = self.vggish()
         self.model.eval()  # Set to evaluation mode
         
-        if self.device is not None:
-            self.model = self.model.to(self.device)
+        # Ensure model is on CPU
+        self.model = self.model.to(self.device)
+        
+        # Updated PyTorch 2.1+ way to set defaults (replaces deprecated set_default_tensor_type)
+        self.torch.set_default_dtype(self.torch.float32)
+        self.torch.set_default_device('cpu')
     
     def _preprocess_audio_data(self, audio_data: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
         """
-        Preprocess raw audio data for VGGish input.
+        Preprocess raw audio data for VGGish input. VGGish expects audio resampled to 16 kHz mono 
+        It uses a spectrogram with window size of 25 ms, hop of 10 ms, and maps to 64 mel bins covering 125-7500 Hz
+        A stabilized log mel spectrogram is computed by applying log(mel-spectrum + 0.01)
         
         Args:
             audio_data: Raw audio data as numpy array
@@ -158,7 +161,7 @@ class VGGishEmbedder:
             logging.warning(f"Audio sample rate is {sample_rate}Hz, but VGGish expects 16kHz. Consider resampling.")
         
         # Use VGGish input preprocessing
-        return self.vggish_input.preprocess_wav_array(audio_data, sample_rate)
+        return self.vggish_input.waveform_to_examples(audio_data, sample_rate)
     
     def embed_wav_file(self, wav_path: str) -> np.ndarray:
         """
@@ -176,15 +179,17 @@ class VGGishEmbedder:
         # Use VGGish's built-in preprocessing for WAV files
         input_batch = self.vggish_input.preprocess_wav(wav_path)
         
-        # Generate embeddings
+        # Generate embeddings - ensure tensor is on CPU
         with self.torch.no_grad():
-            input_tensor = self.torch.tensor(input_batch)
-            if self.device is not None:
-                input_tensor = input_tensor.to(self.device)
+            # Fixed: Use proper tensor conversion method
+            if isinstance(input_batch, self.torch.Tensor):
+                input_tensor = input_batch.detach().clone().to('cpu')
+            else:
+                input_tensor = self.torch.from_numpy(input_batch).to('cpu')
             embeddings = self.model(input_tensor)
 
-        # converts GPU tensors to CPU numpy arrays
-        return embeddings.cpu().numpy()
+        # Return as numpy array (already on CPU)
+        return embeddings.detach().numpy()
     
     def embed_audio_data(self, audio_data: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
         """
@@ -200,15 +205,17 @@ class VGGishEmbedder:
         # Preprocess the audio data
         input_batch = self._preprocess_audio_data(audio_data, sample_rate)
         
-        # Generate embeddings
+        # Generate embeddings - ensure tensor is on CPU
         with self.torch.no_grad():
-            input_tensor = self.torch.tensor(input_batch)
-            if self.device is not None:
-                input_tensor = input_tensor.to(self.device)
+            # Fixed: Use proper tensor conversion method
+            if isinstance(input_batch, self.torch.Tensor):
+                input_tensor = input_batch.detach().clone().to('cpu')
+            else:
+                input_tensor = self.torch.from_numpy(input_batch).to('cpu')
             embeddings = self.model(input_tensor)
         
-        # converts GPU tensors to CPU numpy arrays        
-        return embeddings.cpu().numpy()
+        # Return as numpy array (already on CPU)     
+        return embeddings.detach().numpy()
     
     def embed_sounddevice_recording(self, duration: float = 5.0, sample_rate: int = 16000) -> np.ndarray:
         """
@@ -250,7 +257,9 @@ class VGGishEmbedder:
             "model_loaded": self.model is not None,
             "device": str(self.device) if self.device else "Unknown",
             "vggish_available": self.vggish is not None,
-            "sounddevice_available": self.sounddevice is not None
+            "sounddevice_available": self.sounddevice is not None,
+            "forced_cpu_mode": True,
+            "pytorch_version": self.torch.__version__ if self.torch else "Unknown"
         }
 
 
@@ -259,7 +268,7 @@ if __name__ == "__main__":
     # Initialize the embedder
     embedder = VGGishEmbedder()
     
-    print("Model info:", embedder.get_model_info())
+    print("VGGish Instance args:", embedder.get_model_info())
     
     # Example 1: Embed a WAV file
     # embeddings_from_file = embedder.embed_wav_file("path/to/your/audio.wav")
