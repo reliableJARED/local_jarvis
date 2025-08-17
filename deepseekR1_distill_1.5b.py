@@ -1,105 +1,74 @@
 import torch
-import os
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 class SimpleDeepSeekChat:
     def __init__(self, show_thoughts=False):
-        # Configuration
         self.model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-        self.show_thoughts = show_thoughts  # Set this flag in code only
+        self.show_thoughts = show_thoughts
         
-        # Setup device
-        if torch.backends.mps.is_available():
-            self.device = "mps"
-            self.dtype = torch.bfloat16
-        elif torch.cuda.is_available():
-            self.device = "cuda"
-            self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
-            self.device = "cpu"
-            self.dtype = torch.float32
+        print(f"Loading model {self.model_name}...")
         
-        print(f"Loading model on {self.device}...")
+        # Load model and tokenizer (following documentation pattern)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name)
         
-        # Load model and tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-            torch_dtype=self.dtype,
-            device_map="auto" if self.device == "cuda" else None
-        )
+        # Initialize conversation with system message
+        self.messages = [
+            {"role": "user", "content": "You are a helpful assistant"},
+        ]
         
-        if self.device != "cuda":
-            self.model = self.model.to(self.device)
-        
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        
-        # Initialize with hardcoded system prompt as first user message
-        self.messages = [{"role": "user", "content": "You are a helpful assistant"}]
         print("Model loaded! Type 'quit' to exit.")
     
     def generate_response(self, user_input):
-        # Add user message
-        self.messages.append({"role": "user", "content": user_input})
+        # Add user message to conversation
+        self.messages.append({"role": "user", "content": user_input+"<think>\n"})
         
-        # Format conversation
-        try:
-            conversation_text = self.tokenizer.apply_chat_template(
-                self.messages, tokenize=False, add_generation_prompt=True
-            )
-        except:
-            # Fallback format
-            conversation_text = "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.messages]) + "\nAssistant:"
+        # Use the documented approach for chat template
+        inputs = self.tokenizer.apply_chat_template(
+            self.messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        ).to(self.model.device)
         
-        # Tokenize and generate
-        inputs = self.tokenizer(conversation_text, return_tensors="pt", truncation=True, max_length=4000)
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        
+        # Generate response
         with torch.no_grad():
-            try:
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=512,
-                    temperature=0.6,
-                    top_p=0.85,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    repetition_penalty=1.05
-                )
-            except:
-                # Fallback to deterministic
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=512,
-                    do_sample=False,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
+            outputs = self.model.generate(
+                **inputs, 
+                max_new_tokens=50,
+                temperature=0.6,
+                #top_p=0.85,
+                #do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
         
-        # Decode response
-        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        response = full_response[len(self.tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=True)):].strip()
+        # Decode only the new tokens (following documentation pattern)
+        response = self.tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
         
-        # Handle thinking display
+        # Handle thinking tags if present
         if "</think>" in response:
             think_end = response.find("</think>") + 8
             thinking = response[:think_end]
-            final = response[think_end:].strip()
-            display = f"{thinking}\n\n{final}" if self.show_thoughts else final
-            # Only add the final answer to conversation history
-            self.messages.append({"role": "assistant", "content": final})
+            final_answer = response[think_end:].strip()
+            
+            # Show thinking if enabled, otherwise just final answer
+            display_response = f"{thinking}\n\n{final_answer}" if self.show_thoughts else final_answer
+            
+            # Add only final answer to conversation history
+            self.messages.append({"role": "assistant", "content": final_answer})
         else:
-            display = response
+            display_response = response
             self.messages.append({"role": "assistant", "content": response})
         
-        return display
+        return display_response
     
     def chat(self):
         while True:
             try:
                 user_input = input("\nYou: ").strip()
                 if user_input.lower() in ['quit', 'exit']:
+                    print("Goodbye!")
                     break
                 if not user_input:
                     continue
@@ -108,11 +77,39 @@ class SimpleDeepSeekChat:
                 print(f"\nAssistant: {response}")
                 
             except KeyboardInterrupt:
+                print("\nGoodbye!")
                 break
             except Exception as e:
                 print(f"Error: {e}")
 
+# Quick test function following documentation example
+def quick_test():
+    """Quick test following the documentation pattern"""
+    print("Running quick test...")
+    
+    tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    model = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    
+    messages = [
+        {"role": "user", "content": "Who are you?"},
+    ]
+    
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(model.device)
+    
+    outputs = model.generate(**inputs, max_new_tokens=40)
+    response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+    print(f"Response: {response}")
+
 if __name__ == "__main__":
+    # Uncomment the line below to run a quick test first
+    # quick_test()
+    
     # Set show_thoughts=True to see <think> tags, False to hide them
     chat = SimpleDeepSeekChat(show_thoughts=False)
     chat.chat()

@@ -231,7 +231,7 @@ class MxBaiEmbedder:
             sentences: List of input strings to embed
             
         Returns:
-            List of embedding lists
+            single element List of the embedding
         """
         # Tokenize inputs
         inputs = self.tokenizer(

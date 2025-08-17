@@ -38,17 +38,59 @@ class MemoryItem:
     metadata: Dict[str, Any]
     embedding: Optional[List[float]] = None
 
+"""
+Cross-Platform Multiprocessing Fixes for Hippocampus Memory System
+Addresses Windows, Linux, and macOS compatibility issues.
+"""
+
+import os
+import sys
+import platform
+import logging
+import multiprocessing as mp
+from multiprocessing import Process, Queue, Event, Manager
+import queue  # Import for Empty exception
+from typing import Dict, List, Tuple, Any, Optional, Union
+from pathlib import Path
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import uuid
+from dataclasses import dataclass
+from enum import Enum
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class ModalityType(Enum):
+    """Enumeration for different modality types."""
+    TEXT = "text"
+    IMAGE = "image" 
+    AUDIO = "audio"
+    SCENE = "scene"
+    NOUNS = "nouns"
+
+@dataclass
+class MemoryItem:
+    """Data class for memory items with metadata."""
+    id: str
+    content: Any
+    modality: ModalityType
+    timestamp: float
+    metadata: Dict[str, Any]
+    embedding: Optional[List[float]] = None
+
 class Hippocampus:
     """
     Unified memory consolidation system integrating multimodal embeddings, storage and search.
-    full modularity.
+    Cross-platform compatible with proper multiprocessing handling.
     """
     
     def __init__(self, 
                  data_directory: str = "./hippocampus_data",
                  enable_multiprocessing: bool = True,
                  max_workers: int = None,
-                 cuda_device: Optional[int] = None,  # None = CPU, 0 or 1 = specific CUDA
+                 cuda_device: Optional[int] = None,
                  batch_size: int = 8):
         """
         Initialize the Hippocampus memory system.
@@ -63,8 +105,11 @@ class Hippocampus:
         self.data_directory = data_directory
         self.enable_multiprocessing = enable_multiprocessing
         self.max_workers = max_workers or min(mp.cpu_count(), 4)
-        self.cuda_device = str(cuda_device)
+        self.cuda_device = str(cuda_device) if cuda_device is not None else None
         self.batch_size = batch_size
+        
+        # Cross-platform multiprocessing setup
+        self._setup_multiprocessing_method()
         
         self._check_and_install_dependencies()
         # Set CUDA device BEFORE any imports or initializations
@@ -73,6 +118,7 @@ class Hippocampus:
         # Initialize components
         self.memory_store = None
         self.embedders = {}
+        self.emotion = None #Emotion engine connection
         self.processing_queue = None
         self.result_queue = None
         self.stop_event = None
@@ -81,7 +127,7 @@ class Hippocampus:
         
         # Thread safety
         self.lock = threading.Lock()
-        self.manager = Manager() if enable_multiprocessing else None
+        self.manager = None
         
         # Performance tracking
         self.stats = {
@@ -93,11 +139,76 @@ class Hippocampus:
         }
         
         # Initialize system
-        self._setup_system()
+        self._convo_db = 'conversations'
+        self._images_db = 'images'
+        self._audio_db = 'audio'
+        self._scene_db = 'scene'
+        self._noun_db = 'noun'
+
+        self._txt_embed_dimensions = 384
+        self._img_embed_dimensions = 1024
+        self._aud_embed_dimensions = 128
+        self.database_config = {
+                self._convo_db: self._txt_embed_dimensions,
+                self._images_db: self._img_embed_dimensions,
+                self._audio_db: self._aud_embed_dimensions,
+                self._scene_db: self._txt_embed_dimensions,
+                self._noun_db: self._txt_embed_dimensions
+            }
+        
+        self._setup_system()#default will use self.database_config
         
         device_str = f"CUDA:{cuda_device}" if cuda_device is not None else "CPU"
         logging.info(f"Hippocampus initialized with {self.max_workers} workers on {device_str}")
-        logging.info(f"Multiprocessing: {enable_multiprocessing}")
+        logging.info(f"Multiprocessing: {enable_multiprocessing}, Platform: {platform.system()}")
+
+    def _setup_multiprocessing_method(self):
+        """
+        Set up the appropriate multiprocessing start method for each platform.
+        """
+        current_platform = platform.system().lower()
+        
+        try:
+            # Get current start method
+            current_method = mp.get_start_method(allow_none=True)
+            
+            if current_platform == "windows":
+                # Windows only supports 'spawn'
+                if current_method != 'spawn':
+                    mp.set_start_method('spawn', force=True)
+                    logging.info("Set multiprocessing method to 'spawn' for Windows")
+                    
+            elif current_platform == "darwin":  # macOS
+                # macOS: prefer 'spawn' for CUDA compatibility, fallback to 'fork'
+                if current_method not in ['spawn', 'fork']:
+                    try:
+                        mp.set_start_method('spawn', force=True)
+                        logging.info("Set multiprocessing method to 'spawn' for macOS")
+                    except RuntimeError:
+                        try:
+                            mp.set_start_method('fork', force=True)
+                            logging.info("Set multiprocessing method to 'fork' for macOS")
+                        except RuntimeError:
+                            logging.warning("Could not set multiprocessing method on macOS")
+                            
+            elif current_platform == "linux":
+                # Linux: prefer 'spawn' for CUDA compatibility, fallback to 'fork'
+                if current_method not in ['spawn', 'fork']:
+                    try:
+                        mp.set_start_method('spawn', force=True)
+                        logging.info("Set multiprocessing method to 'spawn' for Linux")
+                    except RuntimeError:
+                        try:
+                            mp.set_start_method('fork', force=True)
+                            logging.info("Set multiprocessing method to 'fork' for Linux")
+                        except RuntimeError:
+                            logging.warning("Could not set multiprocessing method on Linux")
+            else:
+                logging.warning(f"Unknown platform: {current_platform}, using default multiprocessing method")
+                
+        except Exception as e:
+            logging.warning(f"Error setting multiprocessing method: {e}")
+            # Continue with default method
 
     def _check_and_install_dependencies(self) -> None:
         """
@@ -129,7 +240,7 @@ class Hippocampus:
             logging.info(f"Set CUDA_VISIBLE_DEVICES to {self.cuda_device}")
         else:
             # Check if CUDA is available
-            if self.torch.cuda.is_available():
+            if self.torch and self.torch.cuda.is_available():
                 # Use the first available GPU
                 os.environ['CUDA_VISIBLE_DEVICES'] = "0"
                 logging.info("CUDA is available. Using GPU device 0")
@@ -138,21 +249,19 @@ class Hippocampus:
                 os.environ['CUDA_VISIBLE_DEVICES'] = ""
                 logging.info("CUDA not available. Using CPU")
 
-    def _setup_system(self):
+    def _setup_system(self,database_config=None):
         """Set up the complete memory system."""
         # Create data directory
         os.makedirs(self.data_directory, exist_ok=True)
         
         # Initialize memory store
-        database_config = {
-            'conversations': 384,
-            'images': 1024,
-            'audio': 128,
-            'scene': 384,
-            'nouns': 384
-        }
+        if database_config == None:
+            database_config = self.database_config
         
         self.memory_store = self._initialize_memory_store(database_config)
+
+        #setup the emotion engine
+        self._initialize_emotion_engine()
         
         # Initialize embedders only for synchronous processing or main process
         if not self.enable_multiprocessing:
@@ -174,6 +283,7 @@ class Hippocampus:
             logging.error("MemRecall class not found. Please ensure it's importable.")
             raise
 
+    
     def _initialize_embedders(self):
         """Initialize all embedding models."""
         try:
@@ -182,39 +292,66 @@ class Hippocampus:
             from mxbai_embed import MxBaiEmbedder
             
             logging.debug("Initializing embedders...")
-            
-            self.embedders[ModalityType.TEXT] = MxBaiEmbedder(cuda_device = self.cuda_device)
+            #text
+            self.embedders[ModalityType.TEXT] = MxBaiEmbedder(cuda_device=self.cuda_device)
             self.embedders[ModalityType.SCENE] = self.embedders[ModalityType.TEXT]
             self.embedders[ModalityType.NOUNS] = self.embedders[ModalityType.TEXT]
-            self.embedders[ModalityType.IMAGE] = BeITEmbedder(cuda_device = self.cuda_device)
-            self.embedders[ModalityType.AUDIO] = VGGishEmbedder()#will only use CPU at the moment
+            #image
+            self.embedders[ModalityType.IMAGE] = BeITEmbedder(cuda_device=self.cuda_device)
+            #audio
+            self.embedders[ModalityType.AUDIO] = VGGishEmbedder()  # CPU only
             
             logging.debug("All embedders initialized successfully")
             
         except ImportError as e:
             logging.error(f"Failed to import embedder classes: {e}")
             raise
+    
+    def _initialize_emotion_engine(self):
+        """Initialize the emotion engine."""
+        try:
+            from emotion_embed2 import EmotionEngine
+            
+            logging.debug("Initializing emotion engine...")
+            #text
+            self.emotion = EmotionEngine()
+
+            logging.debug("Emotion Engine initialized successfully")
+            
+        except ImportError as e:
+            logging.error(f"Failed to import EmotionEngine class: {e}")
+            raise
 
     @staticmethod
-    def _init_embedders_for_worker(worker_id: int):
+    def _init_embedders_for_worker(worker_id: int, cuda_device: Optional[str] = None):
         """
         Initialize embedders for a worker process.
         Static method to avoid pickling issues.
         """
-        cuda_device = str(os.environ['CUDA_VISIBLE_DEVICES'])
-        logging.debug(f"Worker {worker_id} initializing embedders")
+        # Get CUDA device from environment or parameter
+        if cuda_device is None:
+            cuda_device = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+            if cuda_device and cuda_device != '':
+                cuda_device = cuda_device.split(',')[0]  # Take first device if multiple
+            else:
+                cuda_device = None
+        
+        logging.debug(f"Worker {worker_id} initializing embedders with CUDA device: {cuda_device}")
         
         worker_embedders = {}
         try:
             from vggish_embed import VGGishEmbedder
             from beit_embed import BeITEmbedder
             from mxbai_embed import MxBaiEmbedder
-            
+            #text embedding
             worker_embedders[ModalityType.TEXT] = MxBaiEmbedder(cuda_device=cuda_device)
-            worker_embedders[ModalityType.IMAGE] = BeITEmbedder(cuda_device=cuda_device)
-            worker_embedders[ModalityType.AUDIO] = VGGishEmbedder()
             worker_embedders[ModalityType.SCENE] = worker_embedders[ModalityType.TEXT]
             worker_embedders[ModalityType.NOUNS] = worker_embedders[ModalityType.TEXT]
+            #image embedding
+            worker_embedders[ModalityType.IMAGE] = BeITEmbedder(cuda_device=cuda_device)
+            #audio embedding
+            worker_embedders[ModalityType.AUDIO] = VGGishEmbedder()  # CPU only
+            
             
             logging.info(f"Worker {worker_id} embedders initialized successfully")
             return worker_embedders
@@ -322,12 +459,25 @@ class Hippocampus:
 
     @classmethod
     def _worker_process_function(cls, worker_id: int, task_queue: Queue, result_queue: Queue, 
-                                stop_event: Event):
+                                stop_event: Event, cuda_device: Optional[str] = None):
         """
         Worker process function. Class method to maintain access to static methods.
         """
+        try:
+            # Set up signal handling for graceful shutdown on Unix systems
+            if platform.system() != "Windows":
+                import signal
+                def signal_handler(signum, frame):
+                    logging.info(f"Worker {worker_id} received signal {signum}, shutting down")
+                    stop_event.set()
+                
+                signal.signal(signal.SIGTERM, signal_handler)
+                signal.signal(signal.SIGINT, signal_handler)
+        except Exception as e:
+            logging.debug(f"Worker {worker_id} could not set up signal handling: {e}")
+        
         # Initialize embedders within this worker process
-        embedders = cls._init_embedders_for_worker(worker_id)
+        embedders = cls._init_embedders_for_worker(worker_id, cuda_device)
         
         if not embedders:
             logging.error(f"Worker {worker_id} failed to initialize, exiting")
@@ -352,6 +502,8 @@ class Hippocampus:
                     result = cls._process_batch_embedding_task(embedders, task_data)
                     result_queue.put(('batch_embed_result', result))
                 
+                # Note: multiprocessing.Queue doesn't have task_done() method
+                
             except queue.Empty:
                 # This is normal - just timeout waiting for tasks
                 continue
@@ -365,31 +517,35 @@ class Hippocampus:
         logging.info(f"Worker {worker_id} shutting down")
 
     def _setup_multiprocessing(self):
-        """Set up multiprocessing queues and events."""
-        # Ensure we're using spawn method on Windows
-        if mp.get_start_method() != 'spawn':
-            try:
-                mp.set_start_method('spawn', force=True)
-            except RuntimeError:
-                pass  # Already set
-        
-        self.processing_queue = Queue()
-        self.result_queue = Queue()
-        self.stop_event = Event()
-        
-        # Start worker processes
-        for i in range(self.max_workers):
-            worker = Process(
-                target=self._worker_process_function,
-                args=(i, self.processing_queue, self.result_queue, self.stop_event)
-            )
-            worker.start()
-            self.worker_processes.append(worker)
+        """Set up multiprocessing queues and events with cross-platform compatibility."""
+        try:
+            # Create queues and events
+            self.processing_queue = Queue()
+            self.result_queue = Queue()
+            self.stop_event = Event()
             
-        # Start result collector thread
-        self.result_thread = threading.Thread(target=self._collect_results)
-        self.result_thread.daemon = True
-        self.result_thread.start()
+            # Start worker processes
+            for i in range(self.max_workers):
+                worker = Process(
+                    target=self._worker_process_function,
+                    args=(i, self.processing_queue, self.result_queue, self.stop_event, self.cuda_device),
+                    name=f"HippocampusWorker-{i}"
+                )
+                worker.daemon = False  # Explicitly set daemon to False for proper cleanup
+                worker.start()
+                self.worker_processes.append(worker)
+                
+            # Start result collector thread
+            self.result_thread = threading.Thread(target=self._collect_results, name="ResultCollector")
+            self.result_thread.daemon = True
+            self.result_thread.start()
+            
+            logging.info(f"Started {len(self.worker_processes)} worker processes")
+            
+        except Exception as e:
+            logging.error(f"Failed to setup multiprocessing: {e}")
+            self.enable_multiprocessing = False
+            raise
 
     def _collect_results(self):
         """Collect results from worker processes."""
@@ -479,7 +635,7 @@ class Hippocampus:
             metadata=metadata or {}
         )
         
-        if self.enable_multiprocessing and async_process:
+        if self.enable_multiprocessing and async_process and self.processing_queue:
             task = ('embed', {'memory_item': memory_item})
             self.processing_queue.put(task)
         else:
@@ -513,7 +669,7 @@ class Hippocampus:
                 modality_groups[modality] = []
             modality_groups[modality].append(memory_item)
         
-        if self.enable_multiprocessing and async_process:
+        if self.enable_multiprocessing and async_process and self.processing_queue:
             for modality, items_group in modality_groups.items():
                 task = ('batch_embed', {
                     'memory_items': items_group,
@@ -572,17 +728,38 @@ class Hippocampus:
         except Exception as e:
             logging.error(f"Error processing memory synchronously: {e}")
 
+    def emotional_reaction(self,query:str) -> Dict:
+        """Take an input string and return the emotion most similar to the string
+        Arg:
+            query: string to get an emotional reaction to
+        Returns:
+            Dict: {'emotion': 'joy',
+                'mood': 'Sense of energy and possibility',
+                'thoughts': 'Life is going well',
+                'responses': 'Sparks creativity, connection, gives energy',
+                'embedding': vector with self.vector_dimensions,
+                'similarity': float  # Added similarity score
+                }
+                'error': if there was an error, will be the error string - key only exists if there was error
+        """
+        try:
+
+            result = self.emotion.get_emotional_reaction(query)
+
+            logging.debug(f"Emotional reaction completed, triggered {result}")
+            return result
+        
+        except Exception as e:
+            logging.error(f"Emotional reaction error: {e}")
+            return {'error':e}
+
     def search_memory(self,
                      query: Any,
                      modality: ModalityType,
                      top_k: int = 5,
                      database_name: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Search for similar memories."""
+        """Search for similar vectors in a database."""
         start_time = time.time()
-        logging.debug(query)
-        logging.debug(modality)
-        logging.debug(top_k)
-        logging.debug(database_name)
         
         try:
             # For searching, we need embedders in the main process
@@ -611,23 +788,23 @@ class Hippocampus:
             
             if not database_name:
                 db_mapping = {
-                    ModalityType.TEXT: 'conversations',
-                    ModalityType.IMAGE: 'images',
-                    ModalityType.AUDIO: 'audio', 
-                    ModalityType.SCENE: 'scene',
-                    ModalityType.NOUNS: 'nouns'
+                    ModalityType.TEXT: self._convo_db,
+                    ModalityType.IMAGE: self._images_db,
+                    ModalityType.AUDIO: self._audio_db, 
+                    ModalityType.SCENE: self._scene_db,
+                    ModalityType.NOUNS: self._noun_db
                 }
-                database_name = db_mapping.get(modality, 'conversations')
+                database_name = db_mapping.get(modality, self._convo_db)
             
             import numpy as np
             query_vector = np.array(query_embedding)
-            print("="*50)
+            
             results = self.memory_store.similarity_search(
                 query_vector=query_vector,
                 database_name=database_name,
                 top_k=top_k
             )
-            logging.debug(results)
+            
             search_time = time.time() - start_time
             with self.lock:
                 self.stats['searches_performed'] += 1
@@ -649,9 +826,10 @@ class Hippocampus:
             stats = self.stats.copy()
         
         try:
-            for db_name in self.memory_store.list_databases():
-                db_info = self.memory_store.get_database_info(db_name)
-                stats[f'{db_name}_items'] = db_info.get('total_items', 0)
+            if self.memory_store:
+                for db_name in self.memory_store.list_databases():
+                    db_info = self.memory_store.get_database_info(db_name)
+                    stats[f'{db_name}_items'] = db_info.get('total_items', 0)
         except Exception as e:
             logging.error(f"Error getting database stats: {e}")
         
@@ -660,6 +838,10 @@ class Hippocampus:
     def save_all_memories(self) -> bool:
         """Save all memories to persistent storage."""
         try:
+            if not self.memory_store:
+                logging.warning("No memory store available for saving")
+                return False
+                
             result = self.memory_store.save_all_databases()
             
             # The result from save_all_databases appears to be a list of success messages
@@ -692,7 +874,7 @@ class Hippocampus:
             return False
 
     def shutdown(self):
-        """Gracefully shutdown the system."""
+        """Gracefully shutdown the system with cross-platform compatibility."""
         logging.info("Shutting down Hippocampus...")
         
         # Save all memories
@@ -703,22 +885,68 @@ class Hippocampus:
             self.stop_event.set()
             
             # Send poison pills to workers
-            for _ in range(self.max_workers):
-                try:
-                    self.processing_queue.put(None, timeout=1.0)
-                except:
-                    pass
+            if self.processing_queue:
+                for _ in range(self.max_workers):
+                    try:
+                        self.processing_queue.put(None, timeout=1.0)
+                    except Exception as e:
+                        logging.debug(f"Error sending poison pill: {e}")
             
-            # Wait for workers to finish
-            for worker in self.worker_processes:
-                worker.join(timeout=5.0)
+            # Wait for workers to finish gracefully
+            for i, worker in enumerate(self.worker_processes):
                 if worker.is_alive():
-                    worker.terminate()
-                    worker.join(timeout=2.0)
+                    logging.debug(f"Waiting for worker {i} to finish...")
+                    worker.join(timeout=5.0)
+                    
+                    if worker.is_alive():
+                        logging.warning(f"Worker {i} did not finish gracefully, terminating...")
+                        try:
+                            worker.terminate()
+                            worker.join(timeout=2.0)
+                        except Exception as e:
+                            logging.error(f"Error terminating worker {i}: {e}")
+                        
+                        # Force kill on Unix systems if still alive
+                        if worker.is_alive() and platform.system() != "Windows":
+                            try:
+                                import os
+                                import signal
+                                os.kill(worker.pid, signal.SIGKILL)
+                                worker.join(timeout=1.0)
+                            except Exception as e:
+                                logging.error(f"Error force killing worker {i}: {e}")
             
-            # Stop result collector
+            # Stop result collector thread
             if hasattr(self, 'result_thread') and self.result_thread.is_alive():
+                logging.debug("Stopping result collector thread...")
                 self.result_thread.join(timeout=5.0)
+                if self.result_thread.is_alive():
+                    logging.warning("Result collector thread did not stop gracefully")
+        
+        # Clean up resources
+        try:
+            if hasattr(self, 'processing_queue') and self.processing_queue:
+                # Close the queue to indicate no more items will be put
+                self.processing_queue.close()
+                # Note: multiprocessing.Queue doesn't have join_thread() in all Python versions
+                try:
+                    self.processing_queue.join_thread()
+                except AttributeError:
+                    # join_thread() not available, this is normal for some Python versions
+                    pass
+        except Exception as e:
+            logging.debug(f"Error closing processing queue: {e}")
+            
+        try:
+            if hasattr(self, 'result_queue') and self.result_queue:
+                self.result_queue.close()
+                try:
+                    self.result_queue.join_thread()
+                except AttributeError:
+                    # join_thread() not available, this is normal for some Python versions
+                    pass
+        except Exception as e:
+            logging.debug(f"Error closing result queue: {e}")
         
         logging.info("Hippocampus shutdown complete")
 
@@ -727,11 +955,11 @@ class Hippocampus:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        logging.debug(exc_type)
-        logging.debug(exc_val)
-        logging.debug(exc_tb)
         """Context manager exit."""
+        if exc_type is not None:
+            logging.error(f"Exception in context manager: {exc_type.__name__}: {exc_val}")
         self.shutdown()
+
 
 
 # Example usage and testing
@@ -793,6 +1021,15 @@ if __name__ == "__main__":
             )
             
             print(f"Search results: {results}")
+
+            # Get emotional reaction
+            print("="*50)
+            print("trigger emotion")
+            results = hippocampus.emotional_reaction(
+                "coffee morning routine"
+            )
+            
+            print(f"Emotion results: {results}")
             
             # Print statistics
             stats = hippocampus.get_statistics()

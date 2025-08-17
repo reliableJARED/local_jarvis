@@ -29,7 +29,7 @@ import logging
 
 class MemRecall:
     """
-    A comprehensive FAISS-based similarity search system supporting multiple databases
+    A comprehensive FAISS-based python dict storage and similarity search system supporting multiple databases
     for different data types.
     
     This class provides functionality to:
@@ -44,6 +44,7 @@ class MemRecall:
         audio_db (Dict): Database for audio clip vector data
         scene_db (Dict): Database for scene descriptions (text)
         nouns_db (Dict): Database for known people, places, things (text)
+        emotions_db (Dict): Database for embedded emotion descriptions (text)
     """
     
     def __init__(self, data_directory: str = "./faiss_data", 
@@ -60,11 +61,12 @@ class MemRecall:
         
         # Default database configuration
         self._default_databases = {
-            'conversations': 384,  # Default for sentence transformers
+            'conversations': 384,  # Text descriptions
             'images': 512,         # Common image embedding size
             'audio': 128,          # Common audio embedding size
             'scene': 384,          # Text descriptions
-            'nouns': 384           # Text descriptions
+            'nouns': 384,          # Text descriptions
+            'emotions': 384        # Text descriptions
         }
         
         # Set database configuration
