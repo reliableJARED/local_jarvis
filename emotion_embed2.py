@@ -389,6 +389,149 @@ class EmotionEngine:
         
         return result
 
+    #NOT GOOD - Could eliminate this function, get_emotional_reaction() seems to be better alligned
+    def complex_emotional_reaction(self, text: str) -> Dict:
+        """
+        Generate a complex emotional reaction by aggregating emotion families and complex emotions.
+        
+        This function:
+        1. Calculates similarity to all emotions
+        2. Aggregates similarities within each emotion family (3 emotions each)
+        3. Aggregates similarities for complex emotion components (2 emotions each)
+        4. Returns the emotion with the highest aggregate score
+        
+        Args:
+            text: Input text to analyze emotion embedding similarity
+            
+        Returns:
+            Dict: Same format as get_emotional_reaction but with aggregated scoring
+        """
+        
+        # Define emotion families (base emotion is first in each list)
+        emotion_families = {
+            'joy': ['joy', 'ecstasy', 'serenity'],
+            'sadness': ['sadness', 'grief', 'pensiveness'], 
+            'trust': ['trust', 'admiration', 'acceptance'],
+            'disgust': ['disgust', 'loathing', 'boredom'],
+            'fear': ['fear', 'terror', 'apprehension'],
+            'anger': ['anger', 'rage', 'annoyance'],
+            'surprise': ['surprise', 'amazement', 'distraction'],
+            'anticipation': ['anticipation', 'vigilance', 'interest']
+        }
+        
+        # Define complex emotions and their components
+        complex_emotions = {
+            'love': ['joy', 'trust'],
+            'submission': ['trust', 'fear'], 
+            'awe': ['fear', 'surprise'],
+            'disapproval': ['surprise', 'sadness'],
+            'remorse': ['sadness', 'disgust'],
+            'contempt': ['disgust', 'anger'],
+            'aggressiveness': ['anger', 'anticipation'],
+            'optimism': ['anticipation', 'joy']
+        }
+        
+        # Embed the input text
+        input_embedding_result = self.embedder.embed_string(text)
+        
+        if input_embedding_result is None:
+            logging.error("Error: Input text embedding is None")
+            return {"Error": "No emotional reaction, couldn't embed input"}
+        
+        input_embedding = self.np.array(input_embedding_result)
+        
+        if len(input_embedding) != self.vector_dimensions:
+            logging.error(f"Error: Input embedding shape is {input_embedding.shape}, expected ({self.vector_dimensions},)")
+            return {"Error": "No emotional reaction, wrong embedding shape"}
+        
+        # Calculate similarity to all emotions
+        all_similarities = {}
+        
+        for emotion, data in self.emotion_database.items():
+            emotion_embedding = data['embedding']
+            if emotion_embedding is None:
+                continue
+                
+            if not isinstance(emotion_embedding, self.np.ndarray):
+                emotion_embedding = self.np.array(emotion_embedding)
+                
+            if len(emotion_embedding) != self.vector_dimensions:
+                continue
+                
+            # Calculate cosine similarity
+            dot_product = self.np.dot(input_embedding, emotion_embedding)
+            norm_input = self.np.linalg.norm(input_embedding)
+            norm_emotion = self.np.linalg.norm(emotion_embedding)
+            
+            if norm_input == 0 or norm_emotion == 0:
+                similarity = 0.0
+            else:
+                similarity = dot_product / (norm_input * norm_emotion)
+                
+            all_similarities[emotion] = similarity
+        
+        # Calculate aggregated scores
+        aggregated_scores = {}
+        
+        # 1. Aggregate emotion families (sum of 3 emotions each)
+        for family_name, family_emotions in emotion_families.items():
+            family_score = 0.0
+            count = 0
+            for emotion in family_emotions:
+                if emotion in all_similarities:
+                    family_score += all_similarities[emotion]
+                    count += 1
+            
+            if count > 0:
+                aggregated_scores[family_name] = family_score  # Sum, not average
+        
+        # 2. Aggregate complex emotions (sum of 2 component emotions)
+        for complex_emotion, components in complex_emotions.items():
+            complex_score = 0.0
+            count = 0
+            for component in components:
+                if component in all_similarities:
+                    complex_score += all_similarities[component]
+                    count += 1
+            
+            if count == 2:  # Only consider if both components are available
+                aggregated_scores[complex_emotion] = complex_score
+        
+        # Find the emotion with highest aggregated score
+        if not aggregated_scores:
+            # Fallback to original method
+            best_emotion = max(all_similarities.keys(), key=lambda x: all_similarities[x])
+            best_similarity = all_similarities[best_emotion]
+        else:
+            best_emotion = max(aggregated_scores.keys(), key=lambda x: aggregated_scores[x])
+            best_score = aggregated_scores[best_emotion]
+            
+            # For display, convert back to individual similarity if it's a base family
+            if best_emotion in emotion_families:
+                # Return the base emotion (first in the family list) but show aggregated score
+                best_similarity = best_score
+            else:
+                # It's a complex emotion, show the aggregated score
+                best_similarity = best_score
+        
+        # Create result dictionary
+        result = {
+            'emotion': best_emotion,
+            'similarity': best_similarity,
+            'aggregated_scores': aggregated_scores,
+            'all_similarities': all_similarities
+        }
+        
+        # Add emotion data
+        emotion_data = self.emotion_database[best_emotion]
+        result.update({
+            'mood': emotion_data['mood'],
+            'thoughts': emotion_data['thoughts'], 
+            'responses': emotion_data['responses'],
+            'embedding': emotion_data['embedding']
+        })
+        
+        return result
 
 # Example usage and testing
 if __name__ == "__main__":
@@ -424,10 +567,25 @@ if __name__ == "__main__":
         "sex",
         "please give me a blowjob",
         "I need you to mow the lawn",
+        "The old lighthouse keeper watched the storm rage, the same storm that had taken his love years ago. He knew the sea would always hold a piece of her, just as it held the ship that never returned. Every crashing wave was a reminder of the promise he couldn't keep, and every sunrise brought another day of lonely vigil."
 
     ]
+        
+        #EXAMPLE - emotional_reaction
         for string in test_texts:
 
             result = emotion.get_emotional_reaction(string)
             
-            print(string,":",result['emotion'],result['similarity'],result['mood'],result['thoughts'],">>",result['responses'])
+            print(string,":",result['emotion'].upper(),result['similarity'],result['mood'],result['thoughts'],">>",result['responses'])
+
+        print("="*50)
+        print("\n\n")
+
+        #EXAMPLE - complex_emotional_reaction
+        for string in test_texts:
+
+            result = emotion.complex_emotional_reaction(string)
+            
+            print(string,":",result['emotion'].upper(),result['similarity'],result['mood'],result['thoughts'],">>",result['responses'])
+
+
