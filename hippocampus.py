@@ -973,7 +973,7 @@ if __name__ == "__main__":
     # Use CUDA device 1
     hippocampus = Hippocampus(cuda_device=1)  
 
-    # Use CPU
+    # Use CUDA if detected, default device 0 else CPU
     hippocampus = Hippocampus(cuda_device=None)
 
     # Import in another script

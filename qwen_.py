@@ -1,14 +1,16 @@
-import torch
 import os
-import urllib.request
 import socket
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import json
 import re
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Callable
 import gc
+import subprocess
+import sys
+import logging
 
-class QwenChatDependencyManager:
+#logging.basicConfig(level=logging.DEBUG)
+
+class QwenDependencyManager:
     """Handles model loading, dependency management, and offline/online detection."""
     
     def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False):
@@ -19,13 +21,108 @@ class QwenChatDependencyManager:
         self.model = None
         self.tokenizer = None
         
+        # Initialize dependency storage
+        self.torch = None
+        #self.accelerate = None
+        self.AutoModelForCausalLM = None
+        self.AutoTokenizer = None
+        
+        # Check and install dependencies first
+        available_deps = self._check_and_install_dependencies()
+        
+        logging.debug(f"Available dependencies: {available_deps}")
+        
         # Load the model and tokenizer
         self._load_dependencies()
     
+    def _check_and_install_dependencies(self) -> list:
+        """
+        Check if required dependencies are installed and install if missing.
+        Stores imported modules as instance attributes.
+        Returns a list of successfully loaded dependencies.
+        """
+        available_dependencies = []
+        
+        # Check and install PyTorch
+        try:
+            import torch
+            self.torch = torch
+            available_dependencies.append('torch')
+            logging.debug("PyTorch already installed and imported successfully")
+        except ImportError:
+            logging.debug("PyTorch not found. Installing torch...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "torch", "torchvision"])
+                import torch
+                self.torch = torch
+                available_dependencies.append('torch')
+                logging.debug("PyTorch installed and imported successfully")
+            except (subprocess.CalledProcessError, ImportError) as e:
+                logging.error(f"Failed to install or import PyTorch: {e}")
+                raise ImportError("WARNING! Failed to install or import PyTorch")
+        
+        # Check and install transformers
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self.AutoModelForCausalLM = AutoModelForCausalLM
+            self.AutoTokenizer = AutoTokenizer
+            available_dependencies.append('transformers')
+            logging.debug("transformers already installed and imported successfully")
+        except ImportError:
+            logging.debug("transformers not found. Installing transformers...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "transformers"])
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                self.AutoModelForCausalLM = AutoModelForCausalLM
+                self.AutoTokenizer = AutoTokenizer
+                available_dependencies.append('transformers')
+                logging.debug("transformers installed and imported successfully")
+            except (subprocess.CalledProcessError, ImportError) as e:
+                logging.error(f"Failed to install or import transformers: {e}")
+                raise ImportError("WARNING! Failed to install or import transformers")
+        
+        # Optional: Check for accelerate (often needed for device_map="auto")
+        """try:
+            import accelerate
+            self.accelerate = accelerate
+            available_dependencies.append('accelerate')
+            logging.debug("accelerate already available")
+        except ImportError:
+            logging.debug("accelerate not found. Installing accelerate...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "accelerate"])
+                import accelerate
+                self.accelerate = accelerate
+                available_dependencies.append('accelerate')
+                logging.debug("accelerate installed successfully")
+            except (subprocess.CalledProcessError, ImportError) as e:
+                logging.warning(f"Failed to install accelerate (optional): {e}")
+                # Don't raise error for optional dependency"""
+        
+        return available_dependencies
+    
+    def get_available_dependencies(self) -> list:
+        """Return list of available dependencies that can be imported."""
+        available = []
+        
+        if self.torch is not None:
+            available.append('torch')
+        if self.AutoModelForCausalLM is not None and self.AutoTokenizer is not None:
+            available.append('transformers')
+        
+        # Check for other optional dependencies
+        try:
+            import accelerate
+            available.append('accelerate')
+        except ImportError:
+            pass
+            
+        return available
+    
     def print_gpu_memory(self):
-        if torch.cuda.is_available():
-            print(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.1f}GB allocated, "
-                f"{torch.cuda.memory_reserved()/1024**3:.1f}GB reserved")
+        if self.torch and self.torch.cuda.is_available():
+            logging.debug(f"GPU memory: {self.torch.cuda.memory_allocated()/1024**3:.1f}GB allocated, "
+                f"{self.torch.cuda.memory_reserved()/1024**3:.1f}GB reserved")
         
     def _check_internet_connection(self, timeout=5):
         """Check if internet connection is available."""
@@ -39,6 +136,7 @@ class QwenChatDependencyManager:
     
     def _load_dependencies(self):
         """Load model and tokenizer based on availability."""
+        
         self.print_gpu_memory()
         # Determine if we should use online or offline mode
         if self.force_offline:
@@ -62,12 +160,12 @@ class QwenChatDependencyManager:
         """Load model with internet connection."""
         print("Loading model and tokenizer...")
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(
+            self.model = self.AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype="auto",
                 device_map="auto"
             )
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.tokenizer = self.AutoTokenizer.from_pretrained(model_name)
             
         except Exception as e:
             print(f"Error loading model online: {e}")
@@ -88,13 +186,13 @@ class QwenChatDependencyManager:
         
         print(f"Loading model from: {model_path}")
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(
+            self.model = self.AutoModelForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype="auto",
                 device_map="auto",
                 local_files_only=True
             )
-            self.tokenizer = AutoTokenizer.from_pretrained(
+            self.tokenizer = self.AutoTokenizer.from_pretrained(
                 model_path,
                 local_files_only=True
             )
@@ -116,9 +214,9 @@ class QwenChatDependencyManager:
         
         # Also check for custom downloaded models in current directory
         local_paths = [
-            "./Qwen2.5-7B-Instruct",
-            "./qwen2.5-7b-instruct",
-            f"./{self.model_name.split('/')[-1]}"
+            f"./{self.model_name.split('/')[-1]}",
+            f"./{self.model_name.split('/')[-1].upper()}",
+            f"./{self.model_name.split('/')[-1].lower()}"
         ]
         
         for path in local_paths:
@@ -128,8 +226,9 @@ class QwenChatDependencyManager:
         
         # Look for Qwen model folders in HF cache
         model_patterns = [
-            "models--Qwen--Qwen2.5-7B-Instruct",
-            f"models--{self.model_name.replace('/', '--')}"
+            f"models--{self.model_name.replace('/', '--')}",
+            f"models--{self.model_name.replace('/', '--').upper()}",
+            f"models--{self.model_name.replace('/', '--').lower()}"
         ]
         
         for pattern in model_patterns:
@@ -177,6 +276,14 @@ class QwenChatDependencyManager:
         """Get the loaded tokenizer."""
         return self.tokenizer
     
+    def get_torch(self):
+        """Get the loaded tokenizer."""
+        return self.torch
+    
+    """def get_accelerate(self):
+        #Get the loaded tokenizer.
+        return self.accelerate"""
+    
     @staticmethod
     def download_model(model_name="Qwen/Qwen2.5-7B-Instruct", save_path=None):
         """Helper function to download the model for offline use."""
@@ -188,6 +295,9 @@ class QwenChatDependencyManager:
         
         try:
             print("Downloading model and tokenizer...")
+            # Import here in case dependencies aren't available yet
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            
             model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
             tokenizer = AutoTokenizer.from_pretrained(model_name)
             
@@ -200,20 +310,21 @@ class QwenChatDependencyManager:
             print(f"Error downloading model: {e}")
 
 
-
-
-class QwenChat:
+class Qwen:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
     
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False, auto_append_conversation = False,name="Artemis"):
+    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False, auto_append_conversation = False,user_name='user'):
         """Initialize the chat interface with automatic dependency management."""
-        self.dependency_manager = QwenChatDependencyManager(
+        self.dependency_manager = QwenDependencyManager(
             model_name=model_name,
             model_path=model_path,
             force_offline=force_offline
         )
+        
+        self.torch = self.dependency_manager.get_torch()
         self.model = self.dependency_manager.get_model()
         self.tokenizer = self.dependency_manager.get_tokenizer()
+
         self.auto_append_conversation = auto_append_conversation
         
         # Token tracking
@@ -227,12 +338,13 @@ class QwenChat:
         # Tool management
         self.tools = {}
         self.available_tools = []
+
+        #User's Name
+        self._user = user_name
         
         # Initialize conversation with system prompt
         self.messages = [{"role": "system", "content": "you are a robot"}]
-        
-    
-        
+            
     def _update_system_prompt(self, system_prompt):
         """Update the system prompt."""
         print(f"SYSTEM PROMPT UPDATED TO: {system_prompt}")
@@ -395,12 +507,11 @@ class QwenChat:
             print(f"Avg tokens per conversation: {stats['total_tokens'] / stats['conversation_count']:.1f}")
         print(f"----------------------------\n")
     
-
-    def _generate_final_response(self, max_new_tokens: int) -> str:
+    def _generate_final_response(self, max_new_tokens: int, messages: List) -> str:
         """Generate the final response after tool execution."""
         # Apply chat template again with the tool results
         text = self.tokenizer.apply_chat_template(
-            self.messages,
+            messages,
             tools=self.available_tools if self.available_tools else None,
             tokenize=False,
             add_generation_prompt=True
@@ -430,16 +541,16 @@ class QwenChat:
         
         # Parse and add the final response
         parsed_final = self._parse_tool_calls(final_response)
-        self.messages.append(parsed_final)
+        messages.append(parsed_final)
         
         return parsed_final["content"]
     
     def execute_pending_tools(self, max_new_tokens: int = 512) -> str:
-        """
-        Execute any pending tool calls from the last assistant message.
-        Useful when auto_execute_tools=False in generate_response.
-        """
-        print("execute_pending_tools")
+        
+        #Execute any pending tool calls from the last assistant message.
+        #Useful when auto_execute_tools=False in generate_response.
+        
+        logging.debug("execute_pending_tools")
         if self.messages and self.messages[-1]["role"] == "assistant":
             if tool_calls := self.messages[-1].get("tool_calls"):
                 # Execute the tools
@@ -447,7 +558,7 @@ class QwenChat:
                 self.messages.extend(tool_results)
                 
                 # Generate final response
-                return self._generate_final_response(max_new_tokens)
+                return self._generate_final_response(max_new_tokens, self.messages)
         
         return "No pending tool calls found"
     
@@ -465,31 +576,34 @@ class QwenChat:
     
     def clear_gpu_memory(self):
         """Clear GPU memory cache to prevent memory accumulation."""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
             gc.collect()
             self.dependency_manager.print_gpu_memory()
     
-    def generate_response(self, user_input: str, max_new_tokens: int = 512, auto_execute_tools: bool = True) -> str:
+    def generate_response(self, user_input: str, max_new_tokens: int = 512, auto_execute_tools: bool = True, use_message_history: bool = True) -> str:
         """
         Generate a response using the Qwen model with optional tool use.
         Now includes memory management.
         """
         # Clear GPU memory before generation
         self.clear_gpu_memory()
+        messages = self.messages
+        if not use_message_history:
+            messages = self.messages[:1]#keep system prompt only, remove all other messages
         
         # Add user message to conversation
         if self.auto_append_conversation:
-            self.messages.append({"role": "user", "content": user_input})
+            messages.append({"role": self._user, "content": user_input})
         else:
-            print("ERASE ALL PRIOR MESSAGES BEFORE RESPONDING->")
+            logging.debug("ERASE ALL PRIOR MESSAGES BEFORE RESPONDING->")
             self.clear_chat_messages()
-            print(self.messages)
-            self.messages.append({"role": "user", "content": user_input})
+            logging.debug(messages)
+            messages.append({"role": self._user, "content": user_input})
         
         # Apply chat template with tools if available
         text = self.tokenizer.apply_chat_template(
-            self.messages,
+            messages,
             tools=self.available_tools if self.available_tools else None,
             tokenize=False,
             add_generation_prompt=True
@@ -503,7 +617,7 @@ class QwenChat:
         
         # Check if input is too long for context window
         if input_tokens > 30000:  # Leave room for generation
-            print(f"Warning: Input tokens ({input_tokens}) approaching context limit")
+            logging.debug(f"Warning: Input tokens ({input_tokens}) approaching context limit")
         
         try:
             generated_ids = self.model.generate(
@@ -513,8 +627,8 @@ class QwenChat:
                 temperature=0.7,
                 top_p=0.8
             )
-        except torch.cuda.OutOfMemoryError:
-            print("CUDA OOM during generation, clearing cache and retrying with smaller max_new_tokens")
+        except self.torch.cuda.OutOfMemoryError:
+            logging.debug("CUDA OOM during generation, clearing cache and retrying with smaller max_new_tokens")
             self.clear_gpu_memory()
             # Retry with smaller generation length
             generated_ids = self.model.generate(
@@ -541,24 +655,26 @@ class QwenChat:
         
         # Parse the response for tool calls
         parsed_response = self._parse_tool_calls(response_text)
-        self.messages.append(parsed_response)
+        messages.append(parsed_response)
         
+
         # Check if there are tool calls to execute
         if tool_calls := parsed_response.get("tool_calls"):
-            print("MODEL IS USING TOOL!")
+            logging.debug("MODEL IS USING TOOL!")
             if auto_execute_tools:
                 # Execute the tools
                 tool_results = self._execute_tool_calls(tool_calls)
-                self.messages.extend(tool_results)
+                messages.extend(tool_results)
                 
                 # Generate final response based on tool results
-                return self._generate_final_response(max_new_tokens)
+                return self._generate_final_response(max_new_tokens,messages)
             else:
                 # Return indication that tools need to be executed
                 return f"[TOOL_CALLS_PENDING] {len(tool_calls)} tool(s) need execution"
         else:
             # No tool calls, return the content directly
             return parsed_response["content"]
+
 
 
 
@@ -851,12 +967,12 @@ if __name__ == "__main__":
     def main():
         """Main function to run the chat interface."""
         import sys
-        
+        model_name = "Qwen/Qwen2.5-7B-Instruct"
         # Handle command line arguments
         if len(sys.argv) > 1:
             if sys.argv[1] == "download":
-                model_name = sys.argv[2] if len(sys.argv) > 2 else "Qwen/Qwen2.5-7B-Instruct"
-                QwenChatDependencyManager.download_model(model_name)
+                model_name = sys.argv[2] if len(sys.argv) > 2 else model_name
+                QwenDependencyManager.download_model(model_name)
                 return
             elif sys.argv[1] == "offline":
                 force_offline = True
@@ -870,7 +986,7 @@ if __name__ == "__main__":
             print(f"Initializing {model_name}...")
             
             # Initialize chat interface (Qwen/Qwen2.5-7B-Instruct is default if no model passed)
-            chat = QwenChat(auto_append_conversation=False)
+            chat = Qwen(auto_append_conversation=False,model_name=model_name)
             
             # Start the chat loop
             chat_loop(chat)
