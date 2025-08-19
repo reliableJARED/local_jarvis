@@ -309,6 +309,11 @@ class QwenDependencyManager:
         except Exception as e:
             print(f"Error downloading model: {e}")
 
+import json
+import re
+import gc
+import logging
+from typing import Callable, Dict, List, Any, Optional, Generator, Union
 
 class Qwen:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
@@ -507,6 +512,269 @@ class Qwen:
             print(f"Avg tokens per conversation: {stats['total_tokens'] / stats['conversation_count']:.1f}")
         print(f"----------------------------\n")
     
+    def _generate_streaming(self, model_inputs, max_new_tokens: int = 512, print_tokens: bool = True) -> Generator[str, None, tuple]:
+        """
+        Generate tokens one at a time and yield them.
+        
+        Args:
+            model_inputs: Tokenized input tensors
+            max_new_tokens: Maximum number of new tokens to generate
+            print_tokens: Whether to print tokens as they're generated
+            
+        Yields:
+            str: Each generated token as a string
+            
+        Returns:
+            tuple: (full_response_text, output_token_count)
+        """
+        input_tokens = model_inputs.input_ids.shape[1]
+        generated_tokens = []
+        
+        # Initialize past_key_values for efficient generation
+        past_key_values = None
+        
+        # Get the input ids
+        input_ids = model_inputs.input_ids
+        attention_mask = model_inputs.attention_mask if hasattr(model_inputs, 'attention_mask') else None
+        
+        for step in range(max_new_tokens):
+            try:
+                # Prepare inputs for this step
+                if past_key_values is None:
+                    # First step - use full input
+                    current_input_ids = input_ids
+                    current_attention_mask = attention_mask
+                else:
+                    # Subsequent steps - use only the last generated token
+                    current_input_ids = input_ids[:, -1:]
+                    if attention_mask is not None:
+                        # Extend attention mask
+                        current_attention_mask = self.torch.cat([
+                            attention_mask, 
+                            self.torch.ones((attention_mask.shape[0], 1), dtype=attention_mask.dtype, device=attention_mask.device)
+                        ], dim=1)
+                    else:
+                        current_attention_mask = None
+                
+                # Forward pass
+                with self.torch.no_grad():
+                    outputs = self.model(
+                        input_ids=current_input_ids,
+                        attention_mask=current_attention_mask,
+                        past_key_values=past_key_values,
+                        use_cache=True
+                    )
+                
+                # Get the logits for the last position
+                logits = outputs.logits[:, -1, :]
+                past_key_values = outputs.past_key_values
+                
+                # Apply sampling
+                # Temperature scaling
+                logits = logits / 0.7
+                
+                # Top-p sampling
+                sorted_logits, sorted_indices = self.torch.sort(logits, descending=True)
+                cumulative_probs = self.torch.cumsum(self.torch.softmax(sorted_logits, dim=-1), dim=-1)
+                
+                # Remove tokens with cumulative probability above the threshold
+                sorted_indices_to_remove = cumulative_probs > 0.8
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                
+                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = float('-inf')
+                
+                # Sample from the filtered distribution
+                probs = self.torch.softmax(logits, dim=-1)
+                next_token = self.torch.multinomial(probs, num_samples=1)
+                
+                # Check for end of sequence
+                if next_token.item() == self.tokenizer.eos_token_id:
+                    break
+                
+                # Decode the token
+                token_text = self.tokenizer.decode(next_token[0], skip_special_tokens=True)
+                generated_tokens.append(next_token.item())
+                
+                # Print token if requested
+                if print_tokens:
+                    print(token_text, end='', flush=True)
+                
+                # Yield the token
+                yield token_text
+                
+                # Update input_ids for next iteration
+                input_ids = self.torch.cat([input_ids, next_token], dim=1)
+                if attention_mask is not None:
+                    attention_mask = current_attention_mask
+                
+            except self.torch.cuda.OutOfMemoryError:
+                logging.debug("CUDA OOM during streaming generation")
+                self.clear_gpu_memory()
+                break
+            except Exception as e:
+                logging.debug(f"Error during streaming generation: {e}")
+                break
+        
+        # Decode full response
+        if generated_tokens:
+            full_response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        else:
+            full_response = ""
+        
+        return full_response, len(generated_tokens)
+    
+    def _generate_final_response_streaming(self, max_new_tokens: int, messages: List, print_tokens: bool = True) -> Generator[str, None, str]:
+        """Generate the final response after tool execution with streaming."""
+        # Apply chat template again with the tool results
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tools=self.available_tools if self.available_tools else None,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize
+        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+        input_tokens = model_inputs.input_ids.shape[1]
+        
+        # Stream the generation
+        full_content = ""
+        output_tokens = 0
+        
+        for token in self._generate_streaming(model_inputs, max_new_tokens, print_tokens):
+            full_content += token
+            output_tokens += 1
+            yield token
+        
+        # Update stats
+        self.update_token_stats(input_tokens, output_tokens)
+        
+        # Parse and add the final response
+        parsed_final = self._parse_tool_calls(full_content)
+        messages.append(parsed_final)
+        
+        return parsed_final["content"]
+    
+    def stream_response(self, user_input: str, max_new_tokens: int = 512, auto_execute_tools: bool = True, 
+                       use_message_history: bool = True, print_tokens: bool = True) -> Generator[str, None, str]:
+        """
+        Generate a streaming response using the Qwen model with optional tool use.
+        
+        Args:
+            user_input: The user's input message
+            max_new_tokens: Maximum number of new tokens to generate
+            auto_execute_tools: Whether to automatically execute tool calls
+            use_message_history: Whether to use conversation history
+            print_tokens: Whether to print tokens as they're generated
+            
+        Yields:
+            str: Each generated token as a string
+            
+        Returns:
+            str: The complete response content
+        """
+        # Clear GPU memory before generation
+        self.clear_gpu_memory()
+        messages = self.messages
+        if not use_message_history:
+            messages = self.messages[:1]  # keep system prompt only
+        
+        # Add user message to conversation
+        if self.auto_append_conversation:
+            messages.append({"role": self._user, "content": user_input})
+        else:
+            logging.debug("ERASE ALL PRIOR MESSAGES BEFORE RESPONDING->")
+            self.clear_chat_messages()
+            logging.debug(messages)
+            messages.append({"role": self._user, "content": user_input})
+        
+        # Apply chat template with tools if available
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tools=self.available_tools if self.available_tools else None,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize
+        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+        input_tokens = model_inputs.input_ids.shape[1]
+
+        self.dependency_manager.print_gpu_memory()
+        
+        # Check if input is too long for context window
+        if input_tokens > 30000:
+            logging.debug(f"Warning: Input tokens ({input_tokens}) approaching context limit")
+        
+        # Stream the initial response
+        full_response = ""
+        output_tokens = 0
+        
+        try:
+            for token in self._generate_streaming(model_inputs, max_new_tokens, print_tokens):
+                full_response += token
+                output_tokens += 1
+                yield token
+        except Exception as e:
+            logging.debug(f"Error during streaming: {e}")
+            # Fallback to non-streaming generation
+            return self.generate_response(user_input, max_new_tokens, auto_execute_tools, use_message_history)
+        
+        # Update token stats
+        self.update_token_stats(input_tokens, output_tokens)
+        
+        # Clear intermediate tensors
+        del model_inputs
+        self.clear_gpu_memory()
+        
+        # Parse the response for tool calls
+        parsed_response = self._parse_tool_calls(full_response)
+        messages.append(parsed_response)
+        
+        # Check if there are tool calls to execute
+        if tool_calls := parsed_response.get("tool_calls"):
+            logging.debug("MODEL IS USING TOOL!")
+            if auto_execute_tools:
+                # Execute the tools
+                tool_results = self._execute_tool_calls(tool_calls)
+                messages.extend(tool_results)
+                
+                # Generate final response based on tool results with streaming
+                if print_tokens:
+                    print("\n[Tool execution complete, generating final response...]\n")
+                
+                final_content = ""
+                for token in self._generate_final_response_streaming(max_new_tokens, messages, print_tokens):
+                    final_content += token
+                    yield token
+                
+                return final_content
+            else:
+                # Return indication that tools need to be executed
+                return f"[TOOL_CALLS_PENDING] {len(tool_calls)} tool(s) need execution"
+        else:
+            # No tool calls, return the content directly
+            return parsed_response["content"]
+
+    def execute_pending_tools(self, max_new_tokens: int = 512) -> str:
+        
+        #Execute any pending tool calls from the last assistant message.
+        #Useful when auto_execute_tools=False in generate_response.
+        
+        logging.debug("execute_pending_tools")
+        if self.messages and self.messages[-1]["role"] == "assistant":
+            if tool_calls := self.messages[-1].get("tool_calls"):
+                # Execute the tools
+                tool_results = self._execute_tool_calls(tool_calls)
+                self.messages.extend(tool_results)
+                
+                # Generate final response
+                return self._generate_final_response(max_new_tokens, self.messages)
+        
+        return "No pending tool calls found"
+    
     def _generate_final_response(self, max_new_tokens: int, messages: List) -> str:
         """Generate the final response after tool execution."""
         # Apply chat template again with the tool results
@@ -544,23 +812,6 @@ class Qwen:
         messages.append(parsed_final)
         
         return parsed_final["content"]
-    
-    def execute_pending_tools(self, max_new_tokens: int = 512) -> str:
-        
-        #Execute any pending tool calls from the last assistant message.
-        #Useful when auto_execute_tools=False in generate_response.
-        
-        logging.debug("execute_pending_tools")
-        if self.messages and self.messages[-1]["role"] == "assistant":
-            if tool_calls := self.messages[-1].get("tool_calls"):
-                # Execute the tools
-                tool_results = self._execute_tool_calls(tool_calls)
-                self.messages.extend(tool_results)
-                
-                # Generate final response
-                return self._generate_final_response(max_new_tokens, self.messages)
-        
-        return "No pending tool calls found"
     
     def list_available_tools(self) -> List[str]:
         """Return a list of registered tool names."""
@@ -676,8 +927,6 @@ class Qwen:
             return parsed_response["content"]
 
 
-
-
 if __name__ == "__main__":
     test_convo = """
   Johnny:  I want to make chicken korma for dinner tonight but I've never made it before. Can you help me with a basic recipe?
@@ -752,7 +1001,27 @@ if __name__ == "__main__":
         return {"result":"Image was generated and is being displayed to user"}
             
     def chat_loop(chat_instance):
-        
+        """ Demo streaming tokens """
+        # Stream tokens as they're generated and print them
+        for token in chat_instance.stream_response("Tell how to make chicken korma from scratch"):
+            # Each token is yielded as it's generated
+            # They're also printed automatically if print_tokens=True (default)
+            pass
+
+        # Get the final complete response
+        final_response = "".join(chat_instance.stream_response("Tell me a joke", print_tokens=False))
+        print(final_response)
+
+        response_parts = []
+        for token in chat_instance.stream_response("Explain quantum computing", print_tokens=False):
+            response_parts.append(token)
+            #Example Custom processing per token 
+            #custom_token_handler(token) (e.g., send to web interface, log, etc.)
+
+        complete_response = "".join(response_parts)
+        print(complete_response)
+
+
         """Start an interactive chat session."""
         print("\n" + "="*50)
         print("Qwen2.5-7B-Instruct Chat Interface")
@@ -834,23 +1103,35 @@ if __name__ == "__main__":
                     # Register camera tool
                     chat_instance.register_tool(
                         access_camera,
-                        description="Access my camera to get a description of what I am looking at in my environment",
+                        description="Visual Interface. I use this tool to access my camera and get a description of what I see in my environment",
                         parameters={
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
+                                    "type": "object",
+                                    "properties": {
+                                    "get_image": {
+                                        "type": "bool",
+                                        "description": "Get the current image frame, and scene caption, of what I see"
+                                    }
+                                    },
+                                    "required": ["get_image"],
+                                    "additionalProperties": False
+                                }
                     )
 
                     # Register microphone tool
                     chat_instance.register_tool(
                         access_microphone,
-                        description="Access my microphone to get a description of what I hear at in my environment",
+                        description="Audio Interface. I use this tool to access my microphone to get a description of what I hear in my environment",
                         parameters={
-                            "type": "object",
-                            "properties": {},
-                            "required": []
-                        }
+                                    "type": "object",
+                                    "properties": {
+                                    "get_audio": {
+                                        "type": "bool",
+                                        "description": "Get the current audio frame, and audio caption, of what I hear"
+                                    }
+                                    },
+                                    "required": ["get_audio"],
+                                    "additionalProperties": False
+                                }
                     )
 
                     # Example Tool conversation

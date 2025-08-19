@@ -192,20 +192,26 @@ class MemRecall:
             Dict[str, bool]: Dictionary mapping database names to save success status
         """
         results = {}
-        db_name_temp = None
+        
         try:
             for db_name in self.databases.keys():
-                db_name_temp = db_name
-                results[db_name] = self.save_database(db_name)
+                try:
+                    # Save each database individually and capture the result
+                    results[db_name] = self.save_database(db_name)
+                except Exception as e:
+                    print(f"Error saving database '{db_name}': {str(e)}")
+                    results[db_name] = False
+            
             return results
             
         except Exception as e:
-            print(f"Error when saving all database, database with issue was '{db_name_temp}': {str(e)}")
-            return False
+            print(f"Error when saving all databases: {str(e)}")
+            # Return partial results if we got some, otherwise return empty dict
+            return results if results else {db_name: False for db_name in self.databases.keys()}
     
     def load_database(self, database_name: str) -> Optional[Dict[str, Any]]:
         """
-        Load a database from a pickle file.
+        Load a database from a pickle file and rebuild FAISS index.
         
         Args:
             database_name (str): Name of the database to load
@@ -226,6 +232,10 @@ class MemRecall:
             # Update the corresponding database attribute
             setattr(self, f"{database_name}_db", data)
             
+            # Rebuild FAISS index from loaded data
+            if data:  # Only if there's data to rebuild from
+                self._rebuild_faiss_index(database_name, data)
+            
             print(f"Database '{database_name}' loaded successfully from {filename}")
             return data
             
@@ -242,6 +252,61 @@ class MemRecall:
             if loaded_db is not None:
                 setattr(self, f"{db_name}_db", loaded_db)
     
+    def _rebuild_faiss_index(self, database_name: str, data: Dict[str, Any]) -> None:
+        """
+        Rebuild FAISS index from loaded database data.
+        
+        Args:
+            database_name (str): Name of the database
+            data (Dict[str, Any]): Database data with vectors
+        """
+        try:
+            if not data:
+                return
+                
+            # Get vector dimension from database config
+            dimension = self.databases.get(database_name)
+            if dimension is None:
+                print(f"No dimension found for database '{database_name}'")
+                return
+            
+            # Initialize FAISS index
+            self._initialize_faiss_index(database_name, dimension)
+            
+            # Collect all vectors and update index positions
+            vectors = []
+            items_by_position = {}
+            
+            for item_id, item_data in data.items():
+                if 'vector' in item_data:
+                    vector = item_data['vector']
+                    # Ensure vector is normalized
+                    if hasattr(vector, 'shape'):
+                        vector_norm = vector / self.np.linalg.norm(vector)
+                    else:
+                        vector_array = self.np.array(vector)
+                        vector_norm = vector_array / self.np.linalg.norm(vector_array)
+                    
+                    vectors.append(vector_norm.astype(self.np.float32))
+                    # Store the mapping for this position
+                    position = len(vectors) - 1
+                    items_by_position[position] = item_id
+                    # Update the item's index position
+                    item_data['index_position'] = position
+            
+            if vectors:
+                # Add all vectors to FAISS index at once
+                vectors_array = self.np.vstack(vectors)
+                self._faiss_indices[database_name].add(vectors_array)
+                print(f"Rebuilt FAISS index for '{database_name}' with {len(vectors)} vectors")
+            else:
+                print(f"No vectors found in database '{database_name}' to rebuild index")
+                
+        except Exception as e:
+            print(f"Error rebuilding FAISS index for '{database_name}': {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+
     def _initialize_faiss_index(self, database_name: str, dimension: int) -> Any:
         """
         Initialize a FAISS index for a specific database.
@@ -325,8 +390,27 @@ class MemRecall:
             target_db = getattr(self, f"{database_name}_db")
             faiss_index = self._faiss_indices.get(database_name)
             
-            if faiss_index is None or faiss_index.ntotal == 0:
-                print(f"No data in database '{database_name}' or index not initialized")
+            print(f"Debug: Database '{database_name}' has {len(target_db)} items")
+            print(f"Debug: FAISS index exists: {faiss_index is not None}")
+            if faiss_index:
+                print(f"Debug: FAISS index has {faiss_index.ntotal} vectors")
+            
+            if faiss_index is None:
+                print(f"FAISS index for database '{database_name}' not initialized")
+                # Try to rebuild index from existing data
+                if target_db:
+                    print(f"Attempting to rebuild FAISS index from {len(target_db)} items...")
+                    self._rebuild_faiss_index(database_name, target_db)
+                    faiss_index = self._faiss_indices.get(database_name)
+                    if faiss_index is None:
+                        print(f"Failed to rebuild FAISS index for '{database_name}'")
+                        return []
+                else:
+                    print(f"No data in database '{database_name}' to rebuild index from")
+                    return []
+            
+            if faiss_index.ntotal == 0:
+                print(f"FAISS index for database '{database_name}' is empty")
                 return []
             
             # Normalize query vector
@@ -348,12 +432,15 @@ class MemRecall:
                         results.append((item_id, float(similarity), item_data.get('metadata', {})))
                         break
             
+            print(f"Found {len(results)} similar items")
             return results
             
         except Exception as e:
             logging.error(f"Error performing similarity search in database '{database_name}': {str(e)}")
+            import traceback
+            print(f"Search error traceback: {traceback.format_exc()}")
             return []
-    
+        
     def get_database_info(self, database_name: str) -> Dict[str, Any]:
         """
         Get information about a specific database.
@@ -373,7 +460,9 @@ class MemRecall:
                 'total_items': len(target_db),
                 'faiss_index_size': faiss_index.ntotal if faiss_index else 0,
                 'vector_dimension': self.databases.get(database_name, 'unknown'),
-                'database_file': os.path.join(self.data_directory, f"{database_name}_db.pkl")
+                'database_file': os.path.join(self.data_directory, f"{database_name}_db.pkl"),
+                'index_initialized': faiss_index is not None,
+                'has_data': len(target_db) > 0
             }
             
             return info

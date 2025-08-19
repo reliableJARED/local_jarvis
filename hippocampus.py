@@ -1,42 +1,4 @@
-"""
-Core Architecture of Hippocampus Memory System - Fixed for Single CUDA Device
-Fully modular design with all methods contained within the class.
-"""
 
-import os
-import logging
-import multiprocessing as mp
-from multiprocessing import Process, Queue, Event, Manager
-import queue  # Import for Empty exception
-from typing import Dict, List, Tuple, Any, Optional, Union
-from pathlib import Path
-import time
-import threading
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-import uuid
-from dataclasses import dataclass
-from enum import Enum
-
-# Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
-class ModalityType(Enum):
-    """Enumeration for different modality types."""
-    TEXT = "text"
-    IMAGE = "image" 
-    AUDIO = "audio"
-    SCENE = "scene"
-    NOUNS = "nouns"
-
-@dataclass
-class MemoryItem:
-    """Data class for memory items with metadata."""
-    id: str
-    content: Any
-    modality: ModalityType
-    timestamp: float
-    metadata: Dict[str, Any]
-    embedding: Optional[List[float]] = None
 
 """
 Cross-Platform Multiprocessing Fixes for Hippocampus Memory System
@@ -80,10 +42,12 @@ class MemoryItem:
     metadata: Dict[str, Any]
     embedding: Optional[List[float]] = None
 
+
+
 class Hippocampus:
     """
     Unified memory consolidation system integrating multimodal embeddings, storage and search.
-    Cross-platform compatible with proper multiprocessing handling.
+    Cross-platform compatible with proper multiprocessing handling and async support.
     """
     
     def __init__(self, 
@@ -91,7 +55,9 @@ class Hippocampus:
                  enable_multiprocessing: bool = True,
                  max_workers: int = None,
                  cuda_device: Optional[int] = None,
-                 batch_size: int = 8):
+                 batch_size: int = 8,
+                 enable_async: bool = True,
+                 thread_pool_workers: int = 4):
         """
         Initialize the Hippocampus memory system.
         
@@ -101,12 +67,18 @@ class Hippocampus:
             max_workers: Maximum number of worker processes
             cuda_device: CUDA device to use (None for CPU, 0 or 1 for specific GPU)
             batch_size: Batch size for processing
+            enable_async: Whether to enable async processing (alternative to multiprocessing)
+            thread_pool_workers: Number of thread pool workers for async processing
         """
+        
+
         self.data_directory = data_directory
         self.enable_multiprocessing = enable_multiprocessing
         self.max_workers = max_workers or min(mp.cpu_count(), 4)
         self.cuda_device = str(cuda_device) if cuda_device is not None else None
         self.batch_size = batch_size
+        self.enable_async = enable_async
+        self.thread_pool_workers = thread_pool_workers
         
         # Cross-platform multiprocessing setup
         self._setup_multiprocessing_method()
@@ -128,6 +100,15 @@ class Hippocampus:
         # Thread safety
         self.lock = threading.Lock()
         self.manager = None
+        
+        # Async components
+        self._thread_pool = None
+        self._pending_tasks = set()
+
+        # multiprocessing task tracking
+        self._pending_mp_count = 0
+        self._pending_mp_event = threading.Event()
+        self._pending_mp_event.set()  # Start in "complete" state
         
         # Performance tracking
         self.stats = {
@@ -159,8 +140,9 @@ class Hippocampus:
         self._setup_system()#default will use self.database_config
         
         device_str = f"CUDA:{cuda_device}" if cuda_device is not None else "CPU"
-        logging.info(f"Hippocampus initialized with {self.max_workers} workers on {device_str}")
-        logging.info(f"Multiprocessing: {enable_multiprocessing}, Platform: {platform.system()}")
+        processing_mode = "Multiprocessing" if enable_multiprocessing else ("Async" if enable_async else "Sync")
+        logging.info(f"Hippocampus initialized with {self.max_workers} workers on {device_str} using {processing_mode}")
+        logging.info(f"Platform: {platform.system()}")
 
     def _setup_multiprocessing_method(self):
         """
@@ -173,6 +155,8 @@ class Hippocampus:
             current_method = mp.get_start_method(allow_none=True)
             
             if current_platform == "windows":
+                # Windows multiprocessing guard
+                mp.freeze_support()
                 # Windows only supports 'spawn'
                 if current_method != 'spawn':
                     mp.set_start_method('spawn', force=True)
@@ -263,13 +247,28 @@ class Hippocampus:
         #setup the emotion engine
         self._initialize_emotion_engine()
         
-        # Initialize embedders only for synchronous processing or main process
-        if not self.enable_multiprocessing:
-            self._initialize_embedders()
+        # Always initialize embedders in main process for search functionality
+        # Even when using multiprocessing/async, we need embedders for search_memory()
+        self._initialize_embedders()
         
-        # Set up multiprocessing if enabled
+        # Set up processing method
         if self.enable_multiprocessing:
             self._setup_multiprocessing()
+        elif self.enable_async:
+            self._setup_async_processing()
+
+    def _setup_async_processing(self):
+        """Set up async processing components."""
+        try:
+            # Create thread pool for CPU-bound embedding tasks
+            self._thread_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.thread_pool_workers,
+                thread_name_prefix="HippocampusAsync"
+            )
+            logging.info(f"Initialized async thread pool with {self.thread_pool_workers} workers")
+        except Exception as e:
+            logging.error(f"Failed to setup async processing: {e}")
+            self.enable_async = False
 
     def _initialize_memory_store(self, database_config: Dict[str, int]):
         """Initialize the MemRecall storage system."""
@@ -283,7 +282,6 @@ class Hippocampus:
             logging.error("MemRecall class not found. Please ensure it's importable.")
             raise
 
-    
     def _initialize_embedders(self):
         """Initialize all embedding models."""
         try:
@@ -567,12 +565,21 @@ class Hippocampus:
     def _handle_embedding_result(self, result_data: Dict):
         """Handle embedding results and store in memory."""
         if result_data['success']:
+            items_processed = 0
             if 'memory_item' in result_data:
                 self._store_memory_item(result_data['memory_item'])
+                items_processed = 1
             elif 'memory_items' in result_data:
                 for item in result_data['memory_items']:
                     self._store_memory_item(item)
-            
+                    items_processed += 1
+
+            # Decrement pending count using existing lock
+            with self.lock:
+                self._pending_mp_count = max(0, self._pending_mp_count - items_processed)
+                if self._pending_mp_count == 0:
+                    self._pending_mp_event.set()  # Mark as complete
+
             # Update stats
             with self.lock:
                 self.stats['embeddings_generated'] += 1
@@ -620,6 +627,78 @@ class Hippocampus:
         except Exception as e:
             logging.error(f"Error storing memory item: {e}")
 
+    def _process_batch_sync(self, memory_items: List[MemoryItem]):
+        """
+        Process a batch of memory items synchronously.
+        This runs in a thread pool to avoid blocking the main thread.
+        """
+        if not memory_items:
+            return
+        
+        # Ensure embedders are initialized
+        if not self.embedders:
+            self._initialize_embedders()
+        
+        # Group by modality for batch embedding
+        modality_groups = {}
+        for item in memory_items:
+            if item.modality not in modality_groups:
+                modality_groups[item.modality] = []
+            modality_groups[item.modality].append(item)
+        
+        # Process each modality group
+        for modality, items in modality_groups.items():
+            try:
+                embedder = self.embedders.get(modality)
+                if not embedder:
+                    logging.error(f"No embedder available for modality {modality}")
+                    continue
+                
+                # Batch embed if possible, otherwise process individually
+                if modality in [ModalityType.TEXT, ModalityType.SCENE, ModalityType.NOUNS]:
+                    contents = [item.content for item in items]
+                    try:
+                        embeddings = embedder.embed_batch(contents)
+                        for item, embedding in zip(items, embeddings):
+                            item.embedding = embedding
+                            self._store_memory_item(item)
+                    except (AttributeError, NotImplementedError):
+                        # Fallback to individual processing
+                        for item in items:
+                            embedding = embedder.embed_string(item.content)
+                            item.embedding = embedding
+                            self._store_memory_item(item)
+                
+                elif modality == ModalityType.IMAGE:
+                    contents = [item.content for item in items]
+                    try:
+                        embeddings = embedder.embed_batch(contents)
+                        for item, embedding in zip(items, embeddings):
+                            item.embedding = embedding
+                            self._store_memory_item(item)
+                    except (AttributeError, NotImplementedError):
+                        # Fallback to individual processing
+                        for item in items:
+                            embedding = embedder.embed_image(item.content)
+                            item.embedding = embedding
+                            self._store_memory_item(item)
+                
+                elif modality == ModalityType.AUDIO:
+                    # Audio typically requires individual processing
+                    for item in items:
+                        if isinstance(item.content, str):
+                            embedding_array = embedder.embed_wav_file(item.content)
+                            embedding = embedding_array.mean(axis=0).tolist()
+                        else:
+                            embedding_array = embedder.embed_audio_data(item.content)
+                            embedding = embedding_array.mean(axis=0).tolist()
+                        
+                        item.embedding = embedding
+                        self._store_memory_item(item)
+                
+            except Exception as e:
+                logging.error(f"Error processing batch for modality {modality}: {e}")
+
     def add_memory(self, 
                    content: Any,
                    modality: ModalityType,
@@ -636,8 +715,22 @@ class Hippocampus:
         )
         
         if self.enable_multiprocessing and async_process and self.processing_queue:
-            task = ('embed', {'memory_item': memory_item})
-            self.processing_queue.put(task)
+            with self.lock:  # Use existing lock
+                task = ('embed', {'memory_item': memory_item})
+                self.processing_queue.put(task)
+                self._pending_mp_count += 1
+                self._pending_mp_event.clear()
+
+        elif self.enable_async and async_process and self._thread_pool:
+            # Use async thread pool
+            def process_and_store():
+                self._process_memory_sync(memory_item)
+            
+            future = self._thread_pool.submit(process_and_store)
+            self._pending_tasks.add(future)
+            
+            # Remove completed tasks
+            future.add_done_callback(lambda f: self._pending_tasks.discard(f))
         else:
             self._process_memory_sync(memory_item)
         
@@ -670,18 +763,68 @@ class Hippocampus:
             modality_groups[modality].append(memory_item)
         
         if self.enable_multiprocessing and async_process and self.processing_queue:
+            with self.lock:  # Use existing lock
+                for modality, items_group in modality_groups.items():
+                    task = ('batch_embed', {
+                        'memory_items': items_group,
+                        'modality': modality
+                    })
+                    self.processing_queue.put(task)
+                    self._pending_mp_count += len(items_group)
+                    self._pending_mp_event.clear()  # Mark as incomplete
+
+        elif self.enable_async and async_process and self._thread_pool:
+            # Use async thread pool for batch processing
+            futures = []
             for modality, items_group in modality_groups.items():
-                task = ('batch_embed', {
-                    'memory_items': items_group,
-                    'modality': modality
-                })
-                self.processing_queue.put(task)
+                # Split large groups into smaller batches
+                for i in range(0, len(items_group), self.batch_size):
+                    batch = items_group[i:i + self.batch_size]
+                    future = self._thread_pool.submit(self._process_batch_sync, batch)
+                    futures.append(future)
+                    self._pending_tasks.add(future)
+                    
+                    # Remove completed tasks
+                    future.add_done_callback(lambda f: self._pending_tasks.discard(f))
         else:
+            # Sync processing
             for memory_item in memory_items:
                 self._process_memory_sync(memory_item)
         
         logging.debug(f"Added {len(memory_items)} memories in batch")
         return memory_ids
+
+    def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
+        """
+        Wait for all pending tasks (both multiprocessing and async) to complete.
+        """
+        success = True
+        
+        # Wait for multiprocessing tasks
+        if self.enable_multiprocessing:
+            if not self._pending_mp_event.wait(timeout=timeout):
+                with self.lock:  # Use existing lock to check count
+                    remaining = self._pending_mp_count
+                logging.warning(f"Timeout waiting for {remaining} multiprocessing tasks")
+                success = False
+        
+        # Wait for async thread pool tasks (existing code)
+        if self.enable_async and self._pending_tasks:
+            try:
+                done, not_done = concurrent.futures.wait(
+                    self._pending_tasks, 
+                    timeout=timeout,
+                    return_when=concurrent.futures.ALL_COMPLETED
+                )
+                self._pending_tasks.clear()
+                if not_done:
+                    logging.warning(f"Timeout waiting for {len(not_done)} async tasks")
+                    success = False
+            except Exception as e:
+                logging.error(f"Error waiting for async tasks: {e}")
+                success = False
+        
+        return success
 
     def _process_memory_sync(self, memory_item: MemoryItem):
         """Process a memory item synchronously."""
@@ -762,30 +905,92 @@ class Hippocampus:
         start_time = time.time()
         
         try:
-            # For searching, we need embedders in the main process
+            # Ensure embedders are initialized in the main process for searching
             if not self.embedders:
+                logging.debug("Initializing embedders for search operation...")
                 self._initialize_embedders()
             
+            # Double-check that the specific embedder exists and is properly initialized
             embedder = self.embedders.get(modality)
             if not embedder:
                 logging.error(f"No embedder available for modality {modality}")
+                logging.debug(f"Available embedders: {list(self.embedders.keys())}")
                 return []
             
-            if modality in [ModalityType.TEXT, ModalityType.SCENE, ModalityType.NOUNS]:
-                query_embedding = embedder.embed_string(query)
-            elif modality == ModalityType.IMAGE:
-                query_embedding = embedder.embed_image(query)
-            elif modality == ModalityType.AUDIO:
-                if isinstance(query, str):
-                    embedding_array = embedder.embed_wav_file(query)
-                    query_embedding = embedding_array.mean(axis=0).tolist()
+            # Validate that the embedder is properly loaded
+            try:
+                # Check if embedder has the required methods and is properly initialized
+                if modality in [ModalityType.TEXT, ModalityType.SCENE, ModalityType.NOUNS]:
+                    if not hasattr(embedder, 'embed_string'):
+                        logging.error(f"Text embedder missing embed_string method")
+                        return []
+                    # Test with a simple string to ensure it's working
+                    if not hasattr(embedder, 'model') or embedder.model is None:
+                        logging.error(f"Text embedder model not properly loaded")
+                        return []
+                elif modality == ModalityType.IMAGE:
+                    if not hasattr(embedder, 'embed_image'):
+                        logging.error(f"Image embedder missing embed_image method")
+                        return []
+                    if not hasattr(embedder, 'model') or embedder.model is None:
+                        logging.error(f"Image embedder model not properly loaded")
+                        return []
+                elif modality == ModalityType.AUDIO:
+                    if not hasattr(embedder, 'embed_wav_file') and not hasattr(embedder, 'embed_audio_data'):
+                        logging.error(f"Audio embedder missing required methods")
+                        return []
+            except Exception as validation_error:
+                logging.error(f"Embedder validation failed for {modality}: {validation_error}")
+                # Try to reinitialize the specific embedder
+                try:
+                    logging.info(f"Attempting to reinitialize {modality} embedder...")
+                    if modality in [ModalityType.TEXT, ModalityType.SCENE, ModalityType.NOUNS]:
+                        from mxbai_embed import MxBaiEmbedder
+                        self.embedders[modality] = MxBaiEmbedder(cuda_device=self.cuda_device)
+                        if modality == ModalityType.TEXT:
+                            self.embedders[ModalityType.SCENE] = self.embedders[ModalityType.TEXT]
+                            self.embedders[ModalityType.NOUNS] = self.embedders[ModalityType.TEXT]
+                    elif modality == ModalityType.IMAGE:
+                        from beit_embed import BeITEmbedder
+                        self.embedders[modality] = BeITEmbedder(cuda_device=self.cuda_device)
+                    elif modality == ModalityType.AUDIO:
+                        from vggish_embed import VGGishEmbedder
+                        self.embedders[modality] = VGGishEmbedder()
+                    
+                    embedder = self.embedders.get(modality)
+                    logging.info(f"Successfully reinitialized {modality} embedder")
+                except Exception as reinit_error:
+                    logging.error(f"Failed to reinitialize {modality} embedder: {reinit_error}")
+                    return []
+            
+            # Generate query embedding
+            try:
+                if modality in [ModalityType.TEXT, ModalityType.SCENE, ModalityType.NOUNS]:
+                    query_embedding = embedder.embed_string(query)
+                elif modality == ModalityType.IMAGE:
+                    query_embedding = embedder.embed_image(query)
+                elif modality == ModalityType.AUDIO:
+                    if isinstance(query, str):
+                        embedding_array = embedder.embed_wav_file(query)
+                        query_embedding = embedding_array.mean(axis=0).tolist()
+                    else:
+                        embedding_array = embedder.embed_audio_data(query)
+                        query_embedding = embedding_array.mean(axis=0).tolist()
                 else:
-                    embedding_array = embedder.embed_audio_data(query)
-                    query_embedding = embedding_array.mean(axis=0).tolist()
-            else:
-                logging.error(f"Unsupported modality: {modality}")
+                    logging.error(f"Unsupported modality: {modality}")
+                    return []
+                
+                if not query_embedding:
+                    logging.error(f"Failed to generate embedding for query")
+                    return []
+                    
+            except Exception as embed_error:
+                logging.error(f"Error generating query embedding: {embed_error}")
+                import traceback
+                logging.debug(f"Embedding error traceback: {traceback.format_exc()}")
                 return []
             
+            # Determine database name
             if not database_name:
                 db_mapping = {
                     ModalityType.TEXT: self._convo_db,
@@ -796,8 +1001,13 @@ class Hippocampus:
                 }
                 database_name = db_mapping.get(modality, self._convo_db)
             
+            # Perform similarity search
             import numpy as np
             query_vector = np.array(query_embedding)
+            
+            if not self.memory_store:
+                logging.error("Memory store not initialized")
+                return []
             
             results = self.memory_store.similarity_search(
                 query_vector=query_vector,
@@ -818,6 +1028,8 @@ class Hippocampus:
             
         except Exception as e:
             logging.error(f"Search error: {e}")
+            import traceback
+            logging.debug(f"Search error traceback: {traceback.format_exc()}")
             return []
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -873,9 +1085,90 @@ class Hippocampus:
             logging.error(f"Error saving memories: {e}")
             return False
 
+
+    """
+    convenience wrapper methods for embedding
+    """
+
+    def embed_string(self, sentence: str) -> List[float]:
+        """
+        Embed a single string using the text embedder.
+        
+        Args:
+            sentence: Input string to embed
+            
+        Returns:
+            List of embedding values
+        """
+        try:
+            # Ensure embedders are initialized
+            if not self.embedders:
+                self._initialize_embedders()
+            
+            text_embedder = self.embedders.get(ModalityType.TEXT)
+            if not text_embedder:
+                logging.error("Text embedder not available")
+                return []
+            
+            embedding = text_embedder.embed_string(sentence)
+            logging.debug(f"Generated embedding for string (length: {len(embedding)})")
+            return embedding
+            
+        except Exception as e:
+            logging.error(f"Error embedding string: {e}")
+            return []
+
+    def string_embedding_similarity(self, string1: str, string2: str) -> float:
+        """
+        Calculate cosine similarity between two strings using their embeddings.
+        
+        Args:
+            string1: First string to compare
+            string2: Second string to compare
+            
+        Returns:
+            Cosine similarity score between -1 and 1 (higher = more similar)
+        """
+        try:
+            # Get embeddings for both strings
+            embedding1 = self.embed_string(string1)
+            embedding2 = self.embed_string(string2)
+            
+            if not embedding1 or not embedding2:
+                logging.error("Failed to generate embeddings for similarity calculation")
+                return 0.0
+            
+            # Convert to numpy arrays for calculation
+            import numpy as np
+            vec1 = np.array(embedding1)
+            vec2 = np.array(embedding2)
+            
+            # Calculate cosine similarity
+            dot_product = np.dot(vec1, vec2)
+            norm1 = np.linalg.norm(vec1)
+            norm2 = np.linalg.norm(vec2)
+            
+            if norm1 == 0 or norm2 == 0:
+                logging.warning("Zero norm vector detected in similarity calculation")
+                return 0.0
+            
+            similarity = dot_product / (norm1 * norm2)
+            
+            logging.debug(f"Calculated similarity: {similarity:.4f}")
+            return float(similarity)
+            
+        except Exception as e:
+            logging.error(f"Error calculating string similarity: {e}")
+            return 0.0
+    
     def shutdown(self):
         """Gracefully shutdown the system with cross-platform compatibility."""
         logging.info("Shutting down Hippocampus...")
+        
+        # Wait for async tasks to complete
+        if self.enable_async and self._pending_tasks:
+            logging.info(f"Waiting for {len(self._pending_tasks)} pending async tasks...")
+            self.wait_for_completion(timeout=10.0)
         
         # Save all memories
         self.save_all_memories()
@@ -923,6 +1216,11 @@ class Hippocampus:
                 if self.result_thread.is_alive():
                     logging.warning("Result collector thread did not stop gracefully")
         
+        # Shutdown thread pool
+        if self.enable_async and self._thread_pool:
+            logging.info("Shutting down thread pool...")
+            self._thread_pool.shutdown(wait=True, timeout=10.0)
+        
         # Clean up resources
         try:
             if hasattr(self, 'processing_queue') and self.processing_queue:
@@ -960,8 +1258,6 @@ class Hippocampus:
             logging.error(f"Exception in context manager: {exc_type.__name__}: {exc_val}")
         self.shutdown()
 
-
-
 # Example usage and testing
 if __name__ == "__main__":
     """
@@ -981,7 +1277,7 @@ if __name__ == "__main__":
         memory_system.add_memory("Test content", ModalityType.TEXT)
     """
     # Windows multiprocessing guard
-    mp.freeze_support()
+    #mp.freeze_support()
     
     # Example usage
     try:
@@ -992,7 +1288,7 @@ if __name__ == "__main__":
             cuda_device=1  # Use 0 for first GPU, 1 for second, None for CPU or will default to first GPU if cuda detected
         ) as hippocampus:
             
-            # Add text memories
+            # Add text 
             text_id = hippocampus.add_memory(
                 "The user mentioned they like coffee in the morning",
                 ModalityType.TEXT,
@@ -1003,7 +1299,8 @@ if __name__ == "__main__":
             batch_items = [
                 ("Good morning", ModalityType.TEXT, {"time": "09:00"}),
                 ("How are you today?", ModalityType.TEXT, {"time": "09:01"}),
-                ("I'm doing well, thanks", ModalityType.TEXT, {"time": "09:02"})
+                ("I'm doing well, thanks", ModalityType.TEXT, {"time": "09:02"}),
+                ("My dog's name is king", ModalityType.TEXT, {"time": "09:02"})
             ]
             batch_ids = hippocampus.add_memories_batch(batch_items)
             

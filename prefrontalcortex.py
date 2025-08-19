@@ -2,36 +2,21 @@
 import subprocess,sys
 from typing import List, Tuple
 import logging
+import json
+
 logging.basicConfig(level=logging.INFO)
 
 class PrefrontalCortex:
         """
         Specialized class to use Qwen to summarize conversations as well as determine the focus 
         """
+        from hippocampus import Hippocampus, MemoryItem, ModalityType
+        def __init__(self,llm,hippocampus):
+            self.llm = llm #instance of Qwen llm
+            self.spacy = None #will hold reference to the spaCy noun finding library
+            self._check_and_install_dependencies()
+            self.hipcamp =  hippocampus
 
-        import json
-        def __init__(self,llm):
-                self.llm = llm #instance of Qwen llm
-                self.spacy = None #will hold reference to the spaCy noun finding library
-                self._check_and_install_dependencies()
-
-        def json_to_string(self,json_data):
-                """
-                Convert JSON data to a formatted string.
-                
-                Args:
-                    json_data: Can be a JSON string, list, or dict
-                
-                Returns:
-                    str: Formatted JSON string
-                """
-                # If it's already a string, parse it first
-                if isinstance(json_data, str):
-                    json_data = json.loads(json_data)
-                
-                # Convert to formatted string with indentation
-                return json.dumps(json_data, indent=2, ensure_ascii=False)
-        
         def _check_and_install_dependencies(self) -> list:
             """
             Check if required dependencies are installed and install if missing.
@@ -54,29 +39,75 @@ class PrefrontalCortex:
                 except (subprocess.CalledProcessError, ImportError) as e:
                     logging.error(f"Failed to install or import spaCy: {e}")
                     raise ImportError("WARNING! Failed to install or import spacy")
-            
+
+        def json_to_string(self,json_data):
+                """
+                Convert JSON data to a formatted string.
+                
+                Args:
+                    json_data: Can be a JSON string, list, or dict
+                
+                Returns:
+                    str: Formatted JSON string
+                """
+                # If it's already a string, parse it first
+                if isinstance(json_data, str):
+                    json_data = json.loads(json_data)
+                
+                # Convert to formatted string with indentation
+                return json.dumps(json_data, indent=2, ensure_ascii=False)
+ 
         def extract_entities_and_nouns(self, txt: str) -> Tuple[List[str], List[str]]:
             """
             Extract named entities and nouns from text using spaCy.
+            MAX - 1,000,000 char limit on text input
             
             Args:
-                txt: Input text to analyze
+                txt: (json or string) Input text to analyze
                 
             Returns:
                 Tuple[List[str], List[str]]: (entities, nouns)
             """
             entities = []
             nouns = []
-            text = self.json_to_string(txt)
+            text = self.json_to_string(txt) #strigify if it was a json, not using json.dumps because we don't want the 'role' parts
+            if len(text) >= 1000000: 
+                text = text[:1000000]#model char hard limit
+                logging.warning("spaCy hard limit 1,000,000 chars reached, clipping input text")
 
             # Clean up newlines and extra whitespace, spaCy likes clean text else special chars return with the nouns
-            text = text.replace('\n', ' ')  # Replace newlines with spaces
+            #may need to use regex depending how many odd chars are seen in testing
+            text = text.replace('\\n', ' ')  # Replace newlines with spaces
+            text = text.replace('\\', ' ')
+            text = text.replace('*', ' ')
+            text = text.replace('#', ' ')
+
             text = ' '.join(text.split())   # Normalize whitespace
 
             try:
                 doc = self.spacy(text)
                 print(f"Extracting entities and nouns from text: {text[:50]}...")
                 
+                """
+                    PERSON:      People, including fictional.
+                    NORP:        Nationalities or religious or political groups.
+                    FAC:         Buildings, airports, highways, bridges, etc.
+                    ORG:         Companies, agencies, institutions, etc.
+                    GPE:         Countries, cities, states.
+                    LOC:         Non-GPE locations, mountain ranges, bodies of water.
+                    PRODUCT:     Objects, vehicles, foods, etc. (Not services.)
+                    EVENT:       Named hurricanes, battles, wars, sports events, etc.
+                    WORK_OF_ART: Titles of books, songs, etc.
+                    LAW:         Named documents made into laws.
+                    LANGUAGE:    Any named language.
+                    DATE:        Absolute or relative dates or periods.
+                    TIME:        Times smaller than a day.
+                    PERCENT:     Percentage, including ”%“.
+                    MONEY:       Monetary values, including unit.
+                    QUANTITY:    Measurements, as of weight or distance.
+                    ORDINAL:     “first”, “second”, etc.
+                    CARDINAL:    Numerals that do not fall under another type.
+                """
                 # Extract named entities (people, places, organizations, etc.)
                 for ent in doc.ents:
                     print(f"Found entity: {ent.text} ({ent.label_})")
@@ -125,6 +156,9 @@ class PrefrontalCortex:
             self.llm._update_system_prompt(current_sp)
             resp_dict = json.loads(response)
             return resp_dict
+        
+        def shutdown(self):
+             self.hipcamp.shutdown()
        
              
 
@@ -132,8 +166,15 @@ class PrefrontalCortex:
 if __name__ == "__main__":
     import json
     from qwen_ import Qwen
+    from hippocampus import Hippocampus, MemoryItem, ModalityType
+    import time
+
     chat = Qwen(auto_append_conversation = True)
-    prefrontal = PrefrontalCortex(chat)
+    hc = Hippocampus(enable_multiprocessing=True, 
+                        max_workers=2,
+                        cuda_device=0)  # Use 0 for first GPU, 1 for second, None for CPU or will default to first GPU if cuda detected
+                        
+    prefrontal = PrefrontalCortex(chat,hc)
 
 
     cooking_convo = [
@@ -260,24 +301,75 @@ if __name__ == "__main__":
 
     print(chat.messages)
 
+    print(f"Database info: {prefrontal.hipcamp.memory_store.get_database_info('conversations')}")
+
 
     while True:
         
         try:
             user_input = input("\nYou: ").strip()
-            print("\nFocus Analysis...")
+
             messages = chat.messages[1:] + [{'role':'user','content':user_input}]
+            old_nouns = None
+            if len(messages) > 3:
+                old_nouns = prefrontal.extract_entities_and_nouns(messages)
+                
+
+            #memory search test
+            print("search memory")
+            s_results = prefrontal.hipcamp.search_memory(
+                user_input,
+                ModalityType.TEXT,
+                top_k=3
+                #database_name='conversations'
+            )
+            print(f"Search results: {s_results}")
+
+            #conversation flow analysis
+            print("\nTopic Focus Analysis...")
             response = prefrontal.conversation_flow(messages=messages)#skip system prompt
-            print(f"prefrontal analysis: {response}")
-            nouns = prefrontal.extract_entities_and_nouns(messages)
-            print(f"\n\nNOUNS: {nouns}")
-            print("\nThinking...")
+            print(f"prefrontal convo flow analysis: {response}")
+            
+            print("\nProcess User Prompt...")
             response = chat.generate_response(user_input)#skip system prompt
+            nouns = prefrontal.extract_entities_and_nouns(messages+ [{'role':'assistant','content':response}])
+
+            # Save batch memories
+            batch_items = [
+                (f"User said:{user_input}. I replied:{response}", ModalityType.TEXT, {"time": "09:00"}),
+                (",".join(nouns[1]), ModalityType.SCENE, {"type": "nouns"})]
+            batch_ids = prefrontal.hipcamp.add_memories_batch(batch_items)
+            print(batch_ids)
+            
+            # Add text 
+            text_id = prefrontal.hipcamp.add_memory(
+                user_input,
+                ModalityType.TEXT,
+                {"source": "conversation", "importance": "high"}
+            )
+
+             #Compare
+            if old_nouns:
+                old_nouns_string = ",".join(old_nouns[1])
+                print(f"OLD NOUNS: {old_nouns_string}")
+                nouns_string = ",".join(nouns[1])
+                print(f"NEW NOUNS: {nouns_string}")
+                print("="*50)
+                noun_differences = list(set(old_nouns[1]) ^ set(nouns[1]))
+                print(f"Difference: {noun_differences}") # ^ symmetric difference, what's unique
+                similarity = prefrontal.hipcamp.string_embedding_similarity(old_nouns_string,nouns_string)
+                print(f"\nNoun Similarity: {similarity}")
+                similarity2 = prefrontal.hipcamp.string_embedding_similarity(old_nouns_string,",".join(noun_differences))
+                print(f"\nNoun Difference Similarity: {similarity2}")
+
+            
             print(f"\nQwen: {response}")
             chat.print_token_stats()
+            _ = prefrontal.hipcamp.save_all_memories() #NO AUTO SAVE, must manually request
 
         except KeyboardInterrupt:
                     print("\n\nChat interrupted. Goodbye!")
+                    prefrontal.shutdown()
                     break
         except Exception as e:
                     print(f"\nError: {e}")
