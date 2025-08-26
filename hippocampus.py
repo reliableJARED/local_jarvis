@@ -88,9 +88,9 @@ class Hippocampus:
         self._configure_cuda()
         
         # Initialize components
-        self.memory_store = None
+        self.memory_system = None
         self.embedders = {}
-        self.emotion = None #Emotion engine connection
+        self.amygdala = None #Emotion engine connection
         self.processing_queue = None
         self.result_queue = None
         self.stop_event = None
@@ -242,7 +242,7 @@ class Hippocampus:
         if database_config == None:
             database_config = self.database_config
         
-        self.memory_store = self._initialize_memory_store(database_config)
+        self.memory_system = self._initialize_memory_store(database_config)
 
         #setup the emotion engine
         self._initialize_emotion_engine()
@@ -312,7 +312,7 @@ class Hippocampus:
             
             logging.debug("Initializing emotion engine...")
             #text
-            self.emotion = EmotionEngine()
+            self.amygdala = EmotionEngine()
 
             logging.debug("Emotion Engine initialized successfully")
             
@@ -606,7 +606,7 @@ class Hippocampus:
                 import numpy as np
                 vector = np.array(memory_item.embedding)
                 
-                success = self.memory_store.add_to_database(
+                success = self.memory_system.add_to_database(
                     database_name=db_name,
                     item_id=memory_item.id,
                     vector=vector,
@@ -814,7 +814,7 @@ class Hippocampus:
                 done, not_done = concurrent.futures.wait(
                     self._pending_tasks, 
                     timeout=timeout,
-                    return_when=concurrent.futures.ALL_COMPLETED
+                    return_when = concurrent.futures.ALL_COMPLETED
                 )
                 self._pending_tasks.clear()
                 if not_done:
@@ -887,7 +887,7 @@ class Hippocampus:
         """
         try:
 
-            result = self.emotion.get_emotional_reaction(query)
+            result = self.amygdala.get_emotional_reaction(query)
 
             logging.debug(f"Emotional reaction completed, triggered {result}")
             return result
@@ -1005,11 +1005,11 @@ class Hippocampus:
             import numpy as np
             query_vector = np.array(query_embedding)
             
-            if not self.memory_store:
+            if not self.memory_system:
                 logging.error("Memory store not initialized")
                 return []
             
-            results = self.memory_store.similarity_search(
+            results = self.memory_system.similarity_search(
                 query_vector=query_vector,
                 database_name=database_name,
                 top_k=top_k
@@ -1038,9 +1038,9 @@ class Hippocampus:
             stats = self.stats.copy()
         
         try:
-            if self.memory_store:
-                for db_name in self.memory_store.list_databases():
-                    db_info = self.memory_store.get_database_info(db_name)
+            if self.memory_system:
+                for db_name in self.memory_system.list_databases():
+                    db_info = self.memory_system.get_database_info(db_name)
                     stats[f'{db_name}_items'] = db_info.get('total_items', 0)
         except Exception as e:
             logging.error(f"Error getting database stats: {e}")
@@ -1050,11 +1050,11 @@ class Hippocampus:
     def save_all_memories(self) -> bool:
         """Save all memories to persistent storage."""
         try:
-            if not self.memory_store:
+            if not self.memory_system:
                 logging.warning("No memory store available for saving")
                 return False
                 
-            result = self.memory_store.save_all_databases()
+            result = self.memory_system.save_all_databases()
             
             # The result from save_all_databases appears to be a list of success messages
             # Check if we got any actual failures
@@ -1085,11 +1085,9 @@ class Hippocampus:
             logging.error(f"Error saving memories: {e}")
             return False
 
-
     """
     convenience wrapper methods for embedding
     """
-
     def embed_string(self, sentence: str) -> List[float]:
         """
         Embed a single string using the text embedder.

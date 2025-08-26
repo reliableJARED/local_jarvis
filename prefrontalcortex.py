@@ -127,6 +127,10 @@ class PrefrontalCortex:
             
             return list(set(entities)), list(set(nouns))
 
+        def deconstruct_text(self, txt: str):
+             return None
+             
+
         def summarize_conversation(self,messages=None):
             #sp ="YOU MUST respond with JSON schema.  Your responses should ALWAYS have format {'response':'the response to the user prompt','focus':'what the subject or focus of the conversation is'} Return JSON"
             #sp = "YOU MUST respond with JSON schema.  Your responses should ALWAYS have format {'response':'the response to the user prompt','focus':'detailed description of what the subject and focus of the conversation is'} Return JSON"
@@ -301,7 +305,7 @@ if __name__ == "__main__":
 
     print(chat.messages)
 
-    print(f"Database info: {prefrontal.hipcamp.memory_store.get_database_info('conversations')}")
+    print(f"Database info: {prefrontal.hipcamp.memory_system.get_database_info('conversations')}")
 
 
     while True:
@@ -332,8 +336,9 @@ if __name__ == "__main__":
             
             print("\nProcess User Prompt...")
             response = chat.generate_response(user_input)#skip system prompt
+            print("\nProcess New Nouns...")
             nouns = prefrontal.extract_entities_and_nouns(messages+ [{'role':'assistant','content':response}])
-
+            print("\nSave Memories...")
             # Save batch memories
             batch_items = [
                 (f"User said:{user_input}. I replied:{response}", ModalityType.TEXT, {"time": "09:00"}),
