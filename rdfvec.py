@@ -762,20 +762,36 @@ class rdfMemRecall:
             query_norm = query_array / self.np.linalg.norm(query_array)
             
             # Search for similar vectors
-            similarities, indices = self.predicate_index.search(query_norm, min(top_k, self.predicate_index.ntotal))
+            similarities, indices = self.predicate_index.search(query_norm, min(top_k * 2, self.predicate_index.ntotal))  # Get more to account for duplicates
             
             results = []
+            seen_predicates = set()  # Track seen predicates (case-insensitive)
+            
             for similarity, idx in zip(similarities[0], indices[0]):
                 if idx != -1 and idx in self.vector_to_predicate:
                     predicate_uri = self.vector_to_predicate[idx]
+                    
+                    # Extract predicate name from URI for duplicate checking
+                    predicate_name = predicate_uri.split('/')[-1].split('#')[-1].lower()
+                    
+                    # Skip if we've already seen this predicate (case-insensitive)
+                    if predicate_name in seen_predicates:
+                        continue
+                        
+                    seen_predicates.add(predicate_name)
                     results.append((predicate_uri, float(similarity)))
+                    
+                    # Stop when we have enough unique results
+                    if len(results) >= top_k:
+                        break
             
             return results
             
         except Exception as e:
             print(f"Error searching similar predicates: {str(e)}")
             return []
-    
+
+
     def query_graph(self, query_dict: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Query the knowledge graph with flexible search patterns, semantic predicate matching,
@@ -868,10 +884,6 @@ class rdfMemRecall:
             filtered_relationships = []
             
             for rel_id, rel_data in self.temporal_relationships.items():
-                # Skip invalidated relationships unless requested
-                if not include_invalid and rel_data.get('valid_to') is not None:
-                    continue
-                
                 # Apply subject filter
                 if subject:
                     subject_uri_str = str(self.rdflib.URIRef(self.namespace[self._clean_uri_component(subject)]))
@@ -906,13 +918,18 @@ class rdfMemRecall:
                 valid_from = rel_data['valid_from']
                 valid_to = rel_data.get('valid_to')
                 
-                # Check if valid at specific time
-                #TODO: This at_time_dt check isn't working for search
+                # Check if valid at specific time - FIXED LOGIC
                 if at_time_dt:
+                    # Relationship must be active at the specified time
                     if valid_from > at_time_dt:
-                        continue  # Not yet valid
+                        continue  # Not yet valid at that time
                     if valid_to and valid_to <= at_time_dt:
-                        continue  # No longer valid
+                        continue  # No longer valid at that time
+                    # If we get here, the relationship was valid at at_time_dt
+                elif not include_invalid:
+                    # For non-temporal queries, skip invalidated relationships unless requested
+                    if valid_to is not None:
+                        continue
                 
                 # Check if valid within time range
                 if time_range_dt:
@@ -930,8 +947,12 @@ class rdfMemRecall:
                 # Add to filtered results
                 filtered_relationships.append((rel_id, rel_data, similarity_score, is_currently_valid))
             
-            # Convert to result format
+            # Convert to result format and apply similarity threshold
             for rel_id, rel_data, similarity_score, is_currently_valid in filtered_relationships:
+                # Apply similarity threshold filter (only if predicate was specified in query)
+                if predicate and similarity_score < self.predicate_similarity_search_threshold:
+                    continue
+                    
                 result = {
                     'subject': rel_data['subject'],
                     'predicate': rel_data['predicate'],
@@ -947,17 +968,17 @@ class rdfMemRecall:
                 }
                 results.append(result)
             
-            # Sort results by validity and similarity
+            # Sort results by similarity score (highest first), then by current validity, then by valid_from date
             results.sort(key=lambda x: (-x['similarity_score'], -int(x['is_currently_valid']), x['valid_from']))
             
             return results
-            
+                
         except Exception as e:
             print(f"Error in query_graph: {str(e)}")
             import traceback
             traceback.print_exc()
             return []
-    
+
     def get_relationship_history(self, subject: str, predicate: str = None, obj: str = None) -> List[Dict[str, Any]]:
         """
         Get the complete history of relationships for a subject, optionally filtered by predicate or object.
@@ -1302,9 +1323,9 @@ if __name__ == "__main__":
     # Example 2: Company ownership (temporal - companies change)
     print("\n--- Example 2: Company Ownership (temporal relationship) ---")
     connection2 = {
-        "subject": "Apple_Inc",
+        "subject": "Apple Inc",
         "predicate": "owns",
-        "object": "iPhone_Division", 
+        "object": "iPhone Division", 
         "directional": False,
         "valid_from": "2007-06-29"  # iPhone launch date
     }
@@ -1314,9 +1335,9 @@ if __name__ == "__main__":
     # Example 3: Employment relationship (will change over time)
     print("\n--- Example 3: Employment Relationship (Jane at Apple) ---")
     connection3 = {
-        "subject": "Jane_Doe",
+        "subject": "Jane Doe",
         "predicate": "works at", 
-        "object": "Apple_Inc",
+        "object": "Apple Inc",
         "directional": False,
         "valid_from": "2022-03-15"
     }
@@ -1326,9 +1347,9 @@ if __name__ == "__main__":
     # Example 4: Family relationship (permanent)
     print("\n--- Example 4: Parent-Child Relationship (permanent) ---")
     connection4 = {
-        "subject": "John_Smith",
+        "subject": "John Smith",
         "predicate": "parent of",
-        "object": "Sarah_Smith",
+        "object": "Sarah Smith",
         "directional": False,
         "valid_from": "1990-05-12"  # Sarah's birth date
     }
@@ -1338,9 +1359,9 @@ if __name__ == "__main__":
     # Example 5: Marriage relationship (can change)
     print("\n--- Example 5: Marriage Relationship ---")
     connection5 = {
-        "subject": "Alice_Johnson",
+        "subject": "Alice Johnson",
         "predicate": "married to",
-        "object": "Bob_Johnson", 
+        "object": "Bob Johnson", 
         "directional": True,  # Marriage is bidirectional
         "valid_from": "2018-07-20",
         "valid_to": "2023-12-15"  # Divorced
@@ -1365,9 +1386,9 @@ if __name__ == "__main__":
     # Now Jane gets a new job at Google
     print(f"\n--- Jane gets hired at Google (2024-08-01) ---")
     new_job = {
-        "subject": "Jane_Doe", 
-        "predicate": "works_at",
-        "object": "Google_Inc",
+        "subject": "Jane Doe", 
+        "predicate": "works at",
+        "object": "Google Inc",
         "valid_from": "2024-08-01",
         "auto_invalidate_conflicts": True  # This will auto-invalidate the Apple job
     }
