@@ -3,27 +3,32 @@ import sys
 import pickle
 import subprocess
 import logging
-from typing import Dict, List, Optional, Any, Tuple, Union, Set
+from typing import Dict, List, Optional, Any, Tuple, Union
 import json
 from collections import defaultdict, Counter
+from datetime import datetime
 
 
 
 class rdfMemRecall:
     """
-    A comprehensive RDF-based knowledge graph system with vector embeddings for predicates.
+    A comprehensive RDF-based knowledge graph system with vector embeddings for predicates
+    and temporal validity tracking.
     
     This class provides functionality to:
     - Create and manage RDF knowledge graphs using rdflib
     - Embed predicates using vector embeddings for semantic similarity
     - Handle directional vs symmetric relationships based on connection patterns
+    - Track temporal validity of relationships with 'valid_from' and 'valid_to' timestamps
     - Perform vector similarity searches on predicates
     - Store and retrieve RDF data with vector-enhanced querying
+    - Query relationships at specific points in time or across time ranges
     
     The system uses a mixed approach:
     - RDF triples for structural relationships (subject, predicate, object)
     - Vector embeddings for predicates to enable semantic similarity
     - Directional relationship detection through connection patterns
+    - Temporal validity periods for each relationship
     """
     
     def __init__(self, data_directory: str = "./rdf_data", 
@@ -61,7 +66,11 @@ class rdfMemRecall:
         # FAISS index for predicate similarity search
         self.predicate_index = None
         self.predicate_dimension = None
-        self.predicate_similarity_search_threshold = 0.85 #are predicates symanticaly similar threshold
+        self.predicate_similarity_search_threshold = 0.95 #are predicates symanticaly similar threshold
+        
+        # Temporal relationship tracking
+        self.temporal_relationships = {}  # Maps relationship_id to temporal metadata
+        self.relationship_counter = 0  # Counter for unique relationship IDs
         
         # Load existing data
         self._load_graph_data()
@@ -69,6 +78,7 @@ class rdfMemRecall:
         print(f"RDF Memory Recall initialized with graph '{graph_name}'")
         print(f"Graph contains {len(self.graph)} triples")
         print(f"Predicate vectors: {len(self.predicate_vectors)}")
+        print(f"Temporal relationships: {len(self.temporal_relationships)}")
     
     def _check_and_install_dependencies(self) -> None:
         """
@@ -166,6 +176,7 @@ class rdfMemRecall:
             self.graph.bind("rdf", self.rdflib.RDF) # "rdf" → http://www.w3.org/1999/02/22-rdf-syntax-ns# (core RDF vocabulary)
             self.graph.bind("rdfs", self.rdflib.RDFS) # "rdfs" → http://www.w3.org/2000/01/rdf-schema# (RDF Schema)
             self.graph.bind("owl", self.rdflib.OWL) # "owl" → http://www.w3.org/2002/07/owl# (Web Ontology Language)
+            self.graph.bind("time", self.rdflib.Namespace("http://www.w3.org/2006/time#")) # time ontology
             
             print(f"Database instance created with namespace: {namespace_uri}")
             return True
@@ -305,9 +316,107 @@ class rdfMemRecall:
             print(f"Error checking reverse connection: {str(e)}")
             return False
     
+    def _parse_timestamp(self, timestamp: Union[str, datetime, None]) -> Optional[datetime]:
+        """
+        Parse timestamp into datetime object.
+        
+        Args:
+            timestamp: String, datetime object, or None
+            
+        Returns:
+            Optional[datetime]: Parsed datetime or None
+        """
+        if timestamp is None:
+            return None
+        
+        if isinstance(timestamp, datetime):
+            return timestamp
+            
+        if isinstance(timestamp, str):
+            try:
+                # Try various formats
+                formats = [
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%d",
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S.%f",
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ]
+                
+                for fmt in formats:
+                    try:
+                        return datetime.strptime(timestamp, fmt)
+                    except ValueError:
+                        continue
+                
+                print(f"Could not parse timestamp: {timestamp}")
+                return None
+                
+            except Exception as e:
+                print(f"Error parsing timestamp {timestamp}: {str(e)}")
+                return None
+        
+        return None
+    
+    def _get_current_timestamp(self) -> datetime:
+        """Get current timestamp."""
+        return datetime.now()
+    
+    def _invalidate_conflicting_relationships(self, subject: str, predicate: str, obj: str, 
+                                           valid_from: datetime, 
+                                           predicate_vector: List[float]) -> List[str]:
+        """
+        Find and invalidate relationships that conflict with the new one.
+        
+        Args:
+            subject (str): Subject entity
+            predicate (str): Predicate text
+            obj (str): Object entity
+            valid_from (datetime): When the new relationship becomes valid
+            predicate_vector (List[float]): Vector of the new predicate
+            
+        Returns:
+            List[str]: List of invalidated relationship IDs
+        """
+        invalidated = []
+        
+        try:
+            # Find semantically similar predicates that might conflict
+            similar_predicates = self.search_similar_predicates(predicate, top_k=10)
+            
+            subject_clean = self._clean_uri_component(subject)
+            subject_uri = str(self.rdflib.URIRef(self.namespace[subject_clean]))
+            
+            # Check existing temporal relationships
+            for rel_id, temporal_data in self.temporal_relationships.items():
+                # Skip if already invalid
+                if temporal_data.get('valid_to') is not None:
+                    continue
+                
+                # Check if same subject and semantically similar predicate
+                if temporal_data['subject_uri'] == subject_uri:
+                    rel_predicate_uri = temporal_data['predicate_uri']
+                    
+                    # Check if predicates are semantically similar (indicating potential conflict)
+                    for similar_pred_uri, similarity in similar_predicates:
+                        if similar_pred_uri == rel_predicate_uri and similarity >= self.predicate_similarity_search_threshold:
+                            # This is a conflicting relationship - invalidate it
+                            temporal_data['valid_to'] = valid_from
+                            temporal_data['invalidated_by'] = f"New relationship: {subject} -> {predicate} -> {obj}"
+                            invalidated.append(rel_id)
+                            
+                            print(f"Invalidated conflicting relationship {rel_id} (similarity: {similarity:.3f})")
+                            break
+            
+            return invalidated
+            
+        except Exception as e:
+            print(f"Error invalidating conflicting relationships: {str(e)}")
+            return []
+    
     def add_connection(self, connection_data: Union[str, Dict[str, Any]]) -> bool:
         """
-        Add a connection to the knowledge graph with predicate consolidation.
+        Add a connection to the knowledge graph with predicate consolidation and temporal validity.
         
         Args:
             connection_data: JSON string or dict with format:
@@ -315,7 +424,10 @@ class rdfMemRecall:
                     "subject": "entity_name",
                     "predicate": "relationship_type", 
                     "object": "entity_name",
-                    "directional": true/false (optional)
+                    "directional": true/false (optional),
+                    "valid_from": "2024-01-15" or datetime object (optional, defaults to now),
+                    "valid_to": "2024-12-31" or datetime object (optional, defaults to None for open-ended),
+                    "auto_invalidate_conflicts": true/false (optional, defaults to True)
                 }
                 
         Returns:
@@ -332,9 +444,21 @@ class rdfMemRecall:
             predicate = data.get("predicate")
             obj = data.get("object")
             directional = data.get("directional", None)
+            valid_from = data.get("valid_from")
+            valid_to = data.get("valid_to")
+            auto_invalidate = data.get("auto_invalidate_conflicts", True)
             
             if not all([subject, predicate, obj]):
                 print("Error: Missing required fields (subject, predicate, object)")
+                return False
+            
+            # Parse timestamps
+            valid_from_dt = self._parse_timestamp(valid_from) or self._get_current_timestamp()
+            valid_to_dt = self._parse_timestamp(valid_to)
+            
+            # Validate timestamp logic
+            if valid_to_dt and valid_from_dt >= valid_to_dt:
+                print("Error: valid_from must be before valid_to")
                 return False
             
             # Find or create predicate
@@ -351,21 +475,147 @@ class rdfMemRecall:
                 directional = self._has_reverse_connection(subject, predicate_vector, obj)
                 print(f"Auto-detected as {'bidirectional' if directional else 'unidirectional'}")
             
-            # Add main triple
+            # Handle conflicting relationships
+            invalidated_relationships = []
+            if auto_invalidate:
+                invalidated_relationships = self._invalidate_conflicting_relationships(
+                    subject, predicate, obj, valid_from_dt, predicate_vector)
+            
+            # Generate unique relationship ID
+            self.relationship_counter += 1
+            relationship_id = f"rel_{self.relationship_counter}_{int(valid_from_dt.timestamp())}"
+            
+            # Add temporal metadata
+            temporal_data = {
+                'relationship_id': relationship_id,
+                'subject': subject,
+                'predicate': predicate,
+                'object': obj,
+                'subject_uri': str(subject_uri),
+                'predicate_uri': str(predicate_uri),
+                'object_uri': str(object_uri),
+                'valid_from': valid_from_dt,
+                'valid_to': valid_to_dt,
+                'directional': directional,
+                'created_timestamp': self._get_current_timestamp(),
+                'invalidated_relationships': invalidated_relationships
+            }
+            
+            self.temporal_relationships[relationship_id] = temporal_data
+            
+            # Add main triple to RDF graph with temporal annotation
             self.graph.add((subject_uri, predicate_uri, object_uri))
+            
+            # Add temporal triples using time ontology concepts
+            time_ns = self.rdflib.Namespace("http://www.w3.org/2006/time#")
+            temporal_uri = self.rdflib.URIRef(self.namespace[f"temporal_{relationship_id}"])
+            
+            # Link the relationship to its temporal information
+            self.graph.add((temporal_uri, self.rdflib.RDF.type, time_ns.Interval))
+            self.graph.add((temporal_uri, time_ns.hasBeginning, 
+                           self.rdflib.Literal(valid_from_dt.isoformat(), datatype=self.rdflib.XSD.dateTime)))
+            
+            if valid_to_dt:
+                self.graph.add((temporal_uri, time_ns.hasEnd, 
+                               self.rdflib.Literal(valid_to_dt.isoformat(), datatype=self.rdflib.XSD.dateTime)))
+            
+            # Link temporal interval to the main triple
+            statement_uri = self.rdflib.URIRef(self.namespace[f"statement_{relationship_id}"])
+            self.graph.add((statement_uri, self.rdflib.RDF.type, self.rdflib.RDF.Statement))
+            self.graph.add((statement_uri, self.rdflib.RDF.subject, subject_uri))
+            self.graph.add((statement_uri, self.rdflib.RDF.predicate, predicate_uri))
+            self.graph.add((statement_uri, self.rdflib.RDF.object, object_uri))
+            self.graph.add((statement_uri, self.namespace.validDuring, temporal_uri))
             
             # Add reverse connection for bidirectional relationships
             if directional:
                 reverse_uri, _ = self._get_or_create_predicate(f"{predicate}_reverse")
                 self.graph.add((object_uri, reverse_uri, subject_uri))
-                print(f"Added bidirectional: {subject} ↔ {obj}")
+                
+                # Add reverse temporal data
+                reverse_rel_id = f"{relationship_id}_reverse"
+                reverse_temporal_data = temporal_data.copy()
+                reverse_temporal_data['relationship_id'] = reverse_rel_id
+                reverse_temporal_data['subject'] = obj
+                reverse_temporal_data['object'] = subject
+                reverse_temporal_data['subject_uri'] = str(object_uri)
+                reverse_temporal_data['object_uri'] = str(subject_uri)
+                reverse_temporal_data['predicate_uri'] = str(reverse_uri)
+                self.temporal_relationships[reverse_rel_id] = reverse_temporal_data
+                
+                print(f"Added bidirectional: {subject} ↔ {obj} (valid from: {valid_from_dt.strftime('%Y-%m-%d %H:%M:%S')})")
             else:
-                print(f"Added unidirectional: {subject} → {obj}")
+                print(f"Added unidirectional: {subject} → {obj} (valid from: {valid_from_dt.strftime('%Y-%m-%d %H:%M:%S')})")
+            
+            if valid_to_dt:
+                print(f"  Valid until: {valid_to_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+            else:
+                print(f"  Valid indefinitely (until updated)")
+            
+            if invalidated_relationships:
+                print(f"  Invalidated {len(invalidated_relationships)} conflicting relationships")
             
             return True
             
         except Exception as e:
             print(f"Error adding connection: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def update_relationship_validity(self, relationship_id: str, 
+                                   valid_to: Union[str, datetime, None] = None,
+                                   extend_to: Union[str, datetime, None] = None) -> bool:
+        """
+        Update the validity period of an existing relationship.
+        
+        Args:
+            relationship_id (str): ID of the relationship to update
+            valid_to: New end date for validity (None for indefinite)
+            extend_to: Extend validity to this date (alternative to valid_to)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if relationship_id not in self.temporal_relationships:
+                print(f"Relationship {relationship_id} not found")
+                return False
+            
+            temporal_data = self.temporal_relationships[relationship_id]
+            
+            if valid_to is not None:
+                valid_to_dt = self._parse_timestamp(valid_to)
+                if valid_to_dt and valid_to_dt <= temporal_data['valid_from']:
+                    print("Error: valid_to must be after valid_from")
+                    return False
+                temporal_data['valid_to'] = valid_to_dt
+            elif extend_to is not None:
+                extend_to_dt = self._parse_timestamp(extend_to)
+                if extend_to_dt and extend_to_dt <= temporal_data['valid_from']:
+                    print("Error: extend_to must be after valid_from")
+                    return False
+                temporal_data['valid_to'] = extend_to_dt
+            
+            # Update RDF graph temporal information
+            time_ns = self.rdflib.Namespace("http://www.w3.org/2006/time#")
+            temporal_uri = self.rdflib.URIRef(self.namespace[f"temporal_{relationship_id}"])
+            
+            # Remove old hasEnd if it exists
+            for triple in list(self.graph.triples((temporal_uri, time_ns.hasEnd, None))):
+                self.graph.remove(triple)
+            
+            # Add new hasEnd if specified
+            if temporal_data['valid_to']:
+                self.graph.add((temporal_uri, time_ns.hasEnd, 
+                               self.rdflib.Literal(temporal_data['valid_to'].isoformat(), 
+                                                 datatype=self.rdflib.XSD.dateTime)))
+            
+            print(f"Updated relationship {relationship_id} validity")
+            return True
+            
+        except Exception as e:
+            print(f"Error updating relationship validity: {str(e)}")
             return False
 
     def _get_or_create_predicate(self, predicate_text: str) -> Tuple[Optional[Any], Optional[List[float]]]:
@@ -528,23 +778,31 @@ class rdfMemRecall:
     
     def query_graph(self, query_dict: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Query the knowledge graph with flexible search patterns and semantic predicate matching.
+        Query the knowledge graph with flexible search patterns, semantic predicate matching,
+        and temporal filtering.
         
         Args:
             query_dict (Dict[str, Any]): Query parameters with keys:
                 - subject (str, optional): Subject entity name
                 - predicate (str, optional): Predicate/relationship type (uses semantic matching)
                 - object (str, optional): Object entity name
+                - at_time (str/datetime, optional): Query relationships valid at specific time
+                - time_range (tuple, optional): Query relationships valid within time range (start, end)
+                - include_invalid (bool, optional): Include invalidated relationships (default: False)
                 
-        Four query patterns:
+        Query patterns with temporal support:
         1. Subject only: {'subject': 'john'} 
-        → Returns all connections from john (one level out)
-        2. Predicate only: {'predicate': 'similar historical event'}
-        → Returns all connections using semantically similar predicates
-        3. Subject + Predicate: {'subject': 'john', 'predicate': 'children'} 
-        → Returns all objects connected to john via 'children' relationship
-        4. Full Triple: {'subject': 'john', 'predicate': 'children', 'object': 'sarah'} 
-        → Checks if specific connection exists
+        → Returns all connections from john (one level out), currently valid
+        2. Subject at time: {'subject': 'john', 'at_time': '2023-06-15'}
+        → Returns all connections valid at that specific time
+        3. Predicate only: {'predicate': 'similar historical event'}
+        → Returns all connections using semantically similar predicates, currently valid
+        4. Subject + Predicate: {'subject': 'john', 'predicate': 'children'} 
+        → Returns all objects connected to john via 'children' relationship, currently valid
+        5. Full Triple: {'subject': 'john', 'predicate': 'children', 'object': 'sarah'} 
+        → Checks if specific connection exists, currently valid
+        6. Time range query: {'subject': 'john', 'time_range': ('2023-01-01', '2023-12-31')}
+        → Returns connections valid within the specified time range
         
         Returns:
             List[Dict[str, Any]]: List of result dictionaries with keys:
@@ -555,11 +813,32 @@ class rdfMemRecall:
                 - predicate_uri: Full predicate URI
                 - object_uri: Full object URI
                 - similarity_score: Predicate semantic similarity score (if applicable)
+                - valid_from: When relationship became valid
+                - valid_to: When relationship becomes invalid (None if still valid)
+                - relationship_id: Unique relationship identifier
+                - is_currently_valid: Boolean indicating current validity status
         """
         try:
+            # Ensure namespace is initialized
+            if not self.ensure_namespace_initialized():
+                print("Error: Could not initialize namespace for querying")
+                return []
+            
             subject = query_dict.get('subject')
             predicate = query_dict.get('predicate') 
             obj = query_dict.get('object')
+            at_time = query_dict.get('at_time')
+            time_range = query_dict.get('time_range')
+            include_invalid = query_dict.get('include_invalid', False)
+            
+            # Parse temporal constraints
+            at_time_dt = self._parse_timestamp(at_time) if at_time else None
+            time_range_dt = None
+            if time_range:
+                start_dt = self._parse_timestamp(time_range[0])
+                end_dt = self._parse_timestamp(time_range[1])
+                if start_dt and end_dt:
+                    time_range_dt = (start_dt, end_dt)
             
             # Clean and validate inputs
             if not subject and not predicate:
@@ -573,132 +852,171 @@ class rdfMemRecall:
                 # Create subject URI
                 subject_clean = self._clean_uri_component(subject)
                 subject_uri = self.rdflib.URIRef(self.namespace[subject_clean])
+                subject_uri_str = str(subject_uri)
                 
-                # Check if subject exists in graph
-                if not any(self.graph.triples((subject_uri, None, None))):
-                    print(f"Subject '{subject}' not found in graph")
+                # Check if subject exists in temporal relationships
+                matching_relationships = [
+                    (rel_id, rel_data) for rel_id, rel_data in self.temporal_relationships.items()
+                    if rel_data['subject_uri'] == subject_uri_str
+                ]
+                
+                if not matching_relationships:
+                    print(f"Subject '{subject}' not found in temporal relationships")
                     return []
             
-            # Pattern 1: Subject only - return all connections (one level out)
-            if subject and not predicate and not obj:
-                print(f"Finding all connections for subject '{subject}'")
-                
-                for s, p, o in self.graph.triples((subject_uri, None, None)):
-                    result = {
-                        'subject': self._extract_local_name(str(s)),
-                        'predicate': self._extract_local_name(str(p)),
-                        'object': self._extract_local_name(str(o)),
-                        'subject_uri': str(s),
-                        'predicate_uri': str(p),
-                        'object_uri': str(o),
-                        'similarity_score': 1.0  # Exact match
-                    }
-                    results.append(result)
-                
-                return results
+            # Filter relationships based on query criteria
+            filtered_relationships = []
             
-            # Pattern 2: Predicate only - find all connections with semantically similar predicates
-            if predicate and not subject and not obj:
-                print(f"Finding all connections using predicate '{predicate}' or semantically similar")
+            for rel_id, rel_data in self.temporal_relationships.items():
+                # Skip invalidated relationships unless requested
+                if not include_invalid and rel_data.get('valid_to') is not None:
+                    continue
                 
-                # Find semantically similar predicates
-                similar_predicates = self.search_similar_predicates(predicate, top_k=10)
+                # Apply subject filter
+                if subject:
+                    subject_uri_str = str(self.rdflib.URIRef(self.namespace[self._clean_uri_component(subject)]))
+                    if rel_data['subject_uri'] != subject_uri_str:
+                        continue
                 
-                if not similar_predicates:
-                    print(f"No similar predicates found for '{predicate}'")
-                    return []
-                
-                print(f"Found {len(similar_predicates)} similar predicates for '{predicate}':")
-                for pred_uri, similarity in similar_predicates[:3]:  # Show top 3
-                    pred_clean = self._extract_local_name(pred_uri)
-                    print(f"  - {pred_clean} (similarity: {similarity:.3f})")
-                
-                # Find all connections using these predicates
-                for pred_uri, similarity in similar_predicates:
-                    predicate_uri_ref = self.rdflib.URIRef(pred_uri)
-                    
-                    # Find all triples with this predicate
-                    for s, p, o in self.graph.triples((None, predicate_uri_ref, None)):
-                        result = {
-                            'subject': self._extract_local_name(str(s)),
-                            'predicate': self._extract_local_name(str(p)),
-                            'object': self._extract_local_name(str(o)),
-                            'subject_uri': str(s),
-                            'predicate_uri': str(p),
-                            'object_uri': str(o),
-                            'similarity_score': similarity
-                        }
-                        results.append(result)
-                
-                return results
-            
-            # Pattern 3 & 4: Use semantic predicate matching with subject
-            if predicate and subject:
-                # Find semantically similar predicates
-                similar_predicates = self.search_similar_predicates(predicate, top_k=10)
-                
-                if not similar_predicates:
-                    print(f"No similar predicates found for '{predicate}'")
-                    return []
-                
-                print(f"Found {len(similar_predicates)} similar predicates for '{predicate}':")
-                for pred_uri, similarity in similar_predicates[:3]:  # Show top 3
-                    pred_clean = self._extract_local_name(pred_uri)
-                    print(f"  - {pred_clean} (similarity: {similarity:.3f})")
-                
-                # Pattern 4: Full triple check - subject + predicate + object
+                # Apply object filter
                 if obj:
-                    print(f"Checking specific connection: '{subject}' -[{predicate}]-> '{obj}'")
-                    
-                    obj_clean = self._clean_uri_component(obj)
-                    obj_uri = self.rdflib.URIRef(self.namespace[obj_clean])
-                    
-                    # Check each similar predicate
-                    for pred_uri, similarity in similar_predicates:
-                        predicate_uri_ref = self.rdflib.URIRef(pred_uri)
-                        
-                        # Check if the specific triple exists
-                        if (subject_uri, predicate_uri_ref, obj_uri) in self.graph:
-                            result = {
-                                'subject': self._extract_local_name(str(subject_uri)),
-                                'predicate': self._extract_local_name(pred_uri),
-                                'object': self._extract_local_name(str(obj_uri)),
-                                'subject_uri': str(subject_uri),
-                                'predicate_uri': pred_uri,
-                                'object_uri': str(obj_uri),
-                                'similarity_score': similarity
-                            }
-                            results.append(result)
-                    
-                    return results
+                    obj_uri_str = str(self.rdflib.URIRef(self.namespace[self._clean_uri_component(obj)]))
+                    if rel_data['object_uri'] != obj_uri_str:
+                        continue
                 
-                # Pattern 3: Subject + predicate - find all connected objects
-                else:
-                    print(f"Finding all objects connected to '{subject}' via '{predicate}'")
+                # Apply predicate filter with semantic matching
+                predicate_match = True
+                similarity_score = 1.0
+                
+                if predicate:
+                    # Find semantically similar predicates
+                    similar_predicates = self.search_similar_predicates(predicate, top_k=10)
+                    predicate_match = False
                     
-                    # Search through similar predicates
                     for pred_uri, similarity in similar_predicates:
-                        predicate_uri_ref = self.rdflib.URIRef(pred_uri)
-                        
-                        # Find all objects connected via this predicate
-                        for s, p, o in self.graph.triples((subject_uri, predicate_uri_ref, None)):
-                            result = {
-                                'subject': self._extract_local_name(str(s)),
-                                'predicate': self._extract_local_name(str(p)),
-                                'object': self._extract_local_name(str(o)),
-                                'subject_uri': str(s),
-                                'predicate_uri': str(p),
-                                'object_uri': str(o),
-                                'similarity_score': similarity
-                            }
-                            results.append(result)
-                    
-                    return results
+                        if pred_uri == rel_data['predicate_uri']:
+                            predicate_match = True
+                            similarity_score = similarity
+                            break
+                
+                if not predicate_match:
+                    continue
+                
+                # Apply temporal filters
+                valid_from = rel_data['valid_from']
+                valid_to = rel_data.get('valid_to')
+                
+                # Check if valid at specific time
+                #TODO: This at_time_dt check isn't working for search
+                if at_time_dt:
+                    if valid_from > at_time_dt:
+                        continue  # Not yet valid
+                    if valid_to and valid_to <= at_time_dt:
+                        continue  # No longer valid
+                
+                # Check if valid within time range
+                if time_range_dt:
+                    start_dt, end_dt = time_range_dt
+                    # Relationship must overlap with the query range
+                    if valid_to and valid_to <= start_dt:
+                        continue  # Ended before range
+                    if valid_from >= end_dt:
+                        continue  # Starts after range
+                
+                # Determine if currently valid
+                current_time = self._get_current_timestamp()
+                is_currently_valid = valid_from <= current_time and (valid_to is None or valid_to > current_time)
+                
+                # Add to filtered results
+                filtered_relationships.append((rel_id, rel_data, similarity_score, is_currently_valid))
+            
+            # Convert to result format
+            for rel_id, rel_data, similarity_score, is_currently_valid in filtered_relationships:
+                result = {
+                    'subject': rel_data['subject'],
+                    'predicate': rel_data['predicate'],
+                    'object': rel_data['object'],
+                    'subject_uri': rel_data['subject_uri'],
+                    'predicate_uri': rel_data['predicate_uri'],
+                    'object_uri': rel_data['object_uri'],
+                    'similarity_score': similarity_score,
+                    'valid_from': rel_data['valid_from'],
+                    'valid_to': rel_data.get('valid_to'),
+                    'relationship_id': rel_id,
+                    'is_currently_valid': is_currently_valid
+                }
+                results.append(result)
+            
+            # Sort results by validity and similarity
+            results.sort(key=lambda x: (-x['similarity_score'], -int(x['is_currently_valid']), x['valid_from']))
             
             return results
             
         except Exception as e:
             print(f"Error in query_graph: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def get_relationship_history(self, subject: str, predicate: str = None, obj: str = None) -> List[Dict[str, Any]]:
+        """
+        Get the complete history of relationships for a subject, optionally filtered by predicate or object.
+        
+        Args:
+            subject (str): Subject entity
+            predicate (str, optional): Filter by predicate
+            obj (str, optional): Filter by object
+            
+        Returns:
+            List[Dict[str, Any]]: Chronologically ordered relationship history
+        """
+        try:
+            query_dict = {'subject': subject, 'include_invalid': True}
+            if predicate:
+                query_dict['predicate'] = predicate
+            if obj:
+                query_dict['object'] = obj
+            
+            relationships = self.query_graph(query_dict)
+            
+            # Sort by valid_from timestamp
+            relationships.sort(key=lambda x: x['valid_from'])
+            
+            print(f"Found {len(relationships)} relationships in history for '{subject}'")
+            
+            return relationships
+            
+        except Exception as e:
+            print(f"Error getting relationship history: {str(e)}")
+            return []
+    
+    def get_current_relationships(self, subject: str = None, predicate: str = None, obj: str = None) -> List[Dict[str, Any]]:
+        """
+        Get only currently valid relationships.
+        
+        Args:
+            subject (str, optional): Filter by subject
+            predicate (str, optional): Filter by predicate
+            obj (str, optional): Filter by object
+            
+        Returns:
+            List[Dict[str, Any]]: Currently valid relationships
+        """
+        try:
+            current_time = self._get_current_timestamp()
+            query_dict = {'at_time': current_time}
+            
+            if subject:
+                query_dict['subject'] = subject
+            if predicate:
+                query_dict['predicate'] = predicate
+            if obj:
+                query_dict['object'] = obj
+            
+            return self.query_graph(query_dict)
+            
+        except Exception as e:
+            print(f"Error getting current relationships: {str(e)}")
             return []
     
     def _extract_local_name(self, uri: str) -> str:
@@ -736,7 +1054,7 @@ class rdfMemRecall:
     
     def save_graph_data(self) -> bool:
         """
-        Save RDF graph and vector data to files.
+        Save RDF graph, vector data, and temporal relationship data to files.
         
         Returns:
             bool: True if successful, False otherwise
@@ -767,7 +1085,19 @@ class rdfMemRecall:
             with open(vectors_file, 'wb') as f:
                 pickle.dump(vector_data, f, protocol=pickle.HIGHEST_PROTOCOL)
             
+            # Save temporal relationships and namespace information
+            temporal_file = os.path.join(self.data_directory, f"{self.graph_name}_temporal.pkl")
+            temporal_data = {
+                'temporal_relationships': self.temporal_relationships,
+                'relationship_counter': self.relationship_counter,
+                'namespace_uri': str(self.namespace) if self.namespace else None
+            }
+            
+            with open(temporal_file, 'wb') as f:
+                pickle.dump(temporal_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            
             print(f"Vector data saved to {vectors_file}")
+            print(f"Temporal data saved to {temporal_file}")
             return True
             
         except Exception as e:
@@ -776,7 +1106,7 @@ class rdfMemRecall:
     
     def _load_graph_data(self) -> None:
         """
-        Load RDF graph and vector data from files.
+        Load RDF graph, vector data, and temporal relationship data from files.
         """
         try:
             # Load RDF graph with multiple format support
@@ -812,8 +1142,46 @@ class rdfMemRecall:
                 
                 print(f"Loaded vector data from {vectors_file}")
             
+            # Load temporal relationships and namespace
+            temporal_file = os.path.join(self.data_directory, f"{self.graph_name}_temporal.pkl")
+            if os.path.exists(temporal_file):
+                with open(temporal_file, 'rb') as f:
+                    temporal_data = pickle.load(f)
+                
+                self.temporal_relationships = temporal_data.get('temporal_relationships', {})
+                self.relationship_counter = temporal_data.get('relationship_counter', 0)
+                
+                # Restore namespace if it was saved
+                saved_namespace_uri = temporal_data.get('namespace_uri')
+                if saved_namespace_uri:
+                    self.namespace = self.rdflib.Namespace(saved_namespace_uri)
+                    # Rebind the namespace prefixes
+                    self.graph.bind("ex", self.namespace)
+                    self.graph.bind("rdf", self.rdflib.RDF)
+                    self.graph.bind("rdfs", self.rdflib.RDFS)
+                    self.graph.bind("owl", self.rdflib.OWL)
+                    self.graph.bind("time", self.rdflib.Namespace("http://www.w3.org/2006/time#"))
+                    print(f"Restored namespace: {saved_namespace_uri}")
+                
+                print(f"Loaded temporal data from {temporal_file}")
+            
         except Exception as e:
             print(f"Error loading graph data: {str(e)}")
+    
+    def ensure_namespace_initialized(self, default_uri: str = "http://example.org/") -> bool:
+        """
+        Ensure namespace is initialized, creating a default one if needed.
+        
+        Args:
+            default_uri (str): Default namespace URI to use if none exists
+            
+        Returns:
+            bool: True if namespace is available, False otherwise
+        """
+        if self.namespace is None:
+            print(f"Warning: Namespace not initialized. Creating default namespace: {default_uri}")
+            return self.create_database_instance(default_uri)
+        return True
     
     def _rebuild_predicate_index(self) -> None:
         """
@@ -845,25 +1213,37 @@ class rdfMemRecall:
     
     def get_graph_statistics(self) -> Dict[str, Any]:
         """
-        Get statistics about the knowledge graph.
+        Get statistics about the knowledge graph including temporal information.
         
         Returns:
             Dict[str, Any]: Graph statistics
         """
+        current_time = self._get_current_timestamp()
+        currently_valid = sum(1 for rel_data in self.temporal_relationships.values() 
+                            if rel_data['valid_from'] <= current_time and 
+                            (rel_data.get('valid_to') is None or rel_data['valid_to'] > current_time))
+        
+        invalidated = sum(1 for rel_data in self.temporal_relationships.values() 
+                        if rel_data.get('valid_to') is not None)
+        
         stats = {
             'total_triples': len(self.graph),
             'total_predicates': len(self.predicate_vectors),
             'unique_subjects': len(set(str(s) for s, p, o in self.graph)),
             'unique_objects': len(set(str(o) for s, p, o in self.graph)),
             'vector_dimension': self.predicate_dimension,
-            'faiss_index_size': self.predicate_index.ntotal if self.predicate_index else 0
+            'faiss_index_size': self.predicate_index.ntotal if self.predicate_index else 0,
+            'total_temporal_relationships': len(self.temporal_relationships),
+            'currently_valid_relationships': currently_valid,
+            'invalidated_relationships': invalidated,
+            'relationship_counter': self.relationship_counter
         }
         
         return stats
     
     def clear_graph(self) -> bool:
         """
-        Clear all data from the graph.
+        Clear all data from the graph including temporal relationships.
         
         Returns:
             bool: True if successful, False otherwise
@@ -874,6 +1254,8 @@ class rdfMemRecall:
             self.vector_to_predicate = {}
             self.predicate_index = None
             self.predicate_dimension = None
+            self.temporal_relationships = {}
+            self.relationship_counter = 0
             
             print("Graph cleared successfully")
             return True
@@ -882,11 +1264,10 @@ class rdfMemRecall:
             print(f"Error clearing graph: {str(e)}")
             return False
 
-
-# Demo and testing section
+# Demo and testing section with temporal features
 if __name__ == "__main__":
     print("="*60)
-    print("RDF Memory Recall Demo")
+    print("RDF Memory Recall Demo - Enhanced with Temporal Features")
     print("="*60)
     
     # Initialize the system
@@ -905,250 +1286,298 @@ if __name__ == "__main__":
     
     print("\n4. Adding connections to demonstrate different relationship types...")
     
-    # Example 1: Explicit bidirectional relationship
-    print("\n--- Example 1: Explicit Bidirectional Relationship ---")
+    # Example 1: Explicit bidirectional relationship with temporal info
+    print("\n--- Example 1: Historical Event Connection (with temporal validity) ---")
     connection1 = {
-        "subject": "Tiananmen_Protest_1989",
-        "predicate": "similar_historical_event",
-        "object": "Michigan_Protest_1965",
-        "directional": True
+        "subject": "Tiananmen Protest 1989",
+        "predicate": "similar historical event",
+        "object": "Michigan Protest 1965",
+        "directional": True,
+        "valid_from": "2023-01-01",  # When this comparison became recognized
+        "valid_to": None  # Still valid
     }
     result1 = rdf_memory.add_connection(connection1)
     print(f"Connection added: {result1}")
     
-    # Example 2: Explicit unidirectional relationship (hierarchical)
-    print("\n--- Example 2: Explicit Unidirectional Relationship ---")
+    # Example 2: Company ownership (temporal - companies change)
+    print("\n--- Example 2: Company Ownership (temporal relationship) ---")
     connection2 = {
         "subject": "Apple_Inc",
         "predicate": "owns",
-        "object": "iPhone_Division",
-        "directional": False
+        "object": "iPhone_Division", 
+        "directional": False,
+        "valid_from": "2007-06-29"  # iPhone launch date
     }
     result2 = rdf_memory.add_connection(connection2)
     print(f"Connection added: {result2}")
     
-    # Example 3: Another hierarchical relationship
-    print("\n--- Example 3: Parent-Child Relationship ---")
+    # Example 3: Employment relationship (will change over time)
+    print("\n--- Example 3: Employment Relationship (Jane at Apple) ---")
     connection3 = {
-        "subject": "John_Smith",
-        "predicate": "parent_of",
-        "object": "Sarah_Smith",
-        "directional": False
+        "subject": "Jane_Doe",
+        "predicate": "works at", 
+        "object": "Apple_Inc",
+        "directional": False,
+        "valid_from": "2022-03-15"
     }
     result3 = rdf_memory.add_connection(connection3)
     print(f"Connection added: {result3}")
     
-    # Example 4: Auto-detect - first connection (should be unidirectional)
-    print("\n--- Example 4: Auto-detect - First Family Connection ---")
+    # Example 4: Family relationship (permanent)
+    print("\n--- Example 4: Parent-Child Relationship (permanent) ---")
     connection4 = {
-        "subject": "Bob Johnson",
-        "predicate": "is family member of",
-        "object": "Alice Johnson"
-        # No directional field - will auto-detect
+        "subject": "John_Smith",
+        "predicate": "parent of",
+        "object": "Sarah_Smith",
+        "directional": False,
+        "valid_from": "1990-05-12"  # Sarah's birth date
     }
     result4 = rdf_memory.add_connection(connection4)
     print(f"Connection added: {result4}")
     
-    # Example 5: Auto-detect - reverse connection (should become bidirectional)
-    print("\n--- Example 5: Auto-detect - Reverse Family Connection ---")
+    # Example 5: Marriage relationship (can change)
+    print("\n--- Example 5: Marriage Relationship ---")
     connection5 = {
         "subject": "Alice_Johnson",
-        "predicate": "family member",  # Semantically similar to "is family member of"
-        "object": "Bob Johnson"
-        # No directional field - should detect reverse and become bidirectional
+        "predicate": "married to",
+        "object": "Bob_Johnson", 
+        "directional": True,  # Marriage is bidirectional
+        "valid_from": "2018-07-20",
+        "valid_to": "2023-12-15"  # Divorced
     }
     result5 = rdf_memory.add_connection(connection5)
     print(f"Connection added: {result5}")
     
-    # Example 6: Work relationship
-    print("\n--- Example 6: Work Relationship ---")
-    connection6 = {
-        "subject": "Microsoft",
-        "predicate": "employs",
-        "object": "Jane Developer",
-        "directional": False
-    }
-    result6 = rdf_memory.add_connection(connection6)
-    print(f"Connection added: {result6}")
+    print("\n" + "="*60)
+    print("TEMPORAL FUNCTIONALITY DEMONSTRATION")
+    print("="*60)
     
-    # Example 7: Temporal connection (events)
-    print("\n--- Example 7: Temporal Event Connection ---")
-    connection7 = {
-        "subject": "World War 2",
-        "predicate": "preceded by",
-        "object": "World War 1",
-        "directional": False  # Temporal relationships are typically unidirectional
-    }
-    result7 = rdf_memory.add_connection(connection7)
-    print(f"Connection added: {result7}")
+    # Demonstrate job change scenario
+    print("\n--- SCENARIO: Jane Changes Jobs ---")
+    print("Current situation: Jane works at Apple (since 2022-03-15)")
     
-    print("\n5. Graph Statistics:")
-    print("="*40)
+    # Query Jane's current job
+    current_job = rdf_memory.get_current_relationships(subject="Jane_Doe", predicate="works_at")
+    print(f"\nJane's current job:")
+    for rel in current_job:
+        print(f"  {rel['subject']} works at {rel['object']} (since {rel['valid_from'].strftime('%Y-%m-%d')})")
+    
+    # Now Jane gets a new job at Google
+    print(f"\n--- Jane gets hired at Google (2024-08-01) ---")
+    new_job = {
+        "subject": "Jane_Doe", 
+        "predicate": "works_at",
+        "object": "Google_Inc",
+        "valid_from": "2024-08-01",
+        "auto_invalidate_conflicts": True  # This will auto-invalidate the Apple job
+    }
+    rdf_memory.add_connection(new_job)
+    
+    # Query Jane's current job again
+    print(f"\nJane's job after the change:")
+    current_job_after = rdf_memory.get_current_relationships(subject="Jane Doe", predicate="works at")
+    for rel in current_job_after:
+        print(f"  {rel['subject']} works at {rel['object']} (since {rel['valid_from'].strftime('%Y-%m-%d')})")
+        print(f"  Currently valid: {rel['is_currently_valid']}")
+    
+    # Get Jane's complete job history
+    print(f"\nJane's complete employment history:")
+    job_history = rdf_memory.get_relationship_history("Jane Doe", "works at")
+    for i, rel in enumerate(job_history, 1):
+        valid_until = rel['valid_to'].strftime('%Y-%m-%d') if rel['valid_to'] else "present"
+        status = "ACTIVE" if rel['is_currently_valid'] else "ENDED"
+        print(f"  {i}. {rel['object']} ({rel['valid_from'].strftime('%Y-%m-%d')} to {valid_until}) [{status}]")
+    
+    print("\n--- TEMPORAL QUERIES ---")
+    
+    # Query relationships at specific point in time
+    print("\n1. What was Jane's job in March 2023?")
+    job_in_march_2023 = rdf_memory.query_graph({
+        "subject": "Jane Doe",
+        "predicate": "works at", 
+        "at_time": "2023-03-15"
+    })
+    
+    if job_in_march_2023:
+        for rel in job_in_march_2023:
+            print(f"   Jane worked at {rel['object']} in March 2023")
+    else:
+        print("   No job found for that time period")
+    
+    # Query relationships within time range
+    print("\n2. All of Jane's jobs between 2022 and 2024:")
+    jobs_2022_2024 = rdf_memory.query_graph({
+        "subject": "Jane Doe",
+        "predicate": "works at",
+        "time_range": ("2022-01-01", "2024-12-31"),
+        "include_invalid": True
+    })
+    
+    for rel in jobs_2022_2024:
+        valid_until = rel['valid_to'].strftime('%Y-%m-%d') if rel['valid_to'] else "ongoing"
+        print(f"   {rel['object']} ({rel['valid_from'].strftime('%Y-%m-%d')} to {valid_until})")
+    
+    # Query who was married in 2020
+    print("\n3. Who was married in 2020?")
+    married_2020 = rdf_memory.query_graph({
+        "predicate": "married to",
+        "at_time": "2020-06-15"
+    })
+    
+    for rel in married_2020:
+        print(f"   {rel['subject']} was married to {rel['object']} in 2020,  {rel['similarity_score']}")
+    
+    # Query who is currently married
+    print("\n4. Who is currently married?")
+    currently_married = rdf_memory.get_current_relationships(predicate="married_to")
+    
+    if currently_married:
+        for rel in currently_married:
+            print(f"   {rel['subject']} is married to {rel['object']}")
+    else:
+        print("   No current marriages in the database")
+    
+    print("\n--- UPDATING RELATIONSHIP VALIDITY ---")
+    
+    # Find Alice and Bob's marriage relationship ID
+    alice_bob_marriage = rdf_memory.query_graph({
+        "subject": "Alice_Johnson",
+        "predicate": "married_to", 
+        "object": "Bob_Johnson",
+        "include_invalid": True
+    })
+    
+    if alice_bob_marriage:
+        rel_id = alice_bob_marriage[0]['relationship_id']
+        print(f"\nFound marriage relationship ID: {rel_id}")
+        
+        # Let's say they reconciled - extend the marriage
+        print("Scenario: Alice and Bob reconciled, extending marriage validity...")
+        rdf_memory.update_relationship_validity(rel_id, valid_to=None)  # Remove end date
+        
+        # Check if they're married now
+        current_marriage = rdf_memory.get_current_relationships(
+            subject="Alice_Johnson", predicate="married_to"
+        )
+        
+        if current_marriage:
+            print("   Alice and Bob are now married again!")
+        else:
+            print("   Update didn't work as expected")
+    
+    print("\n5. Enhanced Graph Statistics (with temporal info):")
+    print("="*50)
     stats = rdf_memory.get_graph_statistics()
     for key, value in stats.items():
         print(f"   {key}: {value}")
     
-    print("\n6. All Triples in Graph:")
+    print("\n6. All Temporal Relationships:")
     print("="*40)
     
-    all_triples = rdf_memory.get_all_triples()
-
-    for i, (s, p, o) in enumerate(all_triples, 1):
-        # Clean up the URIs for display
-        s_clean = s.split('/')[-1] if '/' in s else s
-        p_clean = p.split('/')[-1] if '/' in p else p  
-        o_clean = o.split('/')[-1] if '/' in o else o
-        print(f"   {i:2d}. {s_clean} --[{p_clean}]--> {o_clean}")
+    # Show all temporal relationships in a nice format
+    from datetime import datetime
+    current_time = datetime.now()
     
-    print("\n7. Testing Predicate Similarity Search:")
+    print("\n   Current Relationships:")
+    current_rels = rdf_memory.get_current_relationships()
+    for i, rel in enumerate(current_rels, 1):
+        print(f"   {i:2d}. {rel['subject']} -[{rel['predicate']}]-> {rel['object']}")
+        print(f"       Valid since: {rel['valid_from'].strftime('%Y-%m-%d %H:%M:%S')}")
+        if rel['valid_to']:
+            print(f"       Valid until: {rel['valid_to'].strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            print(f"       Valid until: ongoing")
+        print(f"       Relationship ID: {rel['relationship_id']}")
+        print()
+    
+    print("\n   Historical (Invalid) Relationships:")
+    all_rels = rdf_memory.query_graph({"subject": "Jane_Doe", "include_invalid": True})
+    invalid_rels = [rel for rel in all_rels if not rel['is_currently_valid']]
+    
+    for i, rel in enumerate(invalid_rels, 1):
+        print(f"   {i:2d}. {rel['subject']} -[{rel['predicate']}]-> {rel['object']}")
+        print(f"       Was valid: {rel['valid_from'].strftime('%Y-%m-%d')} to {rel['valid_to'].strftime('%Y-%m-%d') if rel['valid_to'] else 'unknown'}")
+        print(f"       Relationship ID: {rel['relationship_id']}")
+        print()
+    
+    print("\n7. Testing Predicate Similarity Search with Temporal Context:")
     print("="*40)
     if rdf_memory.embedders:  # Only if embedder is available
-        similar_predicates = rdf_memory.search_similar_predicates("family relationship", top_k=3)
+        # Test employment-related predicate similarity
+        similar_predicates = rdf_memory.search_similar_predicates("employed by", top_k=3)
         if similar_predicates:
-            print("   Similar predicates to 'family relationship':")
+            print("   Similar predicates to 'employed by':")
             for pred_uri, similarity in similar_predicates:
                 pred_clean = pred_uri.split('/')[-1] if '/' in pred_uri else pred_uri
                 print(f"   - {pred_clean} (similarity: {similarity:.3f})")
+                
+                # Show relationships using this predicate
+                rels_with_pred = rdf_memory.query_graph({"predicate": pred_clean})
+                for rel in rels_with_pred:
+                    status = "ACTIVE" if rel['is_currently_valid'] else "ENDED"
+                    print(f"     * {rel['subject']} -> {rel['object']} [{status}]")
         else:
             print("   No similar predicates found")
     else:
         print("   Embedder not available - skipping similarity search")
 
-    #####################################################################
-    """
-    Demonstrate the unified query_graph method with all three patterns.
-    """
     print("\n" + "="*60)
-    print("UNIFIED QUERY_GRAPH METHOD DEMO")
+    print("ENHANCED UNIFIED QUERY_GRAPH METHOD DEMO (with temporal)")
     print("="*60)
     
-    # Pattern 1: Subject only
+    # Pattern 1: Subject only (current relationships)
     print("\n" + "="*50)
-    print("PATTERN 1: Subject Only - Find all connections")
+    print("PATTERN 1: Subject Only - Current relationships")
     print("="*50)
     
-    query1 = {'subject': 'John Smith'}  # Note: spaces will be cleaned to underscores
+    query1 = {'subject': 'Jane_Doe'}
     print(f"Query: {query1}")
     
     results1 = rdf_memory.query_graph(query1)
-    print(f"\nResults ({len(results1)} found):")
+    print(f"\nCurrent relationships ({len(results1)} found):")
     
     for i, result in enumerate(results1, 1):
-        print(f"  {i}. {result['subject']} -[{result['predicate']}]-> {result['object']}")
-        print(f"     (Similarity: {result['similarity_score']:.3f})")
+        status = "ACTIVE" if result['is_currently_valid'] else "ENDED"
+        print(f"  {i}. {result['subject']} -[{result['predicate']}]-> {result['object']} [{status}]")
+        print(f"     Valid: {result['valid_from'].strftime('%Y-%m-%d')} to {'ongoing' if not result['valid_to'] else result['valid_to'].strftime('%Y-%m-%d')}")
+        print(f"     Similarity: {result['similarity_score']:.3f}")
     
-    # Pattern 2: Predicate only
+    # Pattern 2: Subject with time constraint
     print("\n" + "="*50)
-    print("PATTERN 2: Predicate Only - Find all connections with similar predicates")
+    print("PATTERN 2: Subject at specific time")
     print("="*50)
     
-    query2 = {'predicate': 'similar historical event'}
+    query2 = {'subject': 'Jane_Doe', 'at_time': '2023-06-15'}
     print(f"Query: {query2}")
     
     results2 = rdf_memory.query_graph(query2)
-    print(f"\nResults ({len(results2)} found):")
+    print(f"\nRelationships valid on 2023-06-15 ({len(results2)} found):")
     
     for i, result in enumerate(results2, 1):
         print(f"  {i}. {result['subject']} -[{result['predicate']}]-> {result['object']}")
-        print(f"     (Similarity: {result['similarity_score']:.3f})")
+        print(f"     Valid: {result['valid_from'].strftime('%Y-%m-%d')} to {'ongoing' if not result['valid_to'] else result['valid_to'].strftime('%Y-%m-%d')}")
     
-    # Test with a more common predicate
-    query2b = {'predicate': 'parent of'}
-    print(f"\nQuery: {query2b}")
-    
-    results2b = rdf_memory.query_graph(query2b)
-    print(f"\nResults ({len(results2b)} found):")
-    
-    for i, result in enumerate(results2b, 1):
-        print(f"  {i}. {result['subject']} -[{result['predicate']}]-> {result['object']}")
-        print(f"     (Similarity: {result['similarity_score']:.3f})")
-    
-    # Pattern 3: Subject + Predicate
+    # Pattern 3: Predicate with temporal context
     print("\n" + "="*50)
-    print("PATTERN 3: Subject + Predicate - Find connected objects")
+    print("PATTERN 3: All employment relationships (current and historical)")
     print("="*50)
     
-    # Test semantic matching with "children" (should match "parent_of" semantically)
-    query3 = {'subject': 'John Smith', 'predicate': 'children'}
+    query3 = {'predicate': 'works_at', 'include_invalid': True}
     print(f"Query: {query3}")
     
     results3 = rdf_memory.query_graph(query3)
-    print(f"\nResults ({len(results3)} found):")
+    print(f"\nAll employment relationships ({len(results3)} found):")
     
     for i, result in enumerate(results3, 1):
-        print(f"  {i}. {result['subject']} -[{result['predicate']}]-> {result['object']}")
-        print(f"     (Similarity: {result['similarity_score']:.3f})")
-    
-    # Test with exact predicate match
-    query3b = {'subject': 'John Smith', 'predicate': 'parent of'}
-    print(f"\nQuery: {query3b}")
-    
-    results3b = rdf_memory.query_graph(query3b)
-    print(f"\nResults ({len(results3b)} found):")
-    
-    for i, result in enumerate(results3b, 1):
-        print(f"  {i}. {result['subject']} -[{result['predicate']}]-> {result['object']}")
-        print(f"     (Similarity: {result['similarity_score']:.3f})")
-    
-    # Pattern 4: Full Triple
-    print("\n" + "="*50)
-    print("PATTERN 4: Full Triple - Check specific connection")
-    print("="*50)
-    
-    query4 = {'subject': 'John Smith', 'predicate': 'children', 'object': 'Sarah Smith'}
-    print(f"Query: {query4}")
-    
-    results4 = rdf_memory.query_graph(query4)
-    print(f"\nResults ({len(results4)} found):")
-    
-    if results4:
-        for i, result in enumerate(results4, 1):
-            print(f"  {i}. Connection exists: {result['subject']} -[{result['predicate']}]-> {result['object']}")
-            print(f"     (Similarity: {result['similarity_score']:.3f})")
-    else:
-        print("  No matching connection found")
-    
-    # Test non-existent connection
-    query4b = {'subject': 'John Smith', 'predicate': 'children', 'object': 'Random Person'}
-    print(f"\nQuery: {query4b}")
-    
-    results4b = rdf_memory.query_graph(query4b)
-    print(f"\nResults ({len(results4b)} found):")
-    
-    if results4b:
-        for result in results4b:
-            print(f"  Connection exists: {result['subject']} -[{result['predicate']}]-> {result['object']}")
-    else:
-        print("  No matching connection found (as expected)")
-    
-    # Test directional behavior
-    print("\n" + "="*50)
-    print("DIRECTIONAL BEHAVIOR TEST")
-    print("="*50)
-    
-    # This should NOT return Jane -> children -> John
-    # because we only search in the specified direction
-    query_direction = {'subject': 'Sarah Smith', 'predicate': 'children'}
-    print(f"Query: {query_direction}")
-    print("(This should NOT return John Smith as Sarah's child)")
-    
-    results_direction = rdf_memory.query_graph(query_direction)
-    print(f"\nResults ({len(results_direction)} found):")
-    
-    if results_direction:
-        for result in results_direction:
-            print(f"  {result['subject']} -[{result['predicate']}]-> {result['object']}")
-    else:
-        print("  No results (correct - Sarah is not a parent in our data)")
+        status = "ACTIVE" if result['is_currently_valid'] else "ENDED"
+        print(f"  {i}. {result['subject']} -[{result['predicate']}]-> {result['object']} [{status}]")
+        print(f"     Period: {result['valid_from'].strftime('%Y-%m-%d')} to {'ongoing' if not result['valid_to'] else result['valid_to'].strftime('%Y-%m-%d')}")
     
     print("\n" + "="*60)
-    print("UNIFIED QUERY DEMO COMPLETED")
+    print("TEMPORAL QUERY DEMO COMPLETED")
     print("="*60)
 
-
-    ######################################################
-
-    print("\n9. Saving Graph Data:")
+    print("\n8. Saving Graph Data (including temporal information):")
     print("="*40)
     save_success = rdf_memory.save_graph_data()
     print(f"   Graph data saved: {save_success}")
@@ -1157,20 +1586,138 @@ if __name__ == "__main__":
     print("Demo completed!")
     print("="*60)
     
-    # Optional: Test loading in a new instance
-    print("\n10. Testing Data Persistence:")
+    # Test loading in a new instance with temporal data
+    print("\n9. Testing Data Persistence (including temporal data):")
     print("="*40)
     print("   Creating new instance and loading saved data...")
     new_instance = rdfMemRecall(data_directory="./demo_rdf_data", graph_name="demo_graph")
+
+    new_instance.create_database_instance("http://demo.example.org/")  # MUST add this line when reloading a database
+
     new_stats = new_instance.get_graph_statistics()
     print(f"   Loaded graph has {new_stats['total_triples']} triples")
     print(f"   Loaded graph has {new_stats['total_predicates']} predicates")
+    print(f"   Loaded graph has {new_stats['total_temporal_relationships']} temporal relationships")
+    print(f"   Currently valid: {new_stats['currently_valid_relationships']}")
+    print(f"   Invalidated: {new_stats['invalidated_relationships']}")
     
-    if new_stats['total_triples'] > 0:
-        print("   ✓ Data persistence working correctly!")
+    if new_stats['total_temporal_relationships'] > 0:
+        print("   ✓ Temporal data persistence working correctly!")
+        
+        # Test a temporal query on the new instance
+        print("\n   Testing temporal query on loaded data...")
+        test_query = new_instance.get_current_relationships(subject="Jane_Doe")
+        if test_query:
+            print(f"   ✓ Found {len(test_query)} current relationships for Jane_Doe")
+            for rel in test_query:
+                print(f"     - Works at: {rel['object']}")
+        else:
+            print("   ✗ No current relationships found")
     else:
-        print("   ✗ Data persistence issue detected")
-    
+        print("   ✗ Temporal data persistence issue detected")
 
-
+    ######################
+    # Enhanced visualization to show temporal aspects
+    print("\n10. Enhanced Visualization (with temporal information):")
+    print("="*40)
     
+    try:
+        import networkx as nx
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+        import numpy as np
+        
+        # Create enhanced visualization showing current vs historical relationships
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+        
+        # Left plot: Current relationships only
+        current_rels = rdf_memory.get_current_relationships()
+        
+        if current_rels:
+            G_current = nx.DiGraph()
+            for rel in current_rels:
+                G_current.add_edge(
+                    rel['subject'], 
+                    rel['object'], 
+                    label=rel['predicate'],
+                    weight=rel['similarity_score']
+                )
+            
+            pos1 = nx.spring_layout(G_current, k=2, iterations=50)
+            nx.draw(G_current, pos1, ax=ax1, with_labels=True, 
+                   node_color='lightgreen', node_size=1500, 
+                   font_size=8, arrows=True, edge_color='green')
+            
+            # Add edge labels
+            edge_labels1 = nx.get_edge_attributes(G_current, 'label')
+            nx.draw_networkx_edge_labels(G_current, pos1, edge_labels1, ax=ax1, font_size=6)
+            ax1.set_title("Current Relationships", fontsize=14, fontweight='bold')
+        else:
+            ax1.text(0.5, 0.5, "No current relationships", ha='center', va='center', transform=ax1.transAxes)
+            ax1.set_title("Current Relationships", fontsize=14, fontweight='bold')
+        
+        # Right plot: All relationships (including historical)
+        all_rels = []
+        for subject in ['Jane_Doe', 'Alice_Johnson', 'John_Smith']:
+            all_rels.extend(rdf_memory.query_graph({'subject': subject, 'include_invalid': True}))
+        
+        if all_rels:
+            G_all = nx.DiGraph()
+            for rel in all_rels:
+                color = 'green' if rel['is_currently_valid'] else 'red'
+                style = 'solid' if rel['is_currently_valid'] else 'dashed'
+                G_all.add_edge(
+                    rel['subject'], 
+                    rel['object'], 
+                    label=rel['predicate'],
+                    color=color,
+                    style=style,
+                    current=rel['is_currently_valid']
+                )
+            
+            pos2 = nx.spring_layout(G_all, k=2, iterations=50)
+            
+            # Draw nodes
+            nx.draw_networkx_nodes(G_all, pos2, ax=ax2, node_color='lightblue', node_size=1500)
+            nx.draw_networkx_labels(G_all, pos2, ax=ax2, font_size=8)
+            
+            # Draw edges with different colors for current vs historical
+            current_edges = [(u, v) for u, v, d in G_all.edges(data=True) if d['current']]
+            historical_edges = [(u, v) for u, v, d in G_all.edges(data=True) if not d['current']]
+            
+            nx.draw_networkx_edges(G_all, pos2, edgelist=current_edges, 
+                                 edge_color='green', style='solid', ax=ax2, arrows=True)
+            nx.draw_networkx_edges(G_all, pos2, edgelist=historical_edges, 
+                                 edge_color='red', style='dashed', ax=ax2, arrows=True)
+            
+            # Add edge labels
+            edge_labels2 = nx.get_edge_attributes(G_all, 'label')
+            nx.draw_networkx_edge_labels(G_all, pos2, edge_labels2, ax=ax2, font_size=6)
+            
+            ax2.set_title("All Relationships (Green=Current, Red=Historical)", fontsize=14, fontweight='bold')
+            
+            # Add legend
+            from matplotlib.lines import Line2D
+            legend_elements = [
+                Line2D([0], [0], color='green', lw=2, label='Current'),
+                Line2D([0], [0], color='red', lw=2, linestyle='--', label='Historical')
+            ]
+            ax2.legend(handles=legend_elements, loc='upper right')
+        else:
+            ax2.text(0.5, 0.5, "No relationships found", ha='center', va='center', transform=ax2.transAxes)
+            ax2.set_title("All Relationships", fontsize=14, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.suptitle("RDF Knowledge Graph - Temporal Visualization", fontsize=16, fontweight='bold', y=0.98)
+        plt.show()
+        
+        print("   ✓ Enhanced visualization generated successfully!")
+        
+    except ImportError as e:
+        print(f"   Visualization libraries not available: {e}")
+    except Exception as e:
+        print(f"   Error generating visualization: {e}")
+
+    print("\n" + "="*60)
+    print("ENHANCED TEMPORAL DEMO COMPLETED SUCCESSFULLY!")
+    print("="*60)
