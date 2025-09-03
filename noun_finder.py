@@ -337,7 +337,7 @@ class SpacyNounExtractor:
         
         analysis = {
             'text': text,
-            'nouns': {'regular': [], 'proper': []},
+            'nouns': {'regular': [], 'proper': [],'pronoun':[]},
             'verbs': {'main': [], 'auxiliary': []},
             'adjectives': [],
             'adverbs': [],
@@ -359,6 +359,13 @@ class SpacyNounExtractor:
                 analysis['lemmas']['nouns'][token.text] = token.lemma_
             elif token.pos_ == "PROPN":
                 analysis['nouns']['proper'].append({
+                    'text': token.text,
+                    'lemma': token.lemma_,
+                    'tag': token.tag_
+                })
+                analysis['lemmas']['nouns'][token.text] = token.lemma_
+            elif token.pos_ == "PRON":
+                analysis['nouns']['pronoun'].append({
                     'text': token.text,
                     'lemma': token.lemma_,
                     'tag': token.tag_
@@ -413,9 +420,10 @@ class SpacyNounExtractor:
         
         # Statistics
         analysis['statistics'] = {
-            'total_nouns': len(analysis['nouns']['regular']) + len(analysis['nouns']['proper']),
+            'total_nouns': len(analysis['nouns']['regular']) + len(analysis['nouns']['proper'])+ len(analysis['nouns']['pronoun']),
             'regular_noun_count': len(analysis['nouns']['regular']),
             'proper_noun_count': len(analysis['nouns']['proper']),
+            'pronoun_noun_count': len(analysis['nouns']['pronoun']),
             'total_verbs': len(analysis['verbs']['main']) + len(analysis['verbs']['auxiliary']),
             'main_verb_count': len(analysis['verbs']['main']),
             'auxiliary_verb_count': len(analysis['verbs']['auxiliary']),

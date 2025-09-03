@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Chat Interface</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+            background-color: #f5f5f5;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+            gap: 10px;
+            padding: 10px;
+        }
+
+        .left-panel {
+            width: 200px;
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .center-panel {
+            flex: 1;
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .right-panel {
+            width: 250px;
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow-y: auto;
+            display: block; /* Show by default */
+        }
+
+        /* Hide the right panel on small screens */ 
+        @media (max-width: 500px) { 
+            .right-panel { 
+                display: none; 
+            } 
+        }
+
+        .new-chat-btn {
+            width: 100%;
+            padding: 12px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .new-chat-btn:hover {
+            background: #0056b3;
+        }
+
+        .system-prompt-section {
+            margin-bottom: 15px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 15px;
+            font-size: 16px; /* Prevent zoom on iOS */
+        }
+
+        .system-prompt-label {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .system-prompt-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            resize: vertical;
+            min-height: 60px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', 'Noto Color Emoji', 'Apple Color Emoji', monospace;
+            font-size: 12px;
+        }
+
+        .update-prompt-btn {
+            margin-top: 8px;
+            padding: 6px 12px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .update-prompt-btn:hover {
+            background: #218838;
+        }
+
+        .chat-area {
+            flex: 1;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            max-width: 80%;
+            word-wrap: break-word;
+            white-space: pre-wrap; /* Preserve whitespace and line breaks */
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+            font-variant-emoji: emoji; /* Ensure emoji variant is used */
+            line-height: 1.5;
+        }
+
+        .user-message {
+            background: #007bff;
+            color: white;
+            margin-left: auto;
+        }
+
+        .llm-message {
+            background: white;
+            border: 1px solid #ddd;
+            color: #333;
+        }
+
+        .streaming-message {
+            background: #e3f2fd;
+            border: 1px solid #90caf9;
+            color: #1976d2;
+        }
+
+        .input-section {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .message-input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            resize: vertical;
+            min-height: 40px;
+            max-height: 120px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+            font-size: 16px; /* Prevent zoom on iOS */
+            /* Prevent zoom and improve mobile experience */
+            touch-action: manipulation;
+        }
+
+        .control-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .submit-btn, .undo-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            /* Improve touch targets on mobile */
+            min-height: 44px;
+            min-width: 44px;
+        }
+
+        .submit-btn {
+            background: #28a745;
+            color: white;
+        }
+
+        .append-btn {
+            background: #dc3545; /* Default red */
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.3s ease;
+        }
+
+        .append-btn.red {
+            background: #dc3545; /* Red state */
+        }
+
+        .append-btn.green {
+            background: #28a745; /* Green state */
+        }
+
+        .submit-btn:hover {
+            background: #218838;
+        }
+
+        .submit-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .undo-btn {
+            background: #dc3545;
+            color: white;
+        }
+
+        .undo-btn:hover {
+            background: #c82333;
+        }
+
+        .stats-section {
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #333;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
+
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .tools-section {
+            margin-top: 20px;
+        }
+
+        .tool-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px;
+            background: #f8f9fa;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .remove-tool-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 2px 6px;
+            cursor: pointer;
+            font-size: 10px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+
+        .status-connected {
+            background: #28a745;
+        }
+
+        .status-disconnected {
+            background: #dc3545;
+        }
+
+        .connection-status {
+            font-size: 12px;
+            margin-bottom: 10px;
+            padding: 5px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+                gap: 5px;
+                padding: 5px;
+            }
+
+            .left-panel, .right-panel {
+                width: 100%;
+                height: auto;
+            }
+
+            .left-panel {
+                order: 3;
+            }
+
+            .center-panel {
+                order: 1;
+                height: 60vh;
+            }
+
+            .right-panel {
+                order: 2;
+                height: 30vh;
+                overflow-y: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Left Panel -->
+        <div class="left-panel">
+            <button class="new-chat-btn" onclick="clearChat()">New Chat</button>
+            <div class="connection-status" id="connectionStatus">
+                <span class="status-indicator status-disconnected" id="statusIndicator"></span>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </div>
+
+        <!-- Center Panel -->
+        <div class="center-panel">
+            <!-- System Prompt Section -->
+            <div class="system-prompt-section">
+                <div class="system-prompt-label">System Prompt:</div>
+                <textarea class="system-prompt-input" id="systemPrompt" placeholder="Enter system prompt...">You are a helpful AI assistant.</textarea>
+                <button class="update-prompt-btn" onclick="updateSystemPrompt()">Update</button>
+                
+                <div class="auto-append-conversation-section">
+                <button class="append-btn" id="autoAppendBtn" onclick="autoAppendConversation()">Convo Append</button>
+                </div>
+            </div>
+
+            
+
+            <!-- Chat Area -->
+            <div class="chat-area" id="chatArea">
+                <div class="message llm-message">
+                    How can I assist you today?
+                </div>
+            </div>
+
+            <!-- Input Section -->
+            <div class="input-section">
+                <textarea class="message-input" id="messageInput" placeholder="Type here..." rows="2"></textarea>
+                <div class="control-buttons">
+                    <button class="submit-btn" id="submitBtn" onclick="sendMessage()">Submit</button>
+                    <button class="undo-btn" onclick="undoLastMessage()">Undo</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel -->
+        <div class="right-panel">
+            <!-- Token Stats -->
+            <div class="stats-section">
+                <div class="section-title">Token Statistics</div>
+                <div class="stat-item">
+                    <span>Input Tokens:</span>
+                    <span id="inputTokens">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>Output Tokens:</span>
+                    <span id="outputTokens">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>Total Tokens:</span>
+                    <span id="totalTokens">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>Messages:</span>
+                    <span id="messageCount">0</span>
+                </div>
+            </div>
+
+            <!-- Tools Section -->
+            <div class="tools-section">
+                <div class="section-title">Available Tools</div>
+                <div id="toolsList">
+                    <div style="color: #666; font-style: italic; font-size: 12px;">Loading tools...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket;
+        let isStreaming = false;
+        let currentStreamingMessage = null;
+
+        // Initialize socket connection
+        function initializeSocket() {
+            socket = io();
+
+            socket.on('connect', function() {
+                updateConnectionStatus(true);
+                console.log('Connected to server');
+                // Request initial data
+                socket.emit('get_token_stats');
+                socket.emit('list_tools');
+            });
+
+            socket.on('disconnect', function() {
+                updateConnectionStatus(false);
+                console.log('Disconnected from server');
+            });
+
+            socket.on('status', function(data) {
+                console.log('Status:', data);
+            });
+
+            socket.on('stream_start', function(data) {
+                isStreaming = true;
+                document.getElementById('submitBtn').disabled = true;
+                
+                // Create streaming message element
+                const chatArea = document.getElementById('chatArea');
+                currentStreamingMessage = document.createElement('div');
+                currentStreamingMessage.className = 'message streaming-message';
+                currentStreamingMessage.innerHTML = '';
+                chatArea.appendChild(currentStreamingMessage);
+                chatArea.scrollTop = chatArea.scrollHeight;
+            });
+
+            socket.on('stream_token', function(data) {
+                if (currentStreamingMessage) {
+                    // Use textContent to properly handle emoji and special characters
+                    const currentText = currentStreamingMessage.textContent || '';
+                    currentStreamingMessage.textContent = currentText + data.token;
+                    const chatArea = document.getElementById('chatArea');
+                    chatArea.scrollTop = chatArea.scrollHeight;
+                }
+            });
+
+            socket.on('stream_complete', function(data) {
+                isStreaming = false;
+                document.getElementById('submitBtn').disabled = false;
+                
+                if (currentStreamingMessage) {
+                    currentStreamingMessage.className = 'message llm-message';
+                    currentStreamingMessage = null;
+                }
+                
+                const chatArea = document.getElementById('chatArea');
+                chatArea.scrollTop = chatArea.scrollHeight;
+                
+                console.log('Streaming complete');
+            });
+
+            socket.on('token_stats', function(data) {
+                updateTokenStats(data);
+            });
+
+            socket.on('tools_list', function(data) {
+                updateToolsList(data.tools);
+            });
+
+            socket.on('error', function(data) {
+                console.error('Server error:', data.message);
+                addMessage('Error: ' + data.message, 'llm-message');
+                isStreaming = false;
+                document.getElementById('submitBtn').disabled = false;
+            });
+
+            socket.on('message_undone', function(data) {
+                console.log('Message undone:', data.message);
+                // Remove last two messages (user and assistant)
+                const chatArea = document.getElementById('chatArea');
+                const messages = chatArea.querySelectorAll('.message');
+                if (messages.length > 1) {
+                    messages[messages.length - 1].remove(); // Remove last message
+                    if (messages.length > 1) {
+                        messages[messages.length - 2].remove(); // Remove second to last message
+                    }
+                }
+            });
+
+            socket.on('system_prompt_updated', function(data) {
+                console.log('System prompt updated:', data.message);
+                addMessage('System prompt updated successfully', 'llm-message');
+            });
+
+            socket.on('chat_cleared', function(data) {
+                console.log('Chat cleared:', data.message);
+                const chatArea = document.getElementById('chatArea');
+                chatArea.innerHTML = '<div class="message llm-message">Chat cleared. How can I help you? 🤖</div>';
+            });
+
+            socket.on('auto_append_convo', function(data) {
+                console.log('auto_append_convo:', data.message);
+                
+                // Get the button element
+                const autoAppendBtn = document.getElementById('autoAppendBtn');
+                
+                // Toggle button color based on data.message
+                if (data.message === true) {
+                    // True = green
+                    autoAppendBtn.classList.remove('red');
+                    autoAppendBtn.classList.add('green');
+                } else {
+                    // False = red  
+                    autoAppendBtn.classList.remove('green');
+                    autoAppendBtn.classList.add('red');
+                }
+                
+            });
+
+            socket.on('tool_removed', function(data) {
+                console.log('Tool removed:', data.message);
+                socket.emit('list_tools'); // Refresh tools list
+            });
+        }
+
+        function updateConnectionStatus(connected) {
+            const indicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            
+            if (connected) {
+                indicator.className = 'status-indicator status-connected';
+                statusText.textContent = 'Connected';
+            } else {
+                indicator.className = 'status-indicator status-disconnected';
+                statusText.textContent = 'Disconnected';
+            }
+        }
+
+        function updateTokenStats(stats) {
+            document.getElementById('inputTokens').textContent = stats.input_tokens || 0;
+            document.getElementById('outputTokens').textContent = stats.output_tokens || 0;
+            document.getElementById('totalTokens').textContent = stats.total_tokens || 0;
+            document.getElementById('messageCount').textContent = stats.message_count || 0;
+        }
+
+        function updateToolsList(tools) {
+            const toolsList = document.getElementById('toolsList');
+            if (!tools || tools.length === 0) {
+                toolsList.innerHTML = '<div style="color: #666; font-style: italic; font-size: 12px;">No tools available</div>';
+                return;
+            }
+
+            toolsList.innerHTML = '';
+            tools.forEach(tool => {
+                const toolItem = document.createElement('div');
+                toolItem.className = 'tool-item';
+                toolItem.innerHTML = `
+                    <span>${tool}</span>
+                    <button class="remove-tool-btn" onclick="removeTool('${tool}')">Remove</button>
+                `;
+                toolsList.appendChild(toolItem);
+            });
+        }
+
+        function addMessage(content, className) {
+            const chatArea = document.getElementById('chatArea');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + className;
+            // Use textContent to properly handle emoji and special characters
+            messageDiv.textContent = content;
+            chatArea.appendChild(messageDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function sendMessage() {
+            if (isStreaming) return;
+            
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+            
+            if (!message) return;
+
+            // Add user message to chat
+            addMessage(message, 'user-message');
+            
+            // Clear input
+            messageInput.value = '';
+            
+            // Send to server
+            socket.emit('submit_input', {
+                message: message,
+                max_tokens: 512,
+                auto_execute_tools: true,
+                use_message_history: true
+            });
+        }
+
+        function undoLastMessage() {
+            if (isStreaming) return;
+            socket.emit('undo_last_message');
+        }
+
+        function updateSystemPrompt() {
+            const systemPrompt = document.getElementById('systemPrompt').value.trim();
+            if (!systemPrompt) return;
+            
+            socket.emit('change_system_prompt', {
+                system_prompt: systemPrompt
+            });
+        }
+
+        function clearChat() {
+            if (isStreaming) return;
+            socket.emit('clear_chat');
+        }
+
+        function autoAppendConversation() {
+            if (isStreaming) return;
+            socket.emit('auto_append_conversation');
+        }
+
+        function removeTool(toolName) {
+            if (confirm(`Are you sure you want to remove the "${toolName}" tool?`)) {
+                socket.emit('remove_tool', {
+                    tool_name: toolName
+                });
+            }
+        }
+
+        // Handle Enter key in message input (Shift+Enter for new line)
+        document.getElementById('messageInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Handle Enter key in system prompt (Shift+Enter for new line, Enter to update)
+        document.getElementById('systemPrompt').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                updateSystemPrompt();
+            }
+        });
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeSocket();
+        });
+    </script>
+</body>
+</html>

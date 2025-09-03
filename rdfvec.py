@@ -1131,7 +1131,7 @@ class rdfMemRecall:
                 - include_invalid (bool, optional): Include invalidated relationships (default: False)
                 
         Returns:
-            List[Dict[str, Any]]: List of result dictionaries with relationship details and temporal info
+            List[Dict[str, Any]]: List of result dictionaries with relationship details and temporal info formated the same as Args
         """
         try:
             # Ensure namespace is initialized
@@ -1611,6 +1611,15 @@ if __name__ == "__main__":
     # Demonstrate job change scenario
     print("\n--- SCENARIO: Jane Changes Jobs ---")
     print("Current situation: Jane works at Apple (since 2022-03-15)")
+
+    # Query Jane
+    jane_doe = rdf_memory.query_graph({
+        "subject": "Jane Doe",
+        "include_invalid": True
+    })
+    print(f"\nJane's Data:")
+    for rel in jane_doe:
+        print(f"  {rel['subject']} -> {rel['predicate']} -> {rel['object']}")
     
     # Query Jane's current job
     current_job = rdf_memory.get_current_relationships(subject="Jane_Doe", predicate="works at")

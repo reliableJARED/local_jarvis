@@ -364,6 +364,12 @@ class Qwen:
         })
         self.messages = self.messages[:1]#keep system prompt
 
+    def clear_last_message(self):
+        """Remove last item in messages using pop() on the list"""
+        #don't pop system prompt
+        if len(self.messages) > 1:
+            self.messages.pop()
+
     def register_tool(self, tool_function: Callable, name: str = None, description: str = None, parameters: Dict = None):
         """
         Register a tool function for use in conversations.
@@ -455,16 +461,17 @@ class Qwen:
     
     def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[Dict]:
         """Execute the tool calls and return tool results."""
+        logging.debug(f"TOOL USE CALLED:\n{tool_calls}\n")
         tool_results = []
         
         for tool_call in tool_calls:
             if function_call := tool_call.get("function"):
                 function_name = function_call["name"]
                 function_args = function_call["arguments"]
-                print(f"Calling: {function_name} with args: {function_args}")
+                logging.debug(f"Calling: {function_name} with args: {function_args}")
                 
                 if function_name in self.tools:
-                    print(f"Have tool -> {function_name} using it")
+                    logging.debug(f"Have tool -> {function_name} using it")
                     try:
                         # Execute the function
                         result = self.tools[function_name](function_args)
@@ -512,6 +519,9 @@ class Qwen:
             print(f"Avg tokens per conversation: {stats['total_tokens'] / stats['conversation_count']:.1f}")
         print(f"----------------------------\n")
     
+    def get_token_stats(self):
+        return self.token_stats
+    
     def _generate_streaming(self, model_inputs, max_new_tokens: int = 512, print_tokens: bool = True) -> Generator[str, None, tuple]:
         """
         Generate tokens one at a time and yield them.
@@ -529,6 +539,10 @@ class Qwen:
         """
         input_tokens = model_inputs.input_ids.shape[1]
         generated_tokens = []
+        
+        # Buffer for handling multi-byte Unicode sequences
+        decode_buffer = []
+        last_output_length = 0  # Track what we've already output
         
         # Initialize past_key_values for efficient generation
         past_key_values = None
@@ -593,22 +607,63 @@ class Qwen:
                 if next_token.item() == self.tokenizer.eos_token_id:
                     break
                 
-                # Decode the token
-                token_text = self.tokenizer.decode(next_token[0], skip_special_tokens=True)
+                # Add token to buffers
                 generated_tokens.append(next_token.item())
+                decode_buffer.append(next_token.item())
                 
-                # Print token if requested
-                if print_tokens:
-                    print(token_text, end='', flush=True)
+                # Try to decode the entire buffer
+                token_text = ""  # Initialize token_text
+                try:
+                    full_decoded = self.tokenizer.decode(decode_buffer, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+                    
+                    # Get only the new part (what we haven't output yet)
+                    new_text = full_decoded[last_output_length:]
+                    
+                    # Check if the new text is displayable and doesn't contain replacement chars
+                    if new_text and not '�' in new_text :
+                        # This becomes our token_text to yield
+                        token_text = new_text
+                        
+                        # Print token if requested
+                        if print_tokens:
+                            print(token_text, end='', flush=True)
+                        
+                        # Update our tracking of what we've output
+                        last_output_length = len(full_decoded)
+                        
+                        # Reset buffer periodically to prevent excessive accumulation
+                        if len(decode_buffer) > 20:
+                            decode_buffer = []
+                            last_output_length = 0
+                    else:
+                        # New text contains � or isn't displayable yet, continue accumulating
+                        if len(decode_buffer) > 50:  # Much higher threshold to handle complex emojis
+                            # Force output whatever we have and reset
+                            # Remove trailing replacement characters
+                            clean_text = full_decoded[last_output_length:].rstrip('�')
+                            if clean_text:
+                                token_text = clean_text
+                                if print_tokens and token_text:
+                                    print(token_text, end='', flush=True)
+                            decode_buffer = []
+                            last_output_length = 0
+                        
+                except UnicodeDecodeError:
+                    # Decode failed completely, continue accumulating
+                    if len(decode_buffer) > 50:  # Much higher threshold
+                        decode_buffer = decode_buffer[-10:]  # Keep more recent tokens
+                        last_output_length = 0
+                    # token_text remains empty string
                 
-                # Yield the token
-                yield token_text
+                # Yield the token text (may be empty string if still buffering)
+                if token_text:
+                    yield token_text
                 
                 # Update input_ids for next iteration
                 input_ids = self.torch.cat([input_ids, next_token], dim=1)
                 if attention_mask is not None:
                     attention_mask = current_attention_mask
-                
+                    
             except self.torch.cuda.OutOfMemoryError:
                 logging.debug("CUDA OOM during streaming generation")
                 self.clear_gpu_memory()
@@ -617,6 +672,18 @@ class Qwen:
                 logging.debug(f"Error during streaming generation: {e}")
                 break
         
+        # Handle any remaining buffered tokens at the end
+        if decode_buffer:
+            try:
+                remaining_text = self.tokenizer.decode(decode_buffer, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+                final_new_text = remaining_text[last_output_length:].rstrip('�')
+                if final_new_text:
+                    if print_tokens:
+                        print(final_new_text, end='', flush=True)
+                    # Note: Can't yield here since we're at the end of the generator
+            except:
+                pass
+        
         # Decode full response
         if generated_tokens:
             full_response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
@@ -624,7 +691,7 @@ class Qwen:
             full_response = ""
         
         return full_response, len(generated_tokens)
-    
+
     def _generate_final_response_streaming(self, max_new_tokens: int, messages: List, print_tokens: bool = True) -> Generator[str, None, str]:
         """Generate the final response after tool execution with streaming."""
         # Apply chat template again with the tool results
@@ -837,6 +904,7 @@ class Qwen:
         Generate a response using the Qwen model with optional tool use.
         Now includes memory management.
         """
+        logging.debug(f"USER INPUT TO MODEL: {user_input}")
         # Clear GPU memory before generation
         self.clear_gpu_memory()
         messages = self.messages
