@@ -627,16 +627,39 @@ of a good fortune must be in want of a wife."""
         pprint.pprint(analysis, indent=4)
 
         # Sample text for testing
-        sample_text = """
-        Apple Inc. was founded by Steve Jobs, Steve Wozniak, and Ronald Wayne in April 1976. 
+        sample_text2 = """Apple Inc. was founded by Steve Jobs, Steve Wozniak, and Ronald Wayne in April 1976. 
         The company quickly became a major player in the technology industry. 
         Today, Apple is worth over $2 trillion and employs more than 150,000 people worldwide.
         Tim Cook, the current CEO, has been leading the company since 2011.
         """
+        sample_text = """It is a truth universally acknowledged, that a single man in possession
+of a good fortune must be in want of a wife.
+
+However little known the feelings or views of such a man may be on his
+first entering a neighbourhood, this truth is so well fixed in the minds
+of the surrounding families, that he is considered as the rightful
+property of some one or other of their daughters.
+
+“My dear Mr. Bennet,” said his lady to him one day, “have you heard that
+Netherfield Park is let at last?”
+
+Mr. Bennet replied that he had not.
+
+“But it is,” returned she; “for Mrs. Long has just been here, and she
+told me all about it.”
+
+Mr. Bennet made no answer.
+
+“Do not you want to know who has taken it?” cried his wife, impatiently.
+
+“_You_ want to tell me, and I have no objection to hearing it.”"""
         
         # Test various methods
         print("=== NOUNS ===")
         print("All nouns:", extractor.find_nouns(sample_text))
+
+        print("\n=== NOUN PHRASES===")
+        print("All noun phrases:", extractor.find_noun_phrases(sample_text))
         
         print("\n=== VERBS ===")
         print("All verbs:", extractor.find_all_verbs(sample_text))

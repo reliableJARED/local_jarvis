@@ -163,7 +163,8 @@ class QwenDependencyManager:
             self.model = self.AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype="auto",
-                device_map="auto"
+                device_map="auto",
+                #load_in_8bit=True,  # Quantization to reduce memory -  load_in_4bit=True,  # Even more aggressive quantization
             )
             self.tokenizer = self.AutoTokenizer.from_pretrained(model_name)
             
@@ -1331,7 +1332,7 @@ if __name__ == "__main__":
             force_offline = False
         
         try:
-            model_name = "Qwen/Qwen2.5-7B-Instruct"
+            #model_name = "Qwen/Qwen2.5-7B-Instruct"
             print(f"Initializing {model_name}...")
             
             # Initialize chat interface (Qwen/Qwen2.5-7B-Instruct is default if no model passed)
