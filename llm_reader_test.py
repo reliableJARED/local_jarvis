@@ -167,8 +167,7 @@ if __name__ == "__main__":
     sample_text = """
     John walked into the coffee shop on Main Street. He ordered his usual latte from Sarah, the barista.
     Sarah had been working there for three years. She remembered that John always came in at 9 AM sharp.
-    Today was different though - John seemed worried about something. He kept checking his phone.
-    It is a truth universally acknowledged, that a single man in possession
+    Today was different though - John seemed worried about something. He kept checking his phone. It is a truth universally acknowledged, that a single man in possession
 of a good fortune must be in want of a wife.
 
 However little known the feelings or views of such a man may be on his
@@ -189,8 +188,31 @@ Mr. Bennet made no answer.
 “Do not you want to know who has taken it?” cried his wife, impatiently.
 
 “_You_ want to tell me, and I have no objection to hearing it.”
-xyz.
-hiccup.
+End of chapter
+When Jane and Elizabeth were alone, the former, who had been cautious in
+her praise of Mr. Bingley before, expressed to her sister how very much
+she admired him.
+
+“He is just what a young-man ought to be,” said she, “sensible,
+good-humoured, lively; and I never saw such happy manners! so much ease,
+with such perfect good breeding!”
+
+“He is also handsome,” replied Elizabeth, “which a young man ought
+likewise to be if he possibly can. His character is thereby complete.”
+
+“I was very much flattered by his asking me to dance a second time. I
+did not expect such a compliment.”
+
+“Did not you? _I_ did for you. But that is one great difference between
+us. Compliments always take _you_ by surprise, and _me_ never. What
+could be more natural than his asking you again? He could not help
+seeing that you were about five times as pretty as every other woman in
+the room. No thanks to his gallantry for that. Well, he certainly is
+very agreeable, and I give you leave to like him. You have liked many a
+stupider person.”
+
+“Dear Lizzy!”
+
 This Agreement...constitutes the sole and entire agreement of the Parties with respect to the subject matter contained herein, and supersedes all prior and contemporaneous understandings, agreements, representations, and warranties, both written and oral, with respect to such subject matter.
 The Receiving Party shall maintain the confidentiality...and shall not disclose or use such Confidential Information for any purpose other than as explicitly permitted under this Agreement.
 Explains how to do something, usually with a step-by-step format, like a recipe.
@@ -215,119 +237,105 @@ The molar mass of a compound is the sum of the molar masses of all the elements 
     """
     
     # Process the document
-    results = ContextualProcessor.split_sentences(sample_text)
+    sentence_list = ContextualProcessor.split_sentences(sample_text)
     
     # Print results
-    for i,result in enumerate(results):
+    print("==== SENTENCES ====\n")
+    print("="*50,"\n")
+    
+    for i,result in enumerate(sentence_list):
         print(f"{i}:{result}\n")
+    print("="*50,"\n")
 
     #Instance of our processor
     mind = create_processor_pipeline(model_name = "Qwen/Qwen2.5-7B-Instruct")
+    extractor = SpacyNounExtractor()
 
-    #Classification System Prompt
-    sp_subject_ID ="YOU MUST respond with JSON schema. You are an editor and you classify sentences\
-    Attempt to determine what type of text the input sentnece is. If you can not, and need more context set read_more True\
-        Types of Text:\
-            \nNarrative:story element told from First, Second or Third person. Can also be narration or character monologue.\
-            \nDescriptive:Focuses on describing a person, place, or thing using vivid language.\
-            \nExpository:Explains or informs by presenting facts, definitions, or processes clearly and concisely. Can also explain how to do something.\
-            \nArgumentative:Persuades the reader to agree with a particular viewpoint by using logic and evidence.\
-            \nUnknown: Insuffiecient information or context to classify.\
-            \nYou MUST be certain of your selection, if it's possible to classify in multiple buckets read more to narrow down to a single selection.\
-            \nYour responses should ALWAYS have format {'read_more':True/False,'type_of_text':'narrative/descriptive/expository/argumentative/unknown'}\
-                                    RESPOND WITH JSON"
-    mind.llm._update_system_prompt(sp_subject_ID)
+    while len(sentence_list)>0:
+        passage = ""
+        while True:        
+            #get a sentence
+            passage += sentence_list.pop(0)
 
-    #classify text
-    i = 0
-    classification_results = {'narrative':[],'descriptive':[],'expository':[],'argumentative':[]}
-    subject = ['none']
-    context = 'none'
-    while i < len(results):
-        #reset system prompt
-        mind.llm._update_system_prompt(sp_subject_ID)
-
-        sentence = results[i]  # Don't pop yet - just read
-        res = mind.llm.generate_response(sentence)
-        print(f"LLM RESPNOSE: {res}")
-        res_dict = mind.fix_malformed_json(res)#ensure no JSON issues
-        print(f"\n{i}:{res}\n")
-
-        if res_dict.get('read_more', False) or (res_dict.get('type_of_text').lower() == 'unknown'):
-            print("\n\nREADING AHEAD")
-            print("+"*50)
+            rez = extractor.find_proper_nouns(passage)
+            print("All proper nouns :", [x[0] for x in rez] )
+            propnouns = [x[0] for x in rez]
+            #if none, keep reading
+            if len(propnouns) > 0:
+                break
             
-            # Start building the combined sentence
-            combined_sentences = sentence
-            read_ahead_count = 1  # How many additional sentences we've read
-            
-            print(f"Starting at sentence {i}")
-            
-            while ( res_dict.get('read_more', False) or (res_dict.get('type_of_text').lower() == 'unknown')) and (i + read_ahead_count) < len(results):
-                # Add the next sentence
-                next_sentence_idx = i + read_ahead_count
-                print(f"Reading ahead to sentence {next_sentence_idx}")
-                combined_sentences += f". {results[next_sentence_idx]}"
-                read_ahead_count += 1
-                
-                # Check if we want to read even more
-                res = mind.llm.generate_response(combined_sentences)
-                res_dict = mind.fix_malformed_json(res)#ensure no JSON issues
-            
-            # Now we've processed sentences i through i+read_ahead_count-1
-            # Skip ahead to the next unprocessed sentence
-            i += read_ahead_count
-            print(f"Read ahead complete. Next sentence to process: {i}")
-            classification_results[res_dict.get('type_of_text').lower()].append(combined_sentences)
-
-            sp_focus = """User has provided a {type_} sentence or passage. You need to determine the input text establishes or changes the subject or context. \nSUBJECT(S):{subject} \nCONTEXT:{context}\
-            \nYour JSON responses should ALWAYS have format {{'subjects':['string name','string name',...]','context':'string context of text up to this point'}}\
-            RESPOND WITH JSON" """.format(
-                                                        type_=res_dict.get('type_of_text').lower(),
-                                                        subject=str(subject),
-                                                        context=context
-                                                    )
-
-            mind.llm.generate_response(sentence)
-            res = mind.llm.generate_response(combined_sentences)
-            res_dict = mind.fix_malformed_json(res)#ensure no JSON issues
-            
-            print("="*50)
-            print(res)
-            subject = res_dict.get('subject')
-            context = res_dict.get('context')
-            print(res_dict)
-            print("="*50)
-
-            
-        else:
-            # No read ahead needed, just move to next sentence
-            classification_results[res_dict.get('type_of_text').lower()].append(sentence)
-            i += 1
-
-            sp_focus = """User has provided a {type_} sentence or passage. You need to determine the input text establishes or changes the subject or context. \nSUBJECT(S):{subject} \nCONTEXT:{context}\
-            \nYour responses should ALWAYS have format {{'subjects':['string name','string name',...]','context':'string context of text up to this point'}}\
-                                        RESPOND WITH JSON" """.format(
-                                                        type_=res_dict.get('type_of_text').lower(),
-                                                        subject=str(subject),
-                                                        context=context
-                                                    )
 
 
-            mind.llm._update_system_prompt(sp_focus)
-            res = mind.llm.generate_response(sentence)
-            res_dict = mind.fix_malformed_json(res)#ensure no JSON issues
-            print("="*50)
-            print(res)
-            subject = res_dict.get('subject')
-            context = res_dict.get('context')
-            print(res_dict)
-            print("="*50)
+        #now get our pronouns, noun phrases
+        pron =  extractor.find_pro_nouns(passage)
+        pron =  [x[0] for x in pron]#isolate the pronouns for the token tags returned from Spacy
 
-        
- 
-        
-        
+        nonphrs = extractor.find_noun_phrases(passage)
+        nonphrs =  [x for x in nonphrs]
 
-    print(classification_results)
-    
+        sp1 = """Use the pseudo function as a guide to read and understand the user text or deterime if you need them to provide more text from the document.
+
+                text_evaluation(TEXT,pro_nouns,noun_phrases):
+                    results = {who:False, #named people or entities
+
+                                role:False, #what that named entity or person does
+
+                                connection:False,#connections to references via pronouns or other 
+
+                                type:False, #type of text
+
+                                when:False, #time
+                                
+                                context:False, #short summary }
+                    #Text type
+                    if (type can be determined from TEXT):
+                            #if the text type is not related or not consistent then it is unknown
+                            results[type] =  "conversation, scientific, instructional, legal, unknown”
+                    else:
+                            results[type] = 'read more'
+                            
+                    #Text important entities
+                    if (who/proper nouns can be determined from TEXT):
+                            results[who] = [people, organizations, etc]#(MUST be a named or specific entity)
+
+                            #match pronoun references to named who entities
+                            for pro_nouns and noun_phrases
+                                if(pro_noun is equal to or subsitution for a noun_phrase)
+                                    noun_phrase = who
+                                    results[connection] += {{noun_phrase:pro_noun}}
+                                else
+                                    #Unknown pronoun reference he/she/it/you/they,etc
+                                    results[connection] += {{pro_noun:"unknown"}}
+                    else:
+                            results[who] = 'read more'
+
+                    #What is the role of the who/named entity
+                    if (role can be determined for who in TEXT):
+                            results[role] += {{who:role}}
+                    else:
+                        results[role] = 'read more'
+
+                    #What is happening
+                    if (context can be determined from TEXT):
+                        results[context] = “text summary”; #(a brief summary to contextualize ideas, concepts, scene, situation, explination)
+                    else:
+                        #insufficient information for a summary of the context
+                        results[context] = 'read more'
+
+                    #Time period
+                    if (when/time can be determined):
+                        results[when] = “Time frame”; #(Is this one of: recurring pattern,  one-time event, present day, historical-past, time ambiguous)
+                    else:
+                        results[when] = 'read more'
+
+
+                        return results
+
+                        
+
+                MUST RETURN RESULTS JSON ONLY"""
+
+        mind.llm._update_system_prompt(sp1)
+        res = mind.llm.generate_response(f"pro_nouns: {pron}\n noun_phrases:{nonphrs}\n{passage}")
+        print("+"*50,'\n',res,"+"*50)
+     

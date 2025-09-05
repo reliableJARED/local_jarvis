@@ -79,6 +79,20 @@ class SpacyNounExtractor:
         return [(token.text, token.pos_, token.tag_) 
                 for token in doc if token.pos_ == "PROPN"]
     
+    def find_pro_nouns(self, text: str) -> List[Tuple[str, str, str]]:
+        """
+        Find only pronouns.
+        
+        Args:
+            text (str): Input text to analyze
+            
+        Returns:
+            List[Tuple[str, str, str]]: List of (word, pos_tag, detailed_tag)
+        """
+        doc = self.nlp(text)
+        return [(token.text, token.pos_, token.tag_) 
+                for token in doc if token.pos_ == "PRON"]
+    
     # ==================== VERB METHODS ====================
     
     def find_verbs(self, text: str) -> List[Tuple[str, str, str]]:
@@ -627,39 +641,30 @@ of a good fortune must be in want of a wife."""
         pprint.pprint(analysis, indent=4)
 
         # Sample text for testing
-        sample_text2 = """Apple Inc. was founded by Steve Jobs, Steve Wozniak, and Ronald Wayne in April 1976. 
+        sample_text = """Apple Inc. was founded by Steve Jobs, Steve Wozniak, and Ronald Wayne in April 1976. 
         The company quickly became a major player in the technology industry. 
         Today, Apple is worth over $2 trillion and employs more than 150,000 people worldwide.
         Tim Cook, the current CEO, has been leading the company since 2011.
         """
-        sample_text = """It is a truth universally acknowledged, that a single man in possession
-of a good fortune must be in want of a wife.
-
-However little known the feelings or views of such a man may be on his
-first entering a neighbourhood, this truth is so well fixed in the minds
-of the surrounding families, that he is considered as the rightful
-property of some one or other of their daughters.
-
-“My dear Mr. Bennet,” said his lady to him one day, “have you heard that
-Netherfield Park is let at last?”
-
-Mr. Bennet replied that he had not.
-
-“But it is,” returned she; “for Mrs. Long has just been here, and she
-told me all about it.”
-
-Mr. Bennet made no answer.
-
-“Do not you want to know who has taken it?” cried his wife, impatiently.
-
-“_You_ want to tell me, and I have no objection to hearing it.”"""
+        sample_text2 = """It is a truth universally acknowledged, that a single man in possession
+of a good fortune must be in want of a wife. The company quickly became a major player in the technology industry. ”"""
         
         # Test various methods
         print("=== NOUNS ===")
-        print("All nouns:", extractor.find_nouns(sample_text))
+        rez = extractor.find_nouns(sample_text)
+        print("All nouns:", [x[0] for x in rez])
 
         print("\n=== NOUN PHRASES===")
-        print("All noun phrases:", extractor.find_noun_phrases(sample_text))
+        rez = extractor.find_noun_phrases(sample_text)
+        print("All noun phrases:", [x for x in rez])#only need the text from the result, not the classificaiton tags
+
+        print("\n=== PRONOUNS ===")
+        rez =  extractor.find_pro_nouns(sample_text)
+        print("All pronoun :", [x[0] for x in rez])
+
+        print("\n=== PROPER NOUNS ===")
+        rez = extractor.find_proper_nouns(sample_text)
+        print("All proper nouns :", [x[0] for x in rez] )
         
         print("\n=== VERBS ===")
         print("All verbs:", extractor.find_all_verbs(sample_text))
