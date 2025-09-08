@@ -2,13 +2,13 @@ import os
 import socket
 import json
 import re
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Generator
 import gc
 import subprocess
 import sys
 import logging
 
-#logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 class QwenDependencyManager:
     """Handles model loading, dependency management, and offline/online detection."""
@@ -310,11 +310,6 @@ class QwenDependencyManager:
         except Exception as e:
             print(f"Error downloading model: {e}")
 
-import json
-import re
-import gc
-import logging
-from typing import Callable, Dict, List, Any, Optional, Generator, Union
 
 class Qwen:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
@@ -357,7 +352,7 @@ class Qwen:
         self.messages[0] = {"role": "system", "content": system_prompt}
 
     def clear_chat_messages(self):
-        print("Reset chat messages and token stats")
+        logging.debug("Reset chat messages and token stats")
         # Token tracking reset 
         self.token_stats.update({
             'total_tokens': 0,
