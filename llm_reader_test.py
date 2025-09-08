@@ -163,7 +163,7 @@ def create_processor_pipeline(model_name: str = "Qwen/Qwen2.5-7B-Instruct"):
 # Example usage
 if __name__ == "__main__":
    
-    # Process a sample document
+    # Process a sample document (random)
     sample_text = """
     John walked into the coffee shop on Main Street. He ordered his usual latte from Sarah, the barista.
     Sarah had been working there for three years. She remembered that John always came in at 9 AM sharp.
@@ -236,8 +236,8 @@ Similarly, the atomic mass of aluminum is 26.98 amu, so its molar mass is 26.98 
 The molar mass of a compound is the sum of the molar masses of all the elements in its chemical formula, taking into account the number of atoms of each element. 
     """
     
-    #pride and prejudice
-    sample_text = """
+    #pride and prejudice (literature)
+    sample_text1 = """
 Chapter I.]
 
 
@@ -359,8 +359,8 @@ little information, and uncertain temper. When she was discontented, she
 fancied herself nervous. The business of her life was to get her
 daughters married: its solace was visiting and news."""
     
-    #psycology of managment
-    sample_text = """THE PSYCHOLOGY OF MANAGEMENT
+    #psycology of managment (text book)
+    sample_text2 = """THE PSYCHOLOGY OF MANAGEMENT
 
 
                              CHAPTER I
@@ -915,7 +915,7 @@ the following:--
 """
     
     #legal
-    sample_text2 = """The above-entitled matter came before the Court on Lighthouse Management Group, Inc's (the
+    sample_text3 = """The above-entitled matter came before the Court on Lighthouse Management Group, Inc's (the
 “Receiver”) communication to the Court requesting changes to the June 7, 2024 order appointing the
 Receiver (the “Receivership Order”).
 
@@ -945,6 +945,7 @@ Receivership Order.
 both 2Bros Sports Collectibles LLC and Remember When Collectibles LLC.
 9. Other than the revised definition of Respondent, there are no other changes to the Receivership
 Order and it shall remain in full force and effect."""
+    
     # Process the document
     sentence_list = ContextualProcessor.split_sentences(sample_text)
     
@@ -1124,8 +1125,8 @@ Return results as a JSON object with keys: who, role, connection, type, when, co
    return results
    
    RETURN RESULTS JSON ONLY"""
-    
-    sp2 = """RETURN JSON. Use the function as a guide to read and understand the user text. Deterime if you need more more text from the document to produce output.
+
+    sp2 = """RETURN JSON. You read and comprehend text. Use the text_evaluation() function as a framework to understand the user text. Determine if you need more text from the document to produce output.
 
 text_evaluation(PREVIOUS_RESULTS, NEXT_SENTENCE, pronouns, noun_phrases):
    updated_results = copy(PREVIOUS_RESULTS)  # start with previous analysis
@@ -1223,24 +1224,210 @@ text_evaluation(PREVIOUS_RESULTS, NEXT_SENTENCE, pronouns, noun_phrases):
            changes_detected = True
    
    # Track what changed
-   updated_results["recent_change"] = 'brief note on how the new sentence changed interpretation of previous'
+   updated_results["recent_change"] = 'brief note on how the new sentence changed subject/context of previous - or no material change'
    
    return updated_results
    
    RETURN updated_results JSON ONLY"""
     
+    sp3 = """def extract_knowledge_nodes(text, noun_phrases, context):
+    ""
+    Evaluates text to create Subject-Predicate-Object connections for knowledge graph. 
+    Subjects and Objects are both specific entities or concept nodes, . 
+    Predicates are the long form statements,references and context that connects the nodes.
+
+    If pronoun references are unclear, return a clarification request instead of triples.
+    
+    Args:
+        text (str): The text to analyze
+        noun_phrases (list): Isolated noun phrases from the text
+        context (str): Background context of the text
+        
+    
+    Returns:
+        dict: Either knowledge graph triples or clarification request
+    ""
+    results = {
+        "triples": [],
+        "clarification_needed": None
+    }
+    
+    # Step 1: Identify pronouns in text
+    pronouns = find_pronouns(text)  # Returns: He/His/She/Her/They/Their/We/I
+    
+    # Step 2: Attempt to resolve pronouns to specific entities
+    if pronouns:
+        for pronoun in pronouns:
+            referent = resolve_pronoun(pronoun, text, noun_phrases, context)
+            if referent == "unclear":
+                results["clarification_needed"] = f"Cannot determine what '{pronoun}' refers to. Need additional sentences to contextualize."
+                return results
+    
+    # Step 3: Extract Subject-Predicate-Object triples
+    for noun_phrase in noun_phrases:
+        # Find relationships involving this noun phrase
+        connections = find_connections(noun_phrase, text, context)
+        
+        for connection in connections:
+            #subject and object must be specific entities or concepts, no pronouns. 
+            subject = connection["subject"]
+            predicate = connection["predicate"] #predicates can be actions, relations, short statements, facts, ideas, connections
+            object = connection["object"]
+            
+            # Ensure no unresolved pronouns in the triple
+            if contains_unresolved_pronoun(subject, object):
+                results["clarification_needed"] = "Pronoun reference unclear. Need additional sentences to contextualize."
+                return results
+            
+            # Add valid triple
+            results["triples"].append({
+                "subject": subject,# (plain text, entity or concept no pronouns)
+                "predicate": predicate,# (plain text, long form text relation and connection and action)
+                "object": object #(plain text, entity or concept no pronouns)
+            })
+    
+    return results
+
+    RETURN results JSON ONLY"""
+    
+    sp3 = """You are tasked with analyzing text to create Subject-Predicate-Object knowledge graph connections.
+User Input: The text to analyze
+noun_phrases: List of noun phrases found in the text to help with entity identification
+context: Background context about the text and subject/predicate/object hints
+
+Your Task: Extract knowledge triples where:
+
+Subjects and Objects: Must be specific named entities or concepts (no pronouns)
+Predicates: Long-form statements, references, actions, relations, facts, ideas, or connections that link the subject to the object
+
+Process:
+
+Check for pronouns or ambiguous references in the text (He, His, She, Her, They, Their, We, I, It, It's etc.)
+Resolve the references using the text, noun phrases, and context provided
+
+If any pronoun cannot be clearly resolved to a specific entity, stop and request clarification
+
+
+Extract triples by examining each noun phrase and finding its relationships within the text
+
+Each triple must have: specific subject → descriptive predicate → specific object
+No unresolved pronouns allowed in subjects or objects
+Predicates should be descriptive and capture the full relationship context
+
+
+
+Output Format: Return JSON only with this structure:
+{
+  "triples": [
+    {
+      "subject": "specific entity or concept name",
+      "predicate": "plain text descriptive relationship/action/connection",
+      "object": "specific entity or concept name"
+    }
+  ],
+  "clarification_needed": null
+}
+If pronoun resolution fails, return:
+{
+  "triples": [],
+  "clarification_needed": "Explanation of which pronoun is unclear and request for more context"
+}"""
+    
+    sp3 = """You are tasked with analyzing text to create Subject-Predicate-Object knowledge graph node and edge connections.
+User Input: The text to analyze
+noun_phrases: List of noun phrases found in the text to help with entity identification
+context: Background context about the text and subject/predicate/object hints
+
+Your Task: Extract knowledge triples where:
+
+Subjects and Objects: Must be specific named entities or concepts (no pronouns)
+Predicates: Long-form statements, references, actions, relations, facts, ideas, or connections that link the subject to the object
+Abstract concepts: A node can represent an abstract idea, such as a concept, event, or situation. For instance, a knowledge graph could include the node (Theory of Relativity) to represent the concept itself, which is a noun phrase.
+Events: A node can represent an event rather than a physical object. For example, in the triple (Hurricane Sandy) -[occurred in]-> (2012), "Hurricane Sandy" is a named event. A more complex example could be (the launch of SpaceX's Dragon capsule) -[was a part of]-> (the Commercial Crew Program).
+Adjectival concepts: While less common, certain graph models can use concepts that are grammatically adjectives. A graph might include the triple (The T-shirt) -[has color]-> (white), where "white" is a literal value but acts as the object. A more advanced approach might model the concept (White) as its own node.
+
+Output Format: Return JSON only with this structure:
+{
+  "triples": [
+    {
+      "subject": "specific entity or concept name",
+      "predicate": "plain text descriptive relationship/action/connection",
+      "object": "specific entity or concept name"
+    }
+  ],
+  "clarification_needed": null
+}
+If pronoun resolution fails, return:
+{
+  "triples": [],
+  "clarification_needed": "Explanation of which pronoun is unclear and request for more context"
+}
+"""
+    sp4 = """Create a summary of the text and context (dialogue, facts, information) with a specific focus on facts and statements AND a list of named unique Subjects or Objects.
+    If the text is too short or lacks sufficient information, request more text by returning ONLY 'read more'. 
+    RETURN 'read more' OR the summary text with context."""
     #set the system prompt
-    mind.llm._update_system_prompt(sp1)
+    #mind.llm._update_system_prompt(sp1)
+    
+
     passage = ""
+    summary = ""
     total_passages = len(sentence_list)
     res = None
+
     while len(sentence_list)>1:
+        loop_start = time.time()  # Start timing the loop
+        mind.llm._update_system_prompt(sp4)
+        print("#"*50)
+        while True:      
+            #get a sentence
+            passage += sentence_list.pop(0)+". "#add period back for context
+
+            rez = mind.nlp.find_proper_nouns(passage)
+            #print("found proper nouns:", [x[0] for x in rez] )
+            propnouns = [x[0] for x in rez]
+            #if none, keep reading
+            if len(propnouns) > 0:
+                summary = mind.llm.generate_response(passage)
+                if summary.strip().lower() == "read more":
+                    print("NEED MORE TEXT FOR CONTEXT...")
+                    continue
+                else:
+                    
+                    break
+        mind.llm._update_system_prompt(sp3)
+        print(f"TEXT INPUT:{passage}")
+        print("SUMMARY:",summary)
+        
+        #now get our pronouns, noun phrases
+        pron =  mind.nlp.find_pro_nouns(passage)
+        pron =  [x[0] for x in pron]#isolate the pronouns for the token tags returned from Spacy
+        nonphrs = mind.nlp.find_noun_phrases(passage)
+        nonphrs =  [x for x in nonphrs]
+        print("FOUND NOUN PHRASES:",nonphrs)
+
+        
+        res = mind.llm.generate_response(f"TEXT:{passage},\n noun_phrases:{nonphrs} {pron},\n context:{summary}")
+        print("."*50)
+        print("KNOWLEDGE NODES EXTRACTION RESULT:\n",res,"\n")
+        print("."*50)
+        loop_end = time.time()
+        elapsed = loop_end - loop_start
+        print(f"review completed in {elapsed:.2f} seconds")
+        #reset passage
+        passage = ""
+        print("#"*50)
+            
+            
+
+    #Original
+    """while len(sentence_list)>1:
         loop_start = time.time()  # Start timing the loop
         
         print("="*50)
         while True:      
             #get a sentence
-            passage += sentence_list.pop(0)+". "
+            passage += sentence_list.pop(0)+". "#add period back for context
 
             rez = mind.nlp.find_proper_nouns(passage)
             #print("found proper nouns:", [x[0] for x in rez] )
@@ -1273,11 +1460,11 @@ text_evaluation(PREVIOUS_RESULTS, NEXT_SENTENCE, pronouns, noun_phrases):
         #finish this analysis if we don't need to read more
         if res_json.get('context',False) != "read more":
             print("+"*50,'\n',res,'\n',"="*50,'\n')
-            loop_end = time.time()
+            loop_end = time.time()context:
             elapsed = loop_end - loop_start
             print(f"Loop completed in {elapsed:.2f} seconds")
             #reset passage
             passage = ""
         else:
             print("READING MORE...")
-     
+     """
