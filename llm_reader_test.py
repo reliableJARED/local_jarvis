@@ -1335,7 +1335,7 @@ If pronoun resolution fails, return:
     
     sp3 = """You are tasked with analyzing text to create Subject-Predicate-Object knowledge graph node and edge connections.
 User Input: The text to analyze
-noun_phrases: List of noun phrases found in the text to help with entity identification
+proper noun: List of proper noun found in the text to help with entity identification
 context: Background context about the text and subject/predicate/object hints
 
 Your Task: Extract knowledge triples where:
@@ -1350,24 +1350,94 @@ Output Format: Return JSON only with this structure:
 {
   "triples": [
     {
-      "subject": "specific entity or concept name",
+      "subject": "proper noun, named specific entity or concept",
       "predicate": "plain text descriptive relationship/action/connection",
-      "object": "specific entity or concept name"
+      "object": "proper noun, named specific entity or concept",
+    },
+    {
+      "subject": "proper noun, named specific entity or concept",
+      "predicate": "plain text descriptive relationship/action/connection",
+      "object": "he/she/it/they pronoun reference to be resolved",
     }
   ],
-  "clarification_needed": null
+  "clarification_needed": False #or "Cannot determine what 'he/she/it/they/there/I/their,etc.' refers to. Need additional sentences to contextualize."
 }
-If pronoun resolution fails, return:
-{
-  "triples": [],
-  "clarification_needed": "Explanation of which pronoun is unclear and request for more context"
-}
+Return JSON
 """
+    sp3 = """You are tasked with analyzing text to create Subject-Predicate-Object knowledge graph connections. There has already been a previous analysis of the text. 
+    You will use that previous analysis to help you understand the text better and create Reference Description Framework (RDF) triples of Subject - Predicate - Object if any are found.
+Use the pseudo code as a guide:
+text_analysis(concept_words, pre_analysis):
+    results = {'triples':[], 'clarification_needed':None} #empty list for triples and null for clarification request
+    # Step 1: Identify connections in text
+    connections_list = find_connections(pre_analysis) #find connections in text using concept words and previous analysis
+    for connection in connections_list:
+        subject = connection['subject']
+        predicate = connection['predicate']
+        object = connection['object']
+        # Ensure no unresolved pronouns in the triple
+        if contains_unresolved_pronoun(subject, object):
+            results['clarification_needed'] = "Cannot determine what 'he/she/it/they/there/I/their,etc.' refers to. Need additional sentences to contextualize."
+    return results
+
+    Output Format: Return JSON only with this structure:
+{
+  "triples": [
+    {
+      "subject": "named specific entity or concept",
+      "predicate": "plain text descriptive relationship/action/connection",
+      "object": "named specific entity or concept",
+    },
+  ],
+  "clarification_needed": False #or "Cannot determine what person, place or thing {'he/she/it/they/there/I/their/here,etc.'} refers to. Need additional context."
+}
+    """
+        
+    
     sp4 = """Create a summary of the text and context (dialogue, facts, information) with a specific focus on facts and statements AND a list of named unique Subjects or Objects.
     If the text is too short or lacks sufficient information, request more text by returning ONLY 'read more'. 
     RETURN 'read more' OR the summary text with context."""
     #set the system prompt
     #mind.llm._update_system_prompt(sp1)
+
+    sp4 = """"EXAMPLE 1 IN: text_analysis("Ray has provided me with invaluable guidance throughout my career. He is a great mentor.")
+    EXAMPLE 1 OUT: {summary:"Ray is a mentor who has provided invaluable guidance throughout the speaker's career.", entities:["Ray"], unknown:["me","my"]}
+    EXAMPLE 2 IN: text_analysis("The mitochondrion is the powerhouse of the cell. It generates most of the cell's supply of ATP, used as a source of chemical energy.")
+    EXAMPLE 2 OUT: {summary:"The mitochondrion is an organelle that generates ATP, the cell's main energy source.", entities:["mitochondrion","cell","ATP"], unknown:[]}
+    EXAMPLE 3 IN: text_analysis("He felt that he had been there before, though he knew that was impossible.")
+    EXAMPLE 3 OUT: {summary:"The speaker experiences a sense of déjà vu, feeling they have been somewhere before despite knowing it's impossible.", entities:[], unknown:["He","there"]}
+
+    text_analysis(TEXT):
+    if (TEXT has sufficient information for a summary and named entities):
+        #What is happening in the text, who is involved, any important details, what needs to be known
+        return {summary:"text summary", entities:[named entities], unknown:[pronouns and references]} #brief summary and list of named entities
+    else:
+        return "read more" #request more text for context
+    RETURN JSON ONLY"""
+
+    sp4 = """You replace words in the text with named entities or concepts when it can be determined. If you cannot determine what a pronoun or reference word refers to you indicate 'can't reconcile from context' to request additional context. 
+
+     
+     USE THIS PSEUDO CODE AS A GUIDE:
+     text_analysis(TEXT):
+
+        results = {'text':"", 'references:{}} #original text and empty dict for references needing context
+
+        results[text] = swap_reference_for_named_entities_or_concepts(TEXT)
+        results[references] = reference_words_context(results[text]) #get dict of reference and pronoun words that need more context
+        return results #TEXT with pronouns replaced by named entities or concepts, {place holder words and pronouns that need more context}
+     else:  
+        return [original text, {}] #no words to replace with named entities or concepts
+
+     EXAMPLES:
+     text_analysis("Bob went to his car because he forgot his keys.") ->  {'text':"Bob went to Bob's car because Bob forgot Bob's keys.", reference:{}}
+     text_analysis("Jane entered the store to order her usual.") ->  {'text':"Jane entered the store to order Jane's usual.", reference:{store:'can't reconcile from context'}}
+     text_analysis("The scientist presented her findings at the conference.") ->  {'text':"The scientist presented the scientist's findings at the conference.", reference:{}}
+     text_analysis("They decided to visit their grandparents for the holidays.") ->  {'text':"They decided to visit their grandparents for the holidays.", reference:{They:'can't reconcile from context', their:'can't reconcile from context'}}
+     text_analysis("My dog Kiki loves to chew her toys, especially this one.") ->  {'text':"My dog Kiki loves to chew Kiki's toys, especially this one." reference:{this:'can't reconcile from context'}}
+     text_analysis("The CEO announced that she will step down next month.") -> {'text':"The CEO announced that she will step down next month.", 'reference':{CEO:'can't reconcile from context'}}
+
+     RETURN JSON results from text_analysis() ONLY"""
     
 
     passage = ""
@@ -1397,17 +1467,20 @@ If pronoun resolution fails, return:
                     break
         mind.llm._update_system_prompt(sp3)
         print(f"TEXT INPUT:{passage}")
-        print("SUMMARY:",summary)
+        print("\nSUMMARY:",summary)
         
         #now get our pronouns, noun phrases
         pron =  mind.nlp.find_pro_nouns(passage)
         pron =  [x[0] for x in pron]#isolate the pronouns for the token tags returned from Spacy
+        print("FOUND PRONOUN:",pron)
         nonphrs = mind.nlp.find_noun_phrases(passage)
         nonphrs =  [x for x in nonphrs]
-        print("FOUND NOUN PHRASES:",nonphrs)
+        #print("FOUND NOUN PHRASES:",nonphrs)
 
         
-        res = mind.llm.generate_response(f"TEXT:{passage},\n noun_phrases:{nonphrs} {pron},\n context:{summary}")
+        #res = mind.llm.generate_response(f"TEXT:{passage},\n noun_phrases:{nonphrs} {pron},\n context:{summary}")
+        #res = mind.llm.generate_response(f"TEXT:{passage},\n pronouns:{pron},\n context:{summary}")
+        res = mind.llm.generate_response(f"TEXT:{passage},\n pronouns:{pron},\n context:{json.loads(summary).get('references','{}')}")
         print("."*50)
         print("KNOWLEDGE NODES EXTRACTION RESULT:\n",res,"\n")
         print("."*50)
