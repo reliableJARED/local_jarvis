@@ -327,6 +327,9 @@ class Qwen:
         self.tokenizer = self.dependency_manager.get_tokenizer()
 
         self.auto_append_conversation = auto_append_conversation
+
+        #max new tokens for generation
+        self.max_new_tokens = 512
         
         # Token tracking
         self.token_stats = {
@@ -533,6 +536,7 @@ class Qwen:
         Returns:
             tuple: (full_response_text, output_token_count)
         """
+        max_new_tokens = min(max_new_tokens, self.max_new_tokens)
         input_tokens = model_inputs.input_ids.shape[1]
         generated_tokens = []
         
@@ -738,6 +742,7 @@ class Qwen:
         Returns:
             str: The complete response content
         """
+        max_new_tokens = min(max_new_tokens, self.max_new_tokens)
         # Clear GPU memory before generation
         self.clear_gpu_memory()
         messages = self.messages
@@ -832,7 +837,7 @@ class Qwen:
                 # Execute the tools
                 tool_results = self._execute_tool_calls(tool_calls)
                 self.messages.extend(tool_results)
-                
+                max_new_tokens = min(max_new_tokens, self.max_new_tokens)
                 # Generate final response
                 return self._generate_final_response(max_new_tokens, self.messages)
         
@@ -930,6 +935,7 @@ class Qwen:
 
         self.dependency_manager.print_gpu_memory()
         
+        max_new_tokens = min(max_new_tokens, self.max_new_tokens)
         # Check if input is too long for context window
         if input_tokens > 30000:  # Leave room for generation
             logging.debug(f"Warning: Input tokens ({input_tokens}) approaching context limit")

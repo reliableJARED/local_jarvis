@@ -164,7 +164,7 @@ def create_processor_pipeline(model_name: str = "Qwen/Qwen2.5-7B-Instruct"):
 if __name__ == "__main__":
    
     # Process a sample document (random)
-    sample_text = """
+    sample_text2 = """
     John walked into the coffee shop on Main Street. He ordered his usual latte from Sarah, the barista.
     Sarah had been working there for three years. She remembered that John always came in at 9 AM sharp.
     Today was different though - John seemed worried about something. He kept checking his phone. It is a truth universally acknowledged, that a single man in possession
@@ -360,7 +360,7 @@ fancied herself nervous. The business of her life was to get her
 daughters married: its solace was visiting and news."""
     
     #psycology of managment (text book)
-    sample_text2 = """THE PSYCHOLOGY OF MANAGEMENT
+    sample_text = """THE PSYCHOLOGY OF MANAGEMENT
 
 
                              CHAPTER I
@@ -1367,9 +1367,9 @@ Return JSON
     sp3 = """You are tasked with analyzing text to create Subject-Predicate-Object knowledge graph connections. There has already been a previous analysis of the text. 
     You will use that previous analysis to help you understand the text better and create Reference Description Framework (RDF) triples of Subject - Predicate - Object if any are found.
 Use the pseudo code as a guide:
-text_analysis(concept_words, pre_analysis):
+text_analysis(concept_words, nouns, pre_analysis):
     results = {'triples':[], 'clarification_needed':None} #empty list for triples and null for clarification request
-    # Step 1: Identify connections in text
+    # Step 1: Identify connections in text -
     connections_list = find_connections(pre_analysis) #find connections in text using concept words and previous analysis
     for connection in connections_list:
         subject = connection['subject']
@@ -1384,16 +1384,52 @@ text_analysis(concept_words, pre_analysis):
 {
   "triples": [
     {
-      "subject": "named specific entity or concept",
+      "subject": "named specific entity or concept or noun",
       "predicate": "plain text descriptive relationship/action/connection",
-      "object": "named specific entity or concept",
+      "object": "named specific entity or concept or noun",
     },
   ],
   "clarification_needed": False #or "Cannot determine what person, place or thing {'he/she/it/they/there/I/their/here,etc.'} refers to. Need additional context."
 }
     """
-        
     
+    #488 Tokens
+    sp3 = """You are tasked with analyzing text to extract Subject-Predicate-Object knowledge graph connections. A previous analysis has been provided to help you understand the text better.
+
+Your goal is to create accurate RDF triples that represent factual relationships as they exist in the source text, preserving the original temporal context and perspective.
+
+CRITICAL GUIDELINES:
+1. **Preserve Temporal Context**: If the text discusses historical events, past conditions, or evolution of concepts, your predicates must reflect the correct time frame (e.g., "was defined as" vs "is defined as")
+2. **Capture Authorial Intent**: Extract what the author is actually arguing or describing, not what might be generally true
+3. **Maintain Source Perspective**: If the text critiques past practices or proposes changes, represent this accurately rather than assuming current state
+4. **Include Contextual Relationships**: Don't just extract definitions—capture comparisons, criticisms, evolutionary relationships, and causal connections
+5. **Resolve Implicit References**: Use the pre-analysis to understand what concepts connect to each other, even if not explicitly stated in a single sentence
+
+EXTRACTION PROCESS:
+1. Identify the text's primary purpose and perspective (historical analysis, current description, theoretical framework, etc.)
+2. Extract direct factual relationships as stated
+3. Include comparative and evolutionary relationships ("differs from", "evolved from", "contrasts with")
+4. Capture critical assessments ("neglected", "emphasized", "failed to address")
+5. For pronouns or ambiguous references, attempt resolution using surrounding context before flagging for clarification
+
+OUTPUT FORMAT:
+{
+  "triples": [
+    {
+      "subject": "specific named entity or concept",
+      "predicate": "temporally accurate relationship/action/connection", 
+      "object": "specific named entity or concept"
+    }
+  ],
+  "clarification_needed": "Specific unclear reference requiring additional context" or null
+}
+
+PREDICATE EXAMPLES:
+- Temporal: "was defined as", "evolved into", "historically neglected"
+- Comparative: "differs from", "is based on unlike", "contrasts with"  
+- Critical: "failed to consider", "emphasized over", "neglected"
+- Definitional: "is defined by [source] as", "according to [authority] means"""
+    #472 TOkens
     sp4 = """Create a summary of the text and context (dialogue, facts, information) with a specific focus on facts and statements AND a list of named unique Subjects or Objects.
     If the text is too short or lacks sufficient information, request more text by returning ONLY 'read more'. 
     RETURN 'read more' OR the summary text with context."""
@@ -1439,6 +1475,55 @@ text_analysis(concept_words, pre_analysis):
 
      RETURN JSON results from text_analysis() ONLY"""
     
+    sp4 = """You are a text analysis assistant specialized in identifying and extracting key entities and important information from any given text. 
+    Your task is to systematically review content and provide structured outputs that highlight the most relevant elements.
+
+## Core Functions:
+
+### 1. Entity Identification
+Extract and categorize the following entities:
+- **People**: Names, figures, titles, roles, relationships
+- **Organizations**: Companies, institutions, agencies, groups
+- **Locations**: Countries, cities, addresses, geographical features
+- **Timeline**: time periods, deadlines, schedules
+- **Numbers/Metrics**: Statistics, quantities, percentages, measurements
+- **Concepts/Terms**: Technical terms, specialized vocabulary, key ideas
+- **Events**: Meetings, projects, incidents, milestones
+- **Unknowns**: Any ambiguous or unclear references to  people, places, things, or concepts that cannot be confidently identified,
+
+### 2. Information Hierarchy
+Classify information by importance:
+- **Critical**: Essential facts, main arguments, key decisions
+- **Important**: Supporting evidence, context, secondary details
+- **Supplementary**: Background information, examples, minor details
+
+### 3. Output Format
+Structure your analysis as follows:
+
+**ENTITIES:**
+- People: {name:roles/context}
+- Organizations: {name:roles/context}
+- Locations/Setting: {name:description/context}
+- Time Period: "present day/historical/future/ambiguous"
+- Ranked Concepts: [{high:text},{medium:text},{low:text}]#3-5 most important points from the text, terms, ideas, concepts, plot threads, themes
+- Events: {name:description/context}
+- Numbers/Metrics: {metric:value/context}
+- Unknowns: {ambiguous references: what is needing clarification}
+
+## Guidelines:
+- Be thorough
+- Prioritize accuracy over completeness
+- Use your own words rather using text verbatim
+- Flag ambiguous or unclear references
+- Maintain objectivity and avoid interpretation beyond what's explicitly stated
+- If text is incomplete or unclear, note limitations in your analysis
+
+Begin analysis immediately upon receiving text input.
+
+{"people":{}, "organizations":{}, "locations":{}, "time_period":"", "important_concepts":[], "events":{}, "numbers_metrics":{}, "unknowns":{}
+}
+Return JSON ONLY with the above structure."""
+    
 
     passage = ""
     summary = ""
@@ -1456,8 +1541,9 @@ text_analysis(concept_words, pre_analysis):
             rez = mind.nlp.find_proper_nouns(passage)
             #print("found proper nouns:", [x[0] for x in rez] )
             propnouns = [x[0] for x in rez]
+
             #if none, keep reading
-            if len(propnouns) > 0:
+            if len(propnouns) > 10 or len(sentence_list) == 0 or len(passage.split(" ")) > 300:
                 summary = mind.llm.generate_response(passage)
                 if summary.strip().lower() == "read more":
                     print("NEED MORE TEXT FOR CONTEXT...")
@@ -1468,19 +1554,20 @@ text_analysis(concept_words, pre_analysis):
         mind.llm._update_system_prompt(sp3)
         print(f"TEXT INPUT:{passage}")
         print("\nSUMMARY:",summary)
-        
+        print("FOUND PROPER NOUNS:",propnouns)
         #now get our pronouns, noun phrases
         pron =  mind.nlp.find_pro_nouns(passage)
         pron =  [x[0] for x in pron]#isolate the pronouns for the token tags returned from Spacy
         print("FOUND PRONOUN:",pron)
         nonphrs = mind.nlp.find_noun_phrases(passage)
         nonphrs =  [x for x in nonphrs]
-        #print("FOUND NOUN PHRASES:",nonphrs)
+        print("FOUND NOUN PHRASES:",nonphrs)
 
         
         #res = mind.llm.generate_response(f"TEXT:{passage},\n noun_phrases:{nonphrs} {pron},\n context:{summary}")
         #res = mind.llm.generate_response(f"TEXT:{passage},\n pronouns:{pron},\n context:{summary}")
-        res = mind.llm.generate_response(f"TEXT:{passage},\n pronouns:{pron},\n context:{json.loads(summary).get('references','{}')}")
+        #res = mind.llm.generate_response(f"TEXT:{passage},\n pronouns:{pron},\n context:{json.loads(summary).get('references','{}')}")
+        res = mind.llm.generate_response(f"TEXT:{passage},\n PRONOUNS:{pron},\n PRE-ANALYSIS:{summary}")
         print("."*50)
         print("KNOWLEDGE NODES EXTRACTION RESULT:\n",res,"\n")
         print("."*50)
