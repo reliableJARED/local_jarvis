@@ -2,6 +2,8 @@ import subprocess
 import sys
 import json
 import re
+import os
+import socket
 from typing import List, Dict, Any, Callable
 
 def install_dependencies():
@@ -17,23 +19,90 @@ def install_dependencies():
     
     return torch, AutoModelForCausalLM, AutoTokenizer
 
-def load_model(model_name="Qwen/Qwen2.5-7B-Instruct"):
-    """Load model and tokenizer."""
+def check_internet():
+    """Check if internet connection is available."""
+    try:
+        socket.create_connection(("huggingface.co", 443), timeout=5)
+        return True
+    except (socket.timeout, socket.error, OSError):
+        return False
+
+def find_local_model(model_name):
+    """Find cached model in common HuggingFace cache locations."""
+    # Check local directory first
+    local_name = model_name.split('/')[-1]
+    if os.path.exists(local_name) and validate_model_files(local_name):
+        return local_name
+    
+    # Check HuggingFace cache
+    cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+    model_dir_name = f"models--{model_name.replace('/', '--')}"
+    model_path = os.path.join(cache_dir, model_dir_name)
+    
+    if os.path.exists(model_path):
+        snapshots_dir = os.path.join(model_path, "snapshots")
+        if os.path.exists(snapshots_dir):
+            snapshots = os.listdir(snapshots_dir)
+            for snapshot in snapshots:
+                snapshot_path = os.path.join(snapshots_dir, snapshot)
+                if validate_model_files(snapshot_path):
+                    return snapshot_path
+    
+    return None
+
+def validate_model_files(model_path):
+    """Check if model directory has required files."""
+    if not os.path.exists(model_path):
+        return False
+    
+    required_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
+    model_files = [f for f in os.listdir(model_path) if f.endswith(('.bin', '.safetensors'))]
+    
+    for file in required_files:
+        if not os.path.exists(os.path.join(model_path, file)):
+            return False
+    
+    return len(model_files) > 0
+
+def load_model(model_name="Qwen/Qwen2.5-7B-Instruct", force_offline=False):
+    """Load model and tokenizer with offline support."""
     torch, AutoModelForCausalLM, AutoTokenizer = install_dependencies()
     
-    print(f"Loading {model_name}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype="auto",
-        device_map="auto"
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # Check if we should use online or offline mode
+    if force_offline or not check_internet():
+        print("Using offline mode...")
+        local_path = find_local_model(model_name)
+        if not local_path:
+            raise FileNotFoundError(
+                f"Model {model_name} not found locally. "
+                f"Please run with internet connection first to download the model."
+            )
+        
+        print(f"Loading model from: {local_path}")
+        model = AutoModelForCausalLM.from_pretrained(
+            local_path,
+            torch_dtype="auto",
+            device_map="auto",
+            local_files_only=True
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            local_path,
+            local_files_only=True
+        )
+    else:
+        print(f"Loading {model_name} (will download if needed)...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",
+            device_map="auto"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     return model, tokenizer, torch
 
 class SimpleQwen:
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct"):
-        self.model, self.tokenizer, self.torch = load_model(model_name)
+    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", force_offline=False):
+        self.model, self.tokenizer, self.torch = load_model(model_name, force_offline)
         self.messages = [{"role": "system", "content": "You are a helpful assistant."}]
         self.tools = {}
         self.available_tools = []
@@ -195,10 +264,33 @@ class SimpleQwen:
         
         return parsed_response["content"]
 
+def download_model(model_name="Qwen/Qwen2.5-7B-Instruct"):
+    """Download model for offline use."""
+    save_path = f"./{model_name.split('/')[-1]}"
+    
+    print(f"Downloading {model_name} for offline use...")
+    torch, AutoModelForCausalLM, AutoTokenizer = install_dependencies()
+    
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    
+    model.save_pretrained(save_path)
+    tokenizer.save_pretrained(save_path)
+    
+    print(f"Model downloaded to: {save_path}")
+
 # Example usage
 if __name__ == "__main__":
+    # Handle command line arguments
+    if len(sys.argv) > 1 and sys.argv[1] == "download":
+        model_name = sys.argv[2] if len(sys.argv) > 2 else "Qwen/Qwen2.5-7B-Instruct"
+        download_model(model_name)
+        sys.exit()
+    
+    force_offline = len(sys.argv) > 1 and sys.argv[1] == "offline"
+    
     # Initialize chat
-    chat = SimpleQwen()
+    chat = SimpleQwen(force_offline=force_offline)
     
     # Example tool
     def get_weather(args):
@@ -211,6 +303,10 @@ if __name__ == "__main__":
     
     # Chat loop
     print("Chat started! Type 'quit' to exit.")
+    print("Commands:")
+    print("  python script.py download - Download model for offline use")
+    print("  python script.py offline - Force offline mode")
+    
     while True:
         user_input = input("\nYou: ").strip()
         
