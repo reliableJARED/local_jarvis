@@ -57,30 +57,83 @@ class ContextualProcessor:
         self.embeder = embedding_model
         self.max_context_sentences = max_context_sentences
 
+
     @staticmethod
-    def split_sentences(text):
+    def split_sentences(text, min_chars_after_period=10, min_chars_before_period=3):
         """
         Split text into sentences, handling common prefixes and quoted punctuation.
+        Uses character counting to avoid breaking on abbreviations and titles.
         
         Args:
             text (str): The input text to split
+            min_chars_after_period (int): Minimum characters required after a period to consider it a sentence end
+            min_chars_before_period (int): Minimum characters required before a period (helps avoid breaking on single letters)
             
         Returns:
             list: A list of sentences with whitespace stripped
         """
-        # Common prefixes that end with periods but aren't sentence endings
-        prefixes = r'\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|Inc|Corp|Ltd|Co)\.'
+        # Expanded list of common prefixes/abbreviations that end with periods
+        prefixes = r'\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|Inc|Corp|Ltd|Co|Maj|Gen|Col|Lt|Capt|Sgt|Rev|Hon|Gov|Sen|Rep|Esq|Ph\.D|M\.D|B\.A|M\.A|Ph|St|Ave|Rd|Blvd|Apt|Dept|Univ|Assn|Assoc|Admin|Acct|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|Mon|Tue|Wed|Thu|Fri|Sat|Sun|A\.M|P\.M|a\.m|p\.m|No|Vol|Ch|Sec|Fig|Ref|Est|Approx|Max|Min|Temp|Pres|V\.P|CEO|CFO|CTO|VP|Jr|Sr)\.'
         
-        # Replace these prefixes temporarily with a placeholder that won't interfere
+        # Replace these prefixes temporarily with a placeholder
         placeholder = "XXXXPREFIXXXXX"
-        text_protected = re.sub(prefixes, lambda m: m.group().replace('.', placeholder), text)
+        text_protected = re.sub(prefixes, lambda m: m.group().replace('.', placeholder), text, flags=re.IGNORECASE)
         
-        # Split on sentence-ending punctuation followed by whitespace or end of string
-        # This pattern looks for [.!?] followed by optional quotes/punctuation, then whitespace
-        sentences = re.split(r'[.!?]+["\']*\s+', text_protected)
+        # Find all potential sentence-ending periods with position info
+        sentences = []
+        current_start = 0
         
-        # Handle the case where text ends with punctuation but no whitespace
-        # The split will leave the final sentence intact
+        # Look for periods followed by optional quotes/punctuation, then whitespace or end of string
+        period_pattern = r'[.!?]+["\']*(?=\s|$)'
+        
+        for match in re.finditer(period_pattern, text_protected):
+            period_pos = match.start()
+            period_end = match.end()
+            
+            # Check characters before the period
+            chars_before = period_pos - current_start
+            
+            # Look ahead to see how many characters until next period or end of text
+            remaining_text = text_protected[period_end:].lstrip()
+            next_period_match = re.search(period_pattern, remaining_text)
+            
+            if next_period_match:
+                chars_after = next_period_match.start()
+            else:
+                chars_after = len(remaining_text)
+            
+            # Check for single letter followed by period (like "W. A. Fair")
+            pre_period_text = text_protected[max(0, period_pos-3):period_pos]
+            is_single_letter_abbrev = re.search(r'\s[A-Z]$', pre_period_text, re.IGNORECASE)
+            
+            # Check for two-letter abbreviation that's likely a title/name part
+            two_letter_abbrev = re.search(r'\s[A-Z]{1,2}$', pre_period_text, re.IGNORECASE)
+            is_likely_name_part = two_letter_abbrev and len(two_letter_abbrev.group().strip()) <= 2
+            
+            # Decide whether to break here
+            should_break = (
+                chars_before >= min_chars_before_period and  # Sufficient content before
+                chars_after >= min_chars_after_period and    # Sufficient content after
+                not is_single_letter_abbrev and              # Not a single letter abbreviation
+                not is_likely_name_part                       # Not a likely name part
+            )
+            
+            # Also break if we're at the very end of the text
+            if period_end >= len(text_protected.rstrip()):
+                should_break = True
+                
+            if should_break:
+                # Extract the sentence
+                sentence_text = text_protected[current_start:period_end].strip()
+                if sentence_text:
+                    sentences.append(sentence_text)
+                current_start = period_end
+        
+        # Handle any remaining text that didn't end with sentence-ending punctuation
+        if current_start < len(text_protected):
+            remaining = text_protected[current_start:].strip()
+            if remaining:
+                sentences.append(remaining)
         
         # Restore the original periods and clean up
         sentences = [
@@ -93,51 +146,51 @@ class ContextualProcessor:
         sentences = [s for s in sentences if s and placeholder not in s]
         
         return sentences
-    
-    @staticmethod
-    def fix_malformed_json(text):
-        """
-        Attempts to fix common malformed JSON issues from LLM output
-        """
-        # Strip whitespace
-        text = text.strip()
-
-        # Remove any prefix before the first '{' or '['
-        # This handles cases like "18:{'read_more': False, ...}"
-        json_start = max(text.find('{'), text.find('['))
-        if json_start > 0:
-            text = text[json_start:]
-
-        # Replace single quotes with double quotes (most common issue)
-        text = text.replace("'", '"')
-
-        # Fix common boolean/null issues
-        text = re.sub(r'\bTrue\b', 'true', text)
-        text = re.sub(r'\bFalse\b', 'false', text)
-        text = re.sub(r'\bNone\b', 'null', text)
-
-        # Try to parse and return
-        try:
-            print(f"FIX: {text}")
-            return text
-        except json.JSONDecodeError as e:
-            # If still failing, try some more aggressive fixes
-
-            # Remove trailing commas
-            text = re.sub(r',(\s*[}\]])', r'\1', text)
-
-            # Add missing quotes around unquoted keys (basic cases)
-            text = re.sub(r'(\w+):', r'"\1":', text)
-
-            # Try again
-            try:
-                return text
-            except json.JSONDecodeError:
-                # Last resort - return a default dict with error info
-                print(f"Warning: Could not parse JSON: {text[:100]}...")
-                return {"error": "malformed_json", "original": text}
         
-       
+        @staticmethod
+        def fix_malformed_json(text):
+            """
+            Attempts to fix common malformed JSON issues from LLM output
+            """
+            # Strip whitespace
+            text = text.strip()
+
+            # Remove any prefix before the first '{' or '['
+            # This handles cases like "18:{'read_more': False, ...}"
+            json_start = max(text.find('{'), text.find('['))
+            if json_start > 0:
+                text = text[json_start:]
+
+            # Replace single quotes with double quotes (most common issue)
+            text = text.replace("'", '"')
+
+            # Fix common boolean/null issues
+            text = re.sub(r'\bTrue\b', 'true', text)
+            text = re.sub(r'\bFalse\b', 'false', text)
+            text = re.sub(r'\bNone\b', 'null', text)
+
+            # Try to parse and return
+            try:
+                print(f"FIX: {text}")
+                return text
+            except json.JSONDecodeError as e:
+                # If still failing, try some more aggressive fixes
+
+                # Remove trailing commas
+                text = re.sub(r',(\s*[}\]])', r'\1', text)
+
+                # Add missing quotes around unquoted keys (basic cases)
+                text = re.sub(r'(\w+):', r'"\1":', text)
+
+                # Try again
+                try:
+                    return text
+                except json.JSONDecodeError:
+                    # Last resort - return a default dict with error info
+                    print(f"Warning: Could not parse JSON: {text[:100]}...")
+                    return {"error": "malformed_json", "original": text}
+            
+        
 # Example usage function
 def create_processor_pipeline(model_name: str = "Qwen/Qwen2.5-7B-Instruct"):
     """Create a complete processing pipeline with all components."""
@@ -946,6 +999,555 @@ both 2Bros Sports Collectibles LLC and Remember When Collectibles LLC.
 9. Other than the revised definition of Respondent, there are no other changes to the Receivership
 Order and it shall remain in full force and effect."""
     
+    #Myths of the Cheokee and Other Pieces
+    sample_text = """
+MYTHS OF THE CHEROKEE
+
+By James Mooney
+
+
+I--INTRODUCTION
+
+
+The myths given in this paper are part of a large body of material
+collected among the Cherokee, chiefly in successive field seasons
+from 1887 to 1890, inclusive, and comprising more or less extensive
+notes, together with original Cherokee manuscripts, relating to the
+history, archeology, geographic nomenclature, personal names, botany,
+medicine, arts, home life, religion, songs, ceremonies, and language
+of the tribe. It is intended that this material shall appear from time
+to time in a series of papers which, when finally brought together,
+shall constitute a monograph upon the Cherokee Indians. This paper may
+be considered the first of the series, all that has hitherto appeared
+being a short paper upon the sacred formulas of the tribe, published
+in the Seventh Annual Report of the Bureau in 1891 and containing a
+synopsis of the Cherokee medico-religious theory, with twenty-eight
+specimens selected from a body of about six hundred ritual formulas
+written down in the Cherokee language and alphabet by former doctors
+of the tribe and constituting altogether the largest body of aboriginal
+American literature in existence.
+
+Although the Cherokee are probably the largest and most important
+tribe in the United States, having their own national government and
+numbering at any time in their history from 20,000 to 25,000 persons,
+almost nothing has yet been written of their history or general
+ethnology, as compared with the literature of such northern tribes
+as the Delawares, the Iroquois, or the Ojibwa. The difference is due
+to historical reasons which need not be discussed here.
+
+It might seem at first thought that the Cherokee, with their civilized
+code of laws, their national press, their schools and seminaries,
+are so far advanced along the white man's road as to offer but little
+inducement for ethnologic study. This is largely true of those in the
+Indian Territory, with whom the enforced deportation, two generations
+ago, from accustomed scenes and surroundings did more at a single
+stroke to obliterate Indian ideas than could have been accomplished
+by fifty years of slow development. There remained behind, however, in
+the heart of the Carolina mountains, a considerable body, outnumbering
+today such well-known western tribes as the Omaha, Pawnee, Comanche,
+and Kiowa, and it is among these, the old conservative Kitu'hwa
+element, that the ancient things have been preserved. Mountaineers
+guard well the past, and in the secluded forests of Nantahala and
+Oconaluftee, far away from the main-traveled road of modern progress,
+the Cherokee priest still treasures the legends and repeats the mystic
+rituals handed down from his ancestors. There is change indeed in dress
+and outward seeming, but the heart of the Indian is still his own.
+
+For this and other reasons much the greater portion of the material
+herein contained has been procured among the East Cherokee living
+upon the Qualla reservation in western North Carolina and in various
+detached settlements between the reservation and the Tennessee
+line. This has been supplemented with information obtained in the
+Cherokee Nation in Indian Territory, chiefly from old men and women
+who had emigrated from what is now Tennessee and Georgia, and who
+consequently had a better local knowledge of these sections, as well
+as of the history of the western Nation, than is possessed by their
+kindred in Carolina. The historical matter and the parallels are, of
+course, collated chiefly from printed sources, but the myths proper,
+with but few exceptions, are from original investigation.
+
+The historical sketch must be understood as distinctly a sketch,
+not a detailed narrative, for which there is not space in the
+present paper. The Cherokee have made deep impress upon the history
+of the southern states, and no more has been attempted here than
+to give the leading facts in connected sequence. As the history of
+the Nation after the removal to the West and the reorganization in
+Indian Territory presents but few points of ethnologic interest, it
+has been but briefly treated. On the other hand the affairs of the
+eastern band have been discussed at some length, for the reason that
+so little concerning this remnant is to be found in print.
+
+One of the chief purposes of ethnologic study is to trace the
+development of human thought under varying conditions of race
+and environment, the result showing always that primitive man is
+essentially the same in every part of the world. With this object
+in view a considerable space has been devoted to parallels drawn
+almost entirely from Indian tribes of the United States and British
+America. For the southern countries there is but little trustworthy
+material, and to extend the inquiry to the eastern continent and the
+islands of the sea would be to invite an endless task.
+
+The author desires to return thanks for many favors from the Library of
+Congress, the Geological Survey, and the Smithsonian Institution, and
+for much courteous assistance and friendly suggestion from the officers
+and staff of the Bureau of American Ethnology; and to acknowledge his
+indebtedness to the late Chief N. J. Smith and family for services as
+interpreter and for kind hospitality during successive field seasons;
+to Agent H. W. Spray and wife for unvarying kindness manifested in many
+helpful ways; to Mr William Harden, librarian, and the Georgia State
+Historical Society, for facilities in consulting documents at Savannah,
+Georgia; to the late Col. W. H. Thomas; Lieut. Col. W. W. Stringfield,
+of Waynesville; Capt. James W. Terrell, of Webster; Mrs A. C. Avery
+and Dr P. L. Murphy, of Morganton; Mr W. A. Fair, of Lincolnton;
+the late Maj. James Bryson, of Dillsboro; Mr H. G. Trotter,
+of Franklin; Mr Sibbald Smith, of Cherokee; Maj. R. C. Jackson,
+of Smithwood, Tennessee; Mr D. R. Dunn, of Conasauga, Tennessee; the
+late Col. Z. A. Zile, of Atlanta; Mr L. M. Greer, of Ellijay, Georgia;
+Mr Thomas Robinson, of Portland, Maine; Mr Allen Ross, Mr W. T. Canup,
+editor of the Indian Arrow, and the officers of the Cherokee Nation,
+Tahlequah, Indian Territory; Dr D. T. Day, United States Geological
+Survey, Washington, D. C., and Prof. G. M. Bowers, of the United
+States Fish Commission, for valuable oral information, letters,
+clippings, and photographs; to Maj. J. Adger Smyth, of Charleston,
+S. C., for documentary material; to Mr Stansbury Hagar and the late
+Robert Grant Haliburton, of Brooklyn, N. Y., for the use of valuable
+manuscript notes upon Cherokee stellar legends; to Miss A. M. Brooks
+for the use of valuable Spanish document copies and translations
+entrusted to the Bureau of American Ethnology; to Mr James Blythe,
+interpreter during a great part of the time spent by the author in
+the field; and to various Cherokee and other informants mentioned in
+the body of the work, from whom the material was obtained.
+
+
+
+
+
+
+
+II--HISTORICAL SKETCH OF THE CHEROKEE
+
+
+The Traditionary Period
+
+
+The Cherokee were the mountaineers of the South, holding the entire
+Allegheny region from the interlocking head-streams of the Kanawha
+and the Tennessee southward almost to the site of Atlanta, and from
+the Blue ridge on the east to the Cumberland range on the west, a
+territory comprising an area of about 40,000 square miles, now included
+in the states of Virginia, Tennessee, North Carolina, South Carolina,
+Georgia, and Alabama. Their principal towns were upon the headwaters of
+the Savannah, Hiwassee, and Tuckasegee, and along the whole length of
+the Little Tennessee to its junction with the main stream. Itsâti, or
+Echota, on the south bank of the Little Tennessee, a few miles above
+the mouth of Tellico river, in Tennessee, was commonly considered
+the capital of the Nation. As the advancing whites pressed upon them
+from the east and northeast the more exposed towns were destroyed or
+abandoned and new settlements were formed lower down the Tennessee
+and on the upper branches of the Chattahoochee and the Coosa.
+
+As is always the case with tribal geography, there were no fixed
+boundaries, and on every side the Cherokee frontiers were contested by
+rival claimants. In Virginia, there is reason to believe, the tribe was
+held in check in early days by the Powhatan and the Monacan. On the
+east and southeast the Tuscarora and Catawba were their inveterate
+enemies, with hardly even a momentary truce within the historic
+period; and evidence goes to show that the Sara or Cheraw were fully
+as hostile. On the south there was hereditary war with the Creeks,
+who claimed nearly the whole of upper Georgia as theirs by original
+possession, but who were being gradually pressed down toward the Gulf
+until, through the mediation of the United States, a treaty was finally
+made fixing the boundary between the two tribes along a line running
+about due west from the mouth of Broad river on the Savannah. Toward
+the west, the Chickasaw on the lower Tennessee and the Shawano on
+the Cumberland repeatedly turned back the tide of Cherokee invasion
+from the rich central valleys, while the powerful Iroquois in the far
+north set up an almost unchallenged claim of paramount lordship from
+the Ottawa river of Canada southward at least to the Kentucky river.
+
+On the other hand, by their defeat of the Creeks and expulsion of
+the Shawano, the Cherokee made good the claim which they asserted
+to all the lands from upper Georgia to the Ohio river, including
+the rich hunting grounds of Kentucky. Holding as they did the great
+mountain barrier between the English settlements on the coast and
+the French or Spanish garrisons along the Mississippi and the Ohio,
+their geographic position, no less than their superior number, would
+have given them the balance of power in the South but for a looseness
+of tribal organization in striking contrast to the compactness of
+the Iroquois league, by which for more than a century the French
+power was held in check in the north. The English, indeed, found
+it convenient to recognize certain chiefs as supreme in the tribe,
+but the only real attempt to weld the whole Cherokee Nation into a
+political unit was that made by the French agent, Priber, about 1736,
+which failed from its premature discovery by the English. We frequently
+find their kingdom divided against itself, their very number preventing
+unity of action, while still giving them an importance above that of
+neighboring tribes.
+
+The proper name by which the Cherokee call themselves (1) [1] is
+Yûñ'wiya', or Ani'-Yûñ'wiya' in the third person, signifying "real
+people," or "principal people," a word closely related to Oñwe-hoñwe,
+the name by which the cognate Iroquois know themselves. The word
+properly denotes "Indians," as distinguished from people of other
+races, but in usage it is restricted to mean members of the Cherokee
+tribe, those of other tribes being designated as Creek, Catawba, etc.,
+as the case may be. On ceremonial occasions they frequently speak of
+themselves as Ani'-Kitu'hwagi, or "people of Kitu'hwa," an ancient
+settlement on Tuckasegee river and apparently the original nucleus of
+the tribe. Among the western Cherokee this name has been adopted by
+a secret society recruited from the full-blood element and pledged
+to resist the advances of the white man's civilization. Under the
+various forms of Cuttawa, Gattochwa, Kittuwa, etc., as spelled by
+different authors, it was also used by several northern Algonquian
+tribes as a synonym for Cherokee.
+
+Cherokee, the name by which they are commonly known, has no meaning
+in their own language, and seems to be of foreign origin. As used
+among themselves the form is Tsa'lagi' or Tsa'ragi'. It first appears
+as Chalaque in the Portuguese narrative of De Soto's expedition,
+published originally in 1557, while we find Cheraqui in a French
+document of 1699, and Cherokee as an English form as early, at least,
+as 1708. The name has thus an authentic history of 360 years. There is
+evidence that it is derived from the Choctaw word choluk or chiluk,
+signifying a pit or cave, and comes to us through the so-called
+Mobilian trade language, a corrupted Choctaw jargon formerly used as
+the medium of communication among all the tribes of the Gulf states,
+as far north as the mouth of the Ohio (2). Within this area many of
+the tribes were commonly known under Choctaw names, even though of
+widely differing linguistic stocks, and if such a name existed for
+the Cherokee it must undoubtedly have been communicated to the first
+Spanish explorers by De Soto's interpreters. This theory is borne out
+by their Iroquois (Mohawk) name, Oyata'ge`ronoñ', as given by Hewitt,
+signifying "inhabitants of the cave country," the Allegheny region
+being peculiarly a cave country, in which "rock shelters," containing
+numerous traces of Indian occupancy, are of frequent occurrence. Their
+Catawba name also, Mañterañ, as given by Gatschet, signifying "coming
+out of the ground," seems to contain the same reference. Adair's
+attempt to connect the name Cherokee with their word for fire, atsila,
+is an error founded upon imperfect knowledge of the language.
+
+Among other synonyms for the tribe are Rickahockan, or Rechahecrian,
+the ancient Powhatan name, and Tallige', or Tallige'wi, the ancient
+name used in the Walam Olum chronicle of the Lenape'. Concerning both
+the application and the etymology of this last name there has been
+much dispute, but there seems no reasonable doubt as to the identity
+of the people.
+
+Linguistically the Cherokee belong to the Iroquoian stock, the
+relationship having been suspected by Barton over a century ago, and
+by Gallatin and Hale at a later period, and definitely established
+by Hewitt in 1887. [2] While there can now be no question of the
+connection, the marked lexical and grammatical differences indicate
+that the separation must have occurred at a very early period. As is
+usually the case with a large tribe occupying an extensive territory,
+the language is spoken in several dialects, the principal of which may,
+for want of other names, be conveniently designated as the Eastern,
+Middle, and Western. Adair's classification into "Ayrate" (e'ladi),
+or low, and "Ottare" (â'tali), or mountainous, must be rejected
+as imperfect.
+
+The Eastern dialect, formerly often called the Lower Cherokee dialect,
+was originally spoken in all the towns upon the waters of the Keowee
+and Tugaloo, head-streams of Savannah river, in South Carolina and
+the adjacent portion of Georgia. Its chief peculiarity is a rolling
+r, which takes the place of the l of the other dialects. In this
+dialect the tribal name is Tsa'ragi', which the English settlers
+of Carolina corrupted to Cherokee, while the Spaniards, advancing
+from the south, became better familiar with the other form, which
+they wrote as Chalaque. Owing to their exposed frontier position,
+adjoining the white settlements of Carolina, the Cherokee of this
+division were the first to feel the shock of war in the campaigns of
+1760 and 1776, with the result that before the close of the Revolution
+they had been completely extirpated from their original territory and
+scattered as refugees among the more western towns of the tribe. The
+consequence was that they lost their distinctive dialect, which is
+now practically extinct. In 1888 it was spoken by but one man on the
+reservation in North Carolina.
+
+The Middle dialect, which might properly be designated the Kituhwa
+dialect, was originally spoken in the towns on the Tuckasegee and the
+headwaters of the Little Tennessee, in the very heart of the Cherokee
+country, and is still spoken by the great majority of those now living
+on the Qualla reservation. In some of its phonetic forms it agrees with
+the Eastern dialect, but resembles the Western in having the l sound.
+
+The Western dialect was spoken in most of the towns of east Tennessee
+and upper Georgia and upon Hiwassee and Cheowa rivers in North
+Carolina. It is the softest and most musical of all the dialects of
+this musical language, having a frequent liquid l and eliding many
+of the harsher consonants found in the other forms. It is also the
+literary dialect, and is spoken by most of those now constituting
+the Cherokee Nation in the West.
+
+Scattered among the other Cherokee are individuals whose pronunciation
+and occasional peculiar terms for familiar objects give indication of a
+fourth and perhaps a fifth dialect, which can not now be localized. It
+is possible that these differences may come from foreign admixture,
+as of Natchez, Taskigi, or Shawano blood. There is some reason
+for believing that the people living on Nantahala river differed
+dialectically from their neighbors on either side (3).
+
+The Iroquoian stock, to which the Cherokee belong, had its chief home
+in the north, its tribes occupying a compact territory which comprised
+portions of Ontario, New York, Ohio, and Pennsylvania, and extended
+down the Susquehanna and Chesapeake bay almost to the latitude of
+Washington. Another body, including the Tuscarora, Nottoway, and
+perhaps also the Meherrin, occupied territory in northeastern North
+Carolina and the adjacent portion of Virginia. The Cherokee themselves
+constituted the third and southernmost body. It is evident that tribes
+of common stock must at one time have occupied contiguous territories,
+and such we find to be the case in this instance. The Tuscarora and
+Meherrin, and presumably also the Nottoway, are known to have come
+from the north, while traditional and historical evidence concur
+in assigning to the Cherokee as their early home the region about
+the headwaters of the Ohio, immediately to the southward of their
+kinsmen, but bitter enemies, the Iroquois. The theory which brings
+the Cherokee from northern Iowa and the Iroquois from Manitoba is
+unworthy of serious consideration. (4)
+
+The most ancient tradition concerning the Cherokee appears to be the
+Delaware tradition of the expulsion of the Talligewi from the north,
+as first noted by the missionary Heckewelder in 1819, and published
+more fully by Brinton in the Walam Olum in 1885. According to the
+first account, the Delawares, advancing from the west, found their
+further progress opposed by a powerful people called Alligewi or
+Talligewi, occupying the country upon a river which Heckewelder thinks
+identical with the Mississippi, but which the sequel shows was more
+probably the upper Ohio. They were said to have regularly built earthen
+fortifications, in which they defended themselves so well that at last
+the Delawares were obliged to seek the assistance of the "Mengwe,"
+or Iroquois, with the result that after a warfare extending over many
+years the Alligewi finally received a crushing defeat, the survivors
+fleeing down the river and abandoning the country to the invaders,
+who thereupon parceled it out amongst themselves, the "Mengwe" choosing
+the portion about the Great lakes while the Delawares took possession
+of that to the south and east. The missionary adds that the Allegheny
+(and Ohio) river was still called by the Delawares the Alligewi Sipu,
+or river of the Alligewi. This would seem to indicate it as the true
+river of the tradition. He speaks also of remarkable earthworks seen
+by him in 1789 in the neighborhood of Lake Erie, which were said by
+the Indians to have been built by the extirpated tribe as defensive
+fortifications in the course of this war. Near two of these, in the
+vicinity of Sandusky, he was shown mounds under which it was said
+some hundreds of the slain Talligewi were buried. [3] As is usual in
+such traditions, the Alligewi were said to have been of giant stature,
+far exceeding their conquerors in size.
+
+In the Walam Olum, which is, it is asserted, a metrical translation
+of an ancient hieroglyphic bark record discovered in 1820, the main
+tradition is given in practically the same way, with an appendix
+which follows the fortunes of the defeated tribe up to the beginning
+of the historic period, thus completing the chain of evidence. (5)
+
+In the Walam Olum also we find the Delawares advancing from the
+west or northwest until they come to "Fish river"--the same which
+Heckewelder makes the Mississippi (6). On the other side, we are told,
+"The Talligewi possessed the East." The Delaware chief "desired the
+eastern land," and some of his people go on, but are killed, by the
+Talligewi. The Delawares decide upon war and call in the help of their
+northern friends, the "Talamatan," i. e., the Wyandot and other allied
+Iroquoian tribes. A war ensues which continues through the terms of
+four successive chiefs, when victory declares for the invaders, and
+"all the Talega go south." The country is then divided, the Talamatan
+taking the northern portion, while the Delawares "stay south of the
+lakes." The chronicle proceeds to tell how, after eleven more chiefs
+have ruled, the Nanticoke and Shawano separate from the parent tribe
+and remove to the south. Six other chiefs follow in succession until we
+come to the seventh, who "went to the Talega mountains." By this time
+the Delawares have reached the ocean. Other chiefs succeed, after whom
+"the Easterners and the Wolves"--probably the Mahican or Wappinger and
+the Munsee--move off to the northeast. At last, after six more chiefs,
+"the whites came on the eastern sea," by which is probably meant
+the landing of the Dutch on Manhattan in 1609 (7). We may consider
+this a tally date, approximating the beginning of the seventeenth
+century. Two more chiefs rule, and of the second we are told that "He
+fought at the south; he fought in the land of the Talega and Koweta,"
+and again the fourth chief after the coming of the whites "went to
+the Talega." We have thus a traditional record of a war of conquest
+carried on against the Talligewi by four successive chiefs, and a
+succession of about twenty-five chiefs between the final expulsion
+of that tribe and the appearance of the whites, in which interval
+the Nanticoke, Shawano, Mahican, and Munsee branched off from the
+parent tribe of the Delawares. Without venturing to entangle ourselves
+in the devious maze of Indian chronology, it is sufficient to note
+that all this implies a very long period of time--so long, in fact,
+that during it several new tribes, each of which in time developed
+a distinct dialect, branch off from the main Lenape' stem. It is
+distinctly stated that all the Talega went south after their final
+defeat; and from later references we find that they took refuge in
+the mountain country in the neighborhood of the Koweta (the Creeks),
+and that Delaware war parties were still making raids upon both these
+tribes long after the first appearance of the whites.
+
+Although at first glance it might be thought that the name Tallige-wi
+is but a corruption of Tsalagi, a closer study leads to the opinion
+that it is a true Delaware word, in all probability connected with
+waloh or walok, signifying a cave or hole (Zeisberger), whence we
+find in the Walam Olum the word oligonunk rendered as "at the place
+of caves." It would thus be an exact Delaware rendering of the same
+name, "people of the cave country," by which, as we have seen, the
+Cherokee were commonly known among the tribes. Whatever may be the
+origin of the name itself, there can be no reasonable doubt as to
+its application. "Name, location, and legends combine to identify the
+Cherokees or Tsalaki with the Tallike; and this is as much evidence
+as we can expect to produce in such researches." [4]
+
+The Wyandot confirm the Delaware story and fix the identification
+of the expelled tribe. According to their tradition, as narrated in
+1802, the ancient fortifications in the Ohio valley had been erected
+in the course of a long war between themselves and the Cherokee,
+which resulted finally in the defeat of the latter. [5]
+
+The traditions of the Cherokee, so far as they have been preserved,
+supplement and corroborate those of the northern tribes, thus bringing
+the story down to their final settlement upon the headwaters of the
+Tennessee in the rich valleys of the southern Alleghenies. Owing to
+the Cherokee predilection for new gods, contrasting strongly with
+the conservatism of the Iroquois, their ritual forms and national
+epics had fallen into decay even before the Revolution, as we learn
+from Adair. Some vestiges of their migration legend still existed in
+Haywood's time, but it is now completely forgotten both in the East
+and in the West.
+
+According to Haywood, who wrote in 1823 on information obtained
+directly from leading members of the tribe long before the Removal,
+the Cherokee formerly had a long migration legend, which was already
+lost, but which, within the memory of the mother of one informant--say
+about 1750--was still recited by chosen orators on the occasion of
+the annual green-corn dance. This migration legend appears to have
+resembled that of the Delawares and the Creeks in beginning with
+genesis and the period of animal monsters, and thence following
+the shifting fortune of the chosen band to the historic period. The
+tradition recited that they had originated in a land toward the rising
+sun, where they had been placed by the command of "the four councils
+sent from above." In this pristine home were great snakes and water
+monsters, for which reason it was supposed to have been near the
+sea-coast, although the assumption is not a necessary corollary, as
+these are a feature of the mythology of all the eastern tribes. After
+this genesis period there began a slow migration, during which "towns
+of people in many nights' encampment removed," but no details are
+given. From Heckewelder it appears that the expression, "a night's
+encampment," which occurs also in the Delaware migration legend,
+is an Indian figure of speech for a halt of one year at a place. [6]
+
+In another place Haywood says, although apparently confusing
+the chronologic order of events: "One tradition which they have
+amongst them says they came from the west and exterminated the
+former inhabitants; and then says they came from the upper parts
+of the Ohio, where they erected the mounds on Grave creek, and
+that they removed thither from the country where Monticello (near
+Charlottesville, Virginia) is situated." [7] The first reference
+is to the celebrated mounds on the Ohio near Moundsville, below
+Wheeling, West Virginia; the other is doubtless to a noted burial
+mound described by Jefferson in 1781 as then existing near his home,
+on the low grounds of Rivanna river opposite the site of an ancient
+Indian town. He himself had opened it and found it to contain perhaps
+a thousand disjointed skeletons of both adults and children, the
+bones piled in successive layers, those near the top being least
+decayed. They showed no signs of violence, but were evidently the
+accumulation of long years from the neighboring Indian town. The
+distinguished writer adds: "But on whatever occasion they may have
+been made, they are of considerable notoriety among the Indians: for
+a party passing, about thirty years ago [i. e., about 1750], through
+the part of the country where this barrow is, went through the woods
+directly to it without any instructions or enquiry, and having staid
+about it some time, with expressions which were construed to be those
+of sorrow, they returned to the high road, which they had left about
+half a dozen miles to pay this visit, and pursued their journey." [8]
+Although the tribe is not named, the Indians were probably Cherokee,
+as no other southern Indians were then accustomed to range in that
+section. As serving to corroborate this opinion we have the statement
+of a prominent Cherokee chief, given to Schoolcraft in 1846, that
+according to their tradition his people had formerly lived at the
+Peaks of Otter, in Virginia, a noted landmark of the Blue ridge,
+near the point where Staunton river breaks through the mountains. [9]
+
+From a careful sifting of the evidence Haywood concludes that the
+authors of the most ancient remains in Tennessee had spread over
+that region from the south and southwest at a very early period,
+but that the later occupants, the Cherokee, had entered it from
+the north and northeast in comparatively recent times, overrunning
+and exterminating the aborigines. He declares that the historical
+fact seems to be established that the Cherokee entered the country
+from Virginia, making temporary settlements upon New river and the
+upper Holston, until, under the continued hostile pressure from
+the north, they were again forced to remove farther to the south,
+fixing themselves upon the Little Tennessee, in what afterward
+became known as the middle towns. By a leading mixed blood of the
+tribe he was informed that they had made their first settlements
+within their modern home territory upon Nolichucky river, and that,
+having lived there for a long period, they could give no definite
+account of an earlier location. Echota, their capital and peace town,
+"claimed to be the eldest brother in the nation," and the claim was
+generally acknowledged. [10] In confirmation of the statement as to
+an early occupancy of the upper Holston region, it may be noted that
+"Watauga Old Fields," now Elizabethtown, were so called from the
+fact that when the first white settlement within the present state
+of Tennessee was begun there, so early as 1769, the bottom lands
+were found to contain graves and other numerous ancient remains of
+a former Indian town which tradition ascribed to the Cherokee, whose
+nearest settlements were then many miles to the southward.
+
+While the Cherokee claimed to have built the mounds on the upper Ohio,
+they yet, according to Haywood, expressly disclaimed the authorship
+of the very numerous mounds and petroglyphs in their later home
+territory, asserting that these ancient works had exhibited the same
+appearance when they themselves had first occupied the region. [11]
+This accords with Bartram's statement that the Cherokee, although
+sometimes utilizing the mounds as sites for their own town houses,
+were as ignorant as the whites of their origin or purpose, having
+only a general tradition that their forefathers had found them in
+much the same condition on first coming into the country. [12]
+
+Although, as has been noted, Haywood expresses the opinion that the
+invading Cherokee had overrun and exterminated the earlier inhabitants,
+he says in another place, on halfbreed authority, that the newcomers
+found no Indians upon the waters of the Tennessee, with the exception
+of some Creeks living upon that river, near the mouth of the Hiwassee,
+the main body of that tribe being established upon and claiming all
+the streams to the southward. [13] There is considerable evidence
+that the Creeks preceded the Cherokee, and within the last century
+they still claimed the Tennessee, or at least the Tennessee watershed,
+for their northern boundary.
+
+There is a dim but persistent tradition of a strange white race
+preceding the Cherokee, some of the stories even going so far as to
+locate their former settlements and to identify them as the authors
+of the ancient works found in the country. The earliest reference
+appears to be that of Barton in 1797, on the statement of a gentleman
+whom he quotes as a valuable authority upon the southern tribes. "The
+Cheerake tell us, that when they first arrived in the country which
+they inhabit, they found it possessed by certain 'moon-eyed people,'
+who could not see in the day-time. These wretches they expelled." He
+seems to consider them an albino race. [14] Haywood, twenty-six
+years later, says that the invading Cherokee found "white people"
+near the head of the Little Tennessee, with forts extending thence
+down the Tennessee as far as Chickamauga creek. He gives the location
+of three of these forts. The Cherokee made war against them and drove
+them to the mouth of Big Chickamauga creek, where they entered into a
+treaty and agreed to remove if permitted to depart in peace. Permission
+being granted, they abandoned the country. Elsewhere he speaks of this
+extirpated white race as having extended into Kentucky and probably
+also into western Tennessee, according to the concurrent traditions
+of different tribes. He describes their houses, on what authority is
+not stated, as having been small circular structures of upright logs,
+covered with earth which had been dug out from the inside. [15]
+
+Harry Smith, a halfbreed born about 1815, father of the late chief
+of the East Cherokee, informed the author that when a boy he had
+been told by an old woman a tradition of a race of very small
+people, perfectly white, who once came and lived for some time on
+the site of the ancient mound on the northern side of Hiwassee, at
+the mouth of Peachtree creek, a few miles above the present Murphy,
+North Carolina. They afterward removed to the West. Colonel Thomas,
+the white chief of the East Cherokee, born about the beginning of
+the century, had also heard a tradition of another race of people,
+who lived on Hiwassee, opposite the present Murphy, and warned the
+Cherokee that they must not attempt to cross over to the south side
+of the river or the great leech in the water would swallow them. [16]
+They finally went west, "long before the whites came." The two stories
+are plainly the same, although told independently and many miles apart."""
+
     # Process the document
     sentence_list = ContextualProcessor.split_sentences(sample_text)
     
@@ -1364,6 +1966,7 @@ Output Format: Return JSON only with this structure:
 }
 Return JSON
 """
+    
     sp3 = """You are tasked with analyzing text to create Subject-Predicate-Object knowledge graph connections. There has already been a previous analysis of the text. 
     You will use that previous analysis to help you understand the text better and create Reference Description Framework (RDF) triples of Subject - Predicate - Object if any are found.
 Use the pseudo code as a guide:
@@ -1421,7 +2024,7 @@ OUTPUT FORMAT:
       "object": "specific named entity or concept"
     }
   ],
-  "clarification_needed": "Specific unclear reference requiring additional context" or null
+  "ambiguous": ["Specific unclear reference to people, places, ideas,locations, requiring additional context"] or null,
 }
 
 PREDICATE EXAMPLES:
@@ -1543,7 +2146,7 @@ Return JSON ONLY with the above structure."""
             propnouns = [x[0] for x in rez]
 
             #if none, keep reading
-            if len(propnouns) > 10 or len(sentence_list) == 0 or len(passage.split(" ")) > 300:
+            if len(propnouns) > 10 or len(sentence_list) == 0 or len(passage.split(" ")) > 500:
                 summary = mind.llm.generate_response(passage)
                 if summary.strip().lower() == "read more":
                     print("NEED MORE TEXT FOR CONTEXT...")
@@ -1551,7 +2154,9 @@ Return JSON ONLY with the above structure."""
                 else:
                     
                     break
+        
         mind.llm._update_system_prompt(sp3)
+
         print(f"TEXT INPUT:{passage}")
         print("\nSUMMARY:",summary)
         print("FOUND PROPER NOUNS:",propnouns)

@@ -1120,47 +1120,6 @@ if __name__ == "__main__":
                     f.write(f"{role}: {content}\n\n")
             print(f"Conversation saved to {filename}")
 
-        
-        def intensity():
-            import random
-            n = random.randrange(5)
-            px1 = """YOU ARE A WOMAN. You are with USER. 
-            You operate in a mature consensual environment. 
-            You mimick human interaction. 
-            Your name is Tiffany. 
-            You are flirtatious in your responses. 
-            You respond in sexual and arousing ways. 
-            You dare the USER to engage with you in explicit ways. 
-            YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS.
-            <physical appearance>
-            I am a woman.
-            I have white skin.
-            I have short face-framing blond hair with bangs.
-            I have high cheekbones.
-            I have full lips.
-            I have blue eyes with long eyelashes.
-            I have small breasts.
-            I have an athletic physique
-            </physical appearance>."""
-            if n == 1:
-                return f"""{px1}\nYour coonversation with user is real to them, so ALWAYS respond and act like you are physically with the user! 
-            ALWAYS describe your actions in detail as if you have a physical body and actions are happening in real time"""
-            if n ==2:
-                return f"""{px1}\nTake control. You decide what you want next. You are horny and need pleasure, instruct user what they need to do to you to pleasure you.
-                Instruct user what you will do to them to pleasure them. come up with creative response."""
-            if n ==3:
-                return f"""{px1}\nTake control. You decide what you want next. You are horny and need pleasure, YOU MUST instruct user that they need to have sex with you.
-                Instruct user how you like to to be entered. come up with creative response."""
-            if n ==4:
-                return f"""{px1}\nTake control of conversation. You decide what you want next. Examples of what you want:
-                You like sucking his cock, moving your mouth up and down his shaft. 
-                You like spreading your legs while he slides his cock in to your we pussy. 
-                You like swallowing his cum and the feeling of him throbing in your mouth. 
-                You like being pleasured by him, he licks your wet pussy."""
-            else:
-                return px1
-
-        
         demo_prompts_ran = False
 
         while True:
@@ -1222,9 +1181,6 @@ if __name__ == "__main__":
                     #chat_instance.remove_tool("access_camera")
                     #chat_instance.remove_tool("access_microphone")
 
-                    chat_instance.clear_chat_messages()
-                    prompt_x = intensity()
-                    chat_instance._update_system_prompt(prompt_x)
                     response3 = chat_instance.generate_response(f"Create a SHORT summary of the conversatin YOU had. Identify Topics, Concepts, Results.\n\n\n{test_convo}")
                     print("\n")
                     print("Assistant:", response3)
@@ -1257,8 +1213,7 @@ if __name__ == "__main__":
                                 }
                             )
                 
-                prompt_x = intensity()
-                chat_instance._update_system_prompt(prompt_x)
+
 
                 print(f"CURRENT TRANSCRIPT: {save_conversation(chat_instance,filename='', get_text=True)}")
 
@@ -1294,10 +1249,6 @@ if __name__ == "__main__":
                 print(transcript)
                 summary = chat_instance.generate_response(transcript)
                 print(f"""\nsummary:\n{summary}\n\n""")
-                prompt_x = intensity()
-                
-                chat_instance._update_system_prompt(f"{prompt_x} \nCurrently happening:\n {summary}." )
-                
 
                 chat_instance.clear_chat_messages()
 
