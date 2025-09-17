@@ -2014,6 +2014,7 @@ EXTRACTION PROCESS:
 3. Include comparative and evolutionary relationships ("differs from", "evolved from", "contrasts with")
 4. Capture critical assessments ("neglected", "emphasized", "failed to address")
 5. For pronouns or ambiguous references, attempt resolution using surrounding context before flagging for clarification
+6. Focus of the text should be summarized in a brief note to help contextualize future passages
 
 OUTPUT FORMAT:
 {
@@ -2025,6 +2026,7 @@ OUTPUT FORMAT:
     }
   ],
   "ambiguous": ["Specific unclear reference to people, places, ideas,locations, requiring additional context"] or null,
+  "focus": "past tense summary of the main focus of the text to help contextualize future passages"
 }
 
 PREDICATE EXAMPLES:
@@ -2132,7 +2134,8 @@ Return JSON ONLY with the above structure."""
     summary = ""
     total_passages = len(sentence_list)
     res = None
-
+    total_time_start = time.time()  # Start timing the loop
+    prior_context = ""
     while len(sentence_list)>1:
         loop_start = time.time()  # Start timing the loop
         mind.llm._update_system_prompt(sp4)
@@ -2145,19 +2148,14 @@ Return JSON ONLY with the above structure."""
             #print("found proper nouns:", [x[0] for x in rez] )
             propnouns = [x[0] for x in rez]
 
-            #if none, keep reading
+            #process text
             if len(propnouns) > 10 or len(sentence_list) == 0 or len(passage.split(" ")) > 500:
                 summary = mind.llm.generate_response(passage)
-                if summary.strip().lower() == "read more":
-                    print("NEED MORE TEXT FOR CONTEXT...")
-                    continue
-                else:
-                    
-                    break
+                break
         
         mind.llm._update_system_prompt(sp3)
 
-        print(f"TEXT INPUT:{passage}")
+        print(f"\nTEXT INPUT:{passage}")
         print("\nSUMMARY:",summary)
         print("FOUND PROPER NOUNS:",propnouns)
         #now get our pronouns, noun phrases
@@ -2172,13 +2170,25 @@ Return JSON ONLY with the above structure."""
         #res = mind.llm.generate_response(f"TEXT:{passage},\n noun_phrases:{nonphrs} {pron},\n context:{summary}")
         #res = mind.llm.generate_response(f"TEXT:{passage},\n pronouns:{pron},\n context:{summary}")
         #res = mind.llm.generate_response(f"TEXT:{passage},\n pronouns:{pron},\n context:{json.loads(summary).get('references','{}')}")
-        res = mind.llm.generate_response(f"TEXT:{passage},\n PRONOUNS:{pron},\n PRE-ANALYSIS:{summary}")
+        res = mind.llm.generate_response(f"TEXT:{passage},\n POTENTIAL subject/object ENTITIES:{propnouns},\n PRE-ANALYSIS:{summary}, PRIOR_TEXT_CONTEXT:{prior_context}")
+        #set prior context for next passage
+        try:
+            try:
+                res_dict = json.loads(res)
+                prior_context = res_dict.get('focus',"")
+            except:
+                prior_context = res.split("focus")[1]
+        except:
+            prior_context = ""
+        print("PRIOR CONTEXT FOR NEXT PASSAGE:",prior_context)
         print("."*50)
         print("KNOWLEDGE NODES EXTRACTION RESULT:\n",res,"\n")
         print("."*50)
         loop_end = time.time()
         elapsed = loop_end - loop_start
+        total_time = loop_end - total_time_start
         print(f"review completed in {elapsed:.2f} seconds")
+        print(f"Total Time {total_time:.2f} seconds")
         #reset passage
         passage = ""
         print("#"*50)

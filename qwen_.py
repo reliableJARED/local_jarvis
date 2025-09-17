@@ -314,7 +314,7 @@ class QwenDependencyManager:
 class Qwen:
     """Handles chat functionality, conversation management, token tracking, and tool use."""
     
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False, auto_append_conversation = False,user_name='user'):
+    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", model_path=None, force_offline=False, auto_append_conversation = False,user_name='user',max_new_tokens=1024):
         """Initialize the chat interface with automatic dependency management."""
         self.dependency_manager = QwenDependencyManager(
             model_name=model_name,
@@ -329,7 +329,7 @@ class Qwen:
         self.auto_append_conversation = auto_append_conversation
 
         #max new tokens for generation
-        self.max_new_tokens = 512
+        self.max_new_tokens = max_new_tokens
         
         # Token tracking
         self.token_stats = {
@@ -536,7 +536,7 @@ class Qwen:
         Returns:
             tuple: (full_response_text, output_token_count)
         """
-        max_new_tokens = min(max_new_tokens, self.max_new_tokens)
+        max_new_tokens = max(max_new_tokens, self.max_new_tokens)
         input_tokens = model_inputs.input_ids.shape[1]
         generated_tokens = []
         
@@ -742,7 +742,7 @@ class Qwen:
         Returns:
             str: The complete response content
         """
-        max_new_tokens = min(max_new_tokens, self.max_new_tokens)
+        max_new_tokens = max(max_new_tokens, self.max_new_tokens)
         # Clear GPU memory before generation
         self.clear_gpu_memory()
         messages = self.messages
@@ -837,7 +837,7 @@ class Qwen:
                 # Execute the tools
                 tool_results = self._execute_tool_calls(tool_calls)
                 self.messages.extend(tool_results)
-                max_new_tokens = min(max_new_tokens, self.max_new_tokens)
+                max_new_tokens = max(max_new_tokens, self.max_new_tokens)
                 # Generate final response
                 return self._generate_final_response(max_new_tokens, self.messages)
         
@@ -935,7 +935,7 @@ class Qwen:
 
         self.dependency_manager.print_gpu_memory()
         
-        max_new_tokens = min(max_new_tokens, self.max_new_tokens)
+        max_new_tokens = max(max_new_tokens, self.max_new_tokens)
         # Check if input is too long for context window
         if input_tokens > 30000:  # Leave room for generation
             logging.debug(f"Warning: Input tokens ({input_tokens}) approaching context limit")
@@ -954,7 +954,7 @@ class Qwen:
             # Retry with smaller generation length
             generated_ids = self.model.generate(
                 **model_inputs,
-                max_new_tokens=min(max_new_tokens // 2, 256),
+                max_new_tokens=max(max_new_tokens // 2, 256),
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.8

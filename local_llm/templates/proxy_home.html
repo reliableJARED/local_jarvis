@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Local Server</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .loading { background-color: #fff3cd; color: #856404; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏠 My Local Server</h1>
+        <p>This page is being served from my home computer through a relay server!</p>
+        
+        <div id="status" class="status loading">
+            Checking connection...
+        </div>
+        
+        <h2>Test API</h2>
+        <button onclick="testApi()">Test Local API</button>
+        <div id="api-result"></div>
+        
+        <h2>Connection Info</h2>
+        <p><strong>Server Time:</strong> <span id="server-time">Loading...</span></p>
+        <p><strong>User Agent:</strong> <span id="user-agent"></span></p>
+        
+        <h2>How it works</h2>
+        <ol>
+            <li>Your browser makes a request to the relay server</li>
+            <li>The relay server queues the request for my local server</li>
+            <li>My local server polls the relay and processes the request</li>
+            <li>The response goes back through the relay to your browser</li>
+        </ol>
+        
+        <p><em>No VPN or port forwarding required!</em></p>
+    </div>
+
+    <script>
+        // Update user agent
+        document.getElementById('user-agent').textContent = navigator.userAgent;
+        
+        // Test the connection
+        function updateStatus() {
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('status').className = 'status success';
+                    document.getElementById('status').textContent = 'Connected to local server!';
+                    document.getElementById('server-time').textContent = new Date(data.timestamp * 1000).toLocaleString();
+                })
+                .catch(error => {
+                    document.getElementById('status').className = 'status error';
+                    document.getElementById('status').textContent = 'Connection error: ' + error.message;
+                });
+        }
+        
+        function testApi() {
+            const resultDiv = document.getElementById('api-result');
+            resultDiv.innerHTML = '<p>Testing API...</p>';
+            
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    resultDiv.innerHTML = `
+                        <div class="status success">
+                            <h3>API Response:</h3>
+                            <pre>${JSON.stringify(data, null, 2)}</pre>
+                        </div>
+                    `;
+                })
+                .catch(error => {
+                    resultDiv.innerHTML = `
+                        <div class="status error">
+                            <h3>API Error:</h3>
+                            <p>${error.message}</p>
+                        </div>
+                    `;
+                });
+        }
+        
+        // Initial status check
+        updateStatus();
+        
+        // Update status every 10 seconds
+        setInterval(updateStatus, 10000);
+    </script>
+</body>
+</html>
