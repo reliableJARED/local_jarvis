@@ -1,7 +1,7 @@
-from dependency_manager import Orenda_DependencyManager
 import sys
 from typing import Optional, Generator, Dict, List, Any, Union, Tuple, TYPE_CHECKING
 from types import TracebackType
+
 
 #ONLY for type hints, not actual imports - IDE friendly will set this to true, not at runtime
 if TYPE_CHECKING:
@@ -100,12 +100,13 @@ process frames that have changed significantly (to save compute)
 class MoondreamWrapper:
     """Wrapper class for Moondream2 vision model operations"""
     
-    def __init__(self, model_name: str = "vikhyatk/moondream2", revision: str = "2025-01-09") -> None:
+    def __init__(self,local_files_only:bool=False, model_name: str = "vikhyatk/moondream2", revision: str = "2025-01-09") -> None:
         """Initialize Moondream model with automatic device detection"""
         import numpy as np
         import cv2
         import torch
         from transformers import AutoModelForCausalLM
+
         self.cv2 = cv2
         self.torch = torch
         self.np = np
@@ -118,7 +119,8 @@ class MoondreamWrapper:
         self.dtype: Optional["torch.dtype"] = None
         
         self._setup_device()
-        self._load_model()
+        self._load_model(local_only=local_files_only)
+        
 
     def _setup_device(self) -> None:
         """Detect and configure optimal device and dtype"""
@@ -137,7 +139,7 @@ class MoondreamWrapper:
         
         print(f"Device: {self.device}, Data type: {self.dtype}")
     
-    def _load_model(self) -> None:
+    def _load_model(self,local_only:bool=False) -> None:
         """Load the Moondream model"""
         print("Loading Moondream2 model...")
         try:
@@ -146,7 +148,8 @@ class MoondreamWrapper:
                 revision=self.revision,
                 trust_remote_code=True,
                 device_map={"": self.device},
-                dtype=self.dtype
+                dtype=self.dtype,
+                local_files_only=local_only
             )
             print("Model loaded successfully")
         except Exception as e:
@@ -227,17 +230,11 @@ class MoondreamWrapper:
 
 # Example usage
 if __name__ == "__main__":
-    dep_manager: Orenda_DependencyManager = Orenda_DependencyManager()
-    if dep_manager.run(download_models=False):
-        print("All dependencies are ready to use!")
-        success = dep_manager.download_model(model_name="vikhyatk/moondream2", revision = "2025-01-09")
-        if success:
-            print("Moondream2 model downloaded successfully")
 
     # Initialize camera and model
+    moondream: MoondreamWrapper = MoondreamWrapper()
     try:
         with CameraHandler(camera_index=0) as camera:
-            moondream: MoondreamWrapper = MoondreamWrapper()
             
             # Capture single image
             print("Capturing image from camera...")
@@ -285,7 +282,7 @@ if __name__ == "__main__":
 
     try:
         with CameraHandler(camera_index=0) as camera:
-            moondream: MoondreamWrapper = MoondreamWrapper()
+            #moondream: MoondreamWrapper = MoondreamWrapper()
             
             print("Starting continuous frame analysis... Press Ctrl+C to stop")
             print("Press 'q' in the camera window to quit")

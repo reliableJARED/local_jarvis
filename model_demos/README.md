@@ -4,7 +4,7 @@ Set up the virtual environment for Orenda.
 
 ## Prerequisites
 
-- Python 3.6 or higher installed on your system
+- Python 3.12 on your system DO NOT USE other python versions
 - Git (for cloning the repository)
 - Make sure you're in the model_demos directory
 ```cmd
@@ -17,7 +17,7 @@ Set up the virtual environment for Orenda.
 
 1. **Create the virtual environment:**
    ```cmd
-   python -m venv orenda
+   py -3.12 -m venv orenda
    ```
 
 2. **Activate the virtual environment:**
@@ -32,7 +32,7 @@ Set up the virtual environment for Orenda.
 
 1. **Create the virtual environment:**
    ```bash
-   python3 -m venv orenda
+   python3.12 -m venv orenda
    ```
 
 2. **Activate the virtual environment:**
@@ -44,11 +44,16 @@ Set up the virtual environment for Orenda.
    You should see `(orenda)` at the beginning of your terminal prompt.
 
 ## Installing Dependencies
+Torch Libs for use with Nvidia 5000 series needs to be nightly built at the moment
+
+```bash
+    pip install -r pytorch-requirements.txt
+```
 
 Once your virtual environment is activated, install the required packages:
 
 ```bash
-python dependency_manager.py
+    pip install -r requirements.txt
 ```
 
 ## Deactivating the Virtual Environment
@@ -62,7 +67,7 @@ deactivate
 ## Troubleshooting
 
 ### Python Command Not Found (Windows)
-If `python` is not recognized, try using `py` instead:
+If `python` is not recognized, try using `py` instead (typical for Windows):
 ```cmd
 py -m venv orenda
 ```
@@ -79,3 +84,8 @@ Make sure you're in the correct directory where you created the virtual environm
 ---
 
 **Note:** Always make sure your virtual environment is activated (you see `(orenda)` in your prompt) before installing packages or running the project.
+
+**Dev:** Keep requirements.txt udpated
+```bash 
+pip list --format=freeze > requirements.txt
+```

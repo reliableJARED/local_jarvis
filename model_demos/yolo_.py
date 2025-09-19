@@ -1,6 +1,5 @@
 from typing import Dict, List, Tuple, Any
 import numpy as np
-from dependency_manager import Orenda_DependencyManager
 
 class YOLOhf:
     def __init__(self, model_name: str = "hustvl/yolos-tiny") -> None:
@@ -117,10 +116,7 @@ class YOLOhf:
 
 def main() -> None:
     """Main function to run the person detection system"""
-    dep_manager: Orenda_DependencyManager = Orenda_DependencyManager()
-    if dep_manager.run(download_models=False):
-        print("All dependencies are ready to use!")
-
+    
     # Initialize the model
     print("Initializing Hugging Face YOLOS model...")
     yolo_model: YOLOhf = YOLOhf()

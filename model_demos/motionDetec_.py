@@ -1,4 +1,4 @@
-from dependency_manager import Orenda_DependencyManager
+
 from typing import Tuple, TYPE_CHECKING
 #ONLY for type hints, not actual imports - IDE friendly will set this to true, not at runtime
 if TYPE_CHECKING:
@@ -135,12 +135,8 @@ class MotionDetector:
 
 # Example usage
 if __name__ == "__main__":
-    dep_manager = Orenda_DependencyManager()
-    if dep_manager.run(download_models=False):
-        print("All dependencies are ready to use!")
 
-        # Create and run motion detector
-        detector = MotionDetector()
-        detector.run()
-    else:
-        print("Dependencies not ready. Cannot start motion detection.")
+    # Create and run motion detector
+    detector = MotionDetector()
+    detector.run()
+    

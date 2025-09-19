@@ -1,0 +1,181 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+#Image or other Output tests
+test/
+*.png
+aphrodite/
+demo_rdf_data/
+apollo/
+athena/
+demetra/
+eros/
+hera/
+lseries/
+xseries/
+yseries/
+zseries/
+zeus/
+area/
+hesperus/
+rhea/
+ares/
+taylor/
+xserver/
+fav.txt
+lustify_xwork.py
+convo1.txt
+Wan2.2/
+Wan2.2-TI2V-5B/
+wan14b_models/
+wan14b_models_2/    
+wan22_cache/
+wan_official/
+wan_official_2/
+wan22_official/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+#Abandoned Work
+dead/
+
+#NSWF
+#lustify_xwork.py
+
+# Distribution / packaging
+wan_official/
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pretrained_models/spkrec-ecapa-voxceleb
+pretrained_models/
+*.ckpt
+
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+
+
+
+# AI Models and Large Files
+# Qwen2.5 models
+models/
+*.bin
+*.safetensors
+*.gguf
+*.ggml
+*.pt
+*.pth
+*.h5
+*.pkl
+*.pickle
+
+
+# HuggingFace cache
+.cache/
+huggingface/
+transformers_cache/
+~/.cache/huggingface/
+
+
+# Audio files (recordings, generated speech)
+audio/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.aac
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Configuration files with sensitive data
+config.json
+
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# IDE specific files
+.vscode/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+
+# PyTorch cache
+.pytorch/
+
+model_demos/orenda/
+model_demos/debug_audio/
+model_demos/dependencies/libvips/vips-dev-8.17/
+model_demos/__pycache__/
+#show the gitignore
+#.gitignore

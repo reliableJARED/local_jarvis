@@ -3,8 +3,7 @@ import threading
 import queue
 import time
 
-from dependency_manager import Orenda_DependencyManager
-
+#list of class names for YAMNet (AudioSet)
 from yamnet_classes import yamnet_class_names
 
 from typing import TYPE_CHECKING
@@ -440,9 +439,7 @@ class AudioClassifier:
 
 
 if __name__ == "__main__":
-    dep_manager: Orenda_DependencyManager = Orenda_DependencyManager()
-    if dep_manager.run(download_models=False):
-        print("All dependencies are ready to use!")
+    
         
     """Main function to run the audio classifier."""
     try:

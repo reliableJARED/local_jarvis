@@ -2,7 +2,7 @@ import os
 import platform
 import warnings
 import tempfile
-from dependency_manager import Orenda_DependencyManager
+
 
 from typing import  Optional, Generator, Tuple, Any,Tuple, TYPE_CHECKING
 #ONLY for type hints, not actual imports - IDE friendly will set this to true, not at runtime
@@ -103,9 +103,7 @@ class kokoroTTS:
                     print(f"Playback failed: {e}")
 
 if __name__ == "__main__":
-    dep_manager: Orenda_DependencyManager = Orenda_DependencyManager()
-    if dep_manager.run(download_models=False):
-        print("All dependencies are ready to use!")
+
 
     kokoro: kokoroTTS = kokoroTTS()
     kokoro._initialize_pipeline()
