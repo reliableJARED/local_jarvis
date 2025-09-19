@@ -178,4 +178,4 @@ model_demos/debug_audio/
 model_demos/dependencies/libvips/vips-dev-8.17/
 model_demos/__pycache__/
 #show the gitignore
-#.gitignore
+.gitignore
