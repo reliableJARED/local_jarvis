@@ -189,7 +189,7 @@ def main():
     
     # Configuration
     SAVE_DEBUG_AUDIO = True  # Set to True to save audio files for debugging
-    DURATION = 3  # Recording duration in seconds
+    DURATION = 5  # Recording duration in seconds
     
     # Clear any existing memory
     clear_memory()
