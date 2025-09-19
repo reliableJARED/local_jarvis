@@ -101,7 +101,7 @@ def visual_cortex_worker(raw_img_queue, processed_queue, stats_dict, visual_scen
 
     #Visual Cortex Processing Core CNN (yolo)
     from yolo_ import YOLOhf
-    from moondream_ import MoondreamWrapper
+    
 
     #reuse single instance
     IMG_DETECTION_CNN = YOLOhf()
@@ -144,14 +144,12 @@ def visual_cortex_worker(raw_img_queue, processed_queue, stats_dict, visual_scen
                         VLM_availible_local = True
                         stats_dict['VLM_availible'] = True
 
-                        # Import and initialize VLM Moondream (done in thread to avoid blocking)
-                        IMG_PROCESSING_VLM = MoondreamWrapper(local_files_only=True)
-
+                        
                         # Start VLM Moondream analysis in separate thread
                         VLM_thread = threading.Thread(
                             target=visual_cortex_process_vlm_analysis_thread,
                             args=(frame_data['frame'], frame_data['camera_index'], 
-                                frame_data['capture_timestamp'], visual_scene_queue, stats_dict,IMG_PROCESSING_VLM)
+                                frame_data['capture_timestamp'], visual_scene_queue, stats_dict)
                             )  
                          
                         VLM_thread.daemon = True
@@ -220,17 +218,19 @@ def visual_cortex_process_img(frame, camera_index, timestamp, IMG_DETECTION_CNN)
     frame = IMG_DETECTION_CNN.draw_detections(frame, results, filter_person_only=True)
 
     # Explicit cleanup
-    #gc.collect()
-    #torch.cuda.empty_cache()  # Force GPU memory cleanup
-    
+    gc.collect()
     if torch.cuda.is_available():
-         # Monitor GPU memory before loading
+        torch.cuda.empty_cache()  # Force GPU memory cleanup
         print(f"GPU memory after cleanup: {torch.cuda.memory_allocated()/1024**2:.1f}MB")
 
     return frame, person_detected
 
-def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, visual_scene_queue, stats_dict,IMG_PROCESSING_VLM):
+def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, visual_scene_queue, stats_dict):
     """Thread function to run VLM (Moondream) analysis without blocking main processing"""
+    # Import and initialize VLM Moondream (done in thread to avoid blocking memory if it stays loaded)
+    from moondream_ import MoondreamWrapper
+    IMG_PROCESSING_VLM = MoondreamWrapper(local_files_only=True)
+
     # Convert frame to RGB for Moondream
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     
@@ -291,11 +291,14 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
         # Clean up and ensure VLM_availible is reset
         try:
             del IMG_PROCESSING_VLM
+            # Explicit cleanup
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()  # Force GPU memory cleanup
+                print(f"GPU memory after cleanup: {torch.cuda.memory_allocated()/1024**2:.1f}MB")
         except:
             pass
 
-        gc.collect()
-        torch.cuda.empty_cache()
         stats_dict['VLM_availible'] = False
         print(f"VLM analysis thread finished for camera {camera_index}")
 
