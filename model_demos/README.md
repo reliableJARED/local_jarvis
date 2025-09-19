@@ -41,7 +41,7 @@ Set up the virtual environment for Orenda.
 
 1. **Create the virtual environment:**
    ```bash
-   python3.12 -m venv orenda
+   python -m venv orenda
    ```
 
 2. **Activate the virtual environment:**
@@ -66,7 +66,7 @@ then
 ```bash
     pip install -r requirements.txt
 ```
-## Windows only Last Step libvips
+## Windows only Last Step libvips - Mac/Linux You're Done :)
 ### Moondream2 Issue without libvips
 We need to add libvips library to the system path on Windows to use moondream2.  The bin zip is already in this repo in the model_demos/dependencies/libvips/vips-dev-w64-web-8.17.2.zip you can unzip in place and add to system PATH, or run the helper function to automatically do that
 ```bash
