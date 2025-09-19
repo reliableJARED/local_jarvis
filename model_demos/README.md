@@ -4,12 +4,21 @@ Set up the virtual environment for Orenda.
 
 ## Prerequisites
 
-- Python 3.12 on your system DO NOT USE other python versions
+- Python 3.12.x or 3.11.9 on your system DO NOT USE other python versions
 - Git (for cloning the repository)
 - Make sure you're in the model_demos directory
 ```cmd
    cd model_demos
 ```
+## Check Python Version
+### Windows
+   ```cmd
+   py --version
+   ```
+### OS/Linux
+   ```cmd
+   python --version
+   ```
 
 ## Virtual Environment Setup
 
@@ -17,7 +26,7 @@ Set up the virtual environment for Orenda.
 
 1. **Create the virtual environment:**
    ```cmd
-   py -3.12 -m venv orenda
+   py -m venv orenda
    ```
 
 2. **Activate the virtual environment:**
@@ -44,16 +53,24 @@ Set up the virtual environment for Orenda.
    You should see `(orenda)` at the beginning of your terminal prompt.
 
 ## Installing Dependencies
-Torch Libs for use with Nvidia 5000 series needs to be nightly built at the moment
+Once your virtual environment is activated, install the required packages:
+
+Torch Libs for use with Nvidia 5000 series needs to be from the nightly build at the moment (Sept 2025). So install specific torch requirements first
 
 ```bash
     pip install -r pytorch-requirements.txt
 ```
 
-Once your virtual environment is activated, install the required packages:
+then
 
 ```bash
     pip install -r requirements.txt
+```
+## Windows only Last Step libvips
+### Moondream2 Issue without libvips
+We need to add libvips library to the system path on Windows to use moondream2.  The bin zip is already in this repo in the model_demos/dependencies/libvips/vips-dev-w64-web-8.17.2.zip you can unzip in place and add to system PATH, or run the helper function to automatically do that
+```bash
+python libvips_win_helper.py
 ```
 
 ## Deactivating the Virtual Environment

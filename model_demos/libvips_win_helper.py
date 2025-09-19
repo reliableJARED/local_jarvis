@@ -168,7 +168,7 @@ class Orenda_DependencyManager:
     def setup_windows_libvips(self) -> bool:
         """
         Setup libvips on Windows by checking, extracting if needed, and adding to PATH.
-        Looks for libvips in ../mono-workspace-repo/dependencies/libvips/ relative to current directory.
+        Looks for libvips in ../mono-workspace-repo/dependencies/libvips/vips-dev-8.17 relative to current directory.
         
         Returns:
             bool: True if libvips is ready to use, False otherwise
