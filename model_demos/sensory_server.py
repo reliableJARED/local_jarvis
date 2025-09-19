@@ -362,10 +362,11 @@ def generate_img_frames(camera_index=None):
 """
 AUDIO
 """
-def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate=16000, chunk_size=1024):
+
+def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
-    Will drop frames if the queue is full to maintain real-time performance.
-    Will stream to raw_audio_queue."""
+    Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.
+    """
     
     print(f"Started auditory nerve process for device {device_index}")
     frame_count = 0
@@ -376,11 +377,11 @@ def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate
         if status:
             print(f"Audio callback status: {status}")
         
-        # Create audio frame data
+        # Create audio frame data - keep as float32 for Silero VAD
         timestamp = time.time()
         audio_data = {
             'device_index': device_index,
-            'audio_frame': indata.copy().flatten(),  # Convert to 1D array
+            'audio_frame': indata.copy().flatten().astype(np.float32),  # Already float32, optimal for VAD
             'capture_timestamp': timestamp,
             'sample_rate': sample_rate
         }
@@ -389,7 +390,7 @@ def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate
         try:
             raw_audio_queue.put_nowait(audio_data)
         except:
-            # Queue is full, skip this frame
+            # Queue is full, skip this frame to maintain real-time performance
             pass
         
         # Calculate and update auditory nerve stats
@@ -401,19 +402,20 @@ def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate
             stats_dict[f'last_auditory_nerve_{device_index}'] = current_time
     
     try:
-        # Start audio stream
+        # Start audio stream with optimized settings
         with sd.InputStream(
             device=device_index,
             channels=1,
             samplerate=sample_rate,
-            blocksize=chunk_size,
-            dtype=np.float32,
-            callback=audio_callback
+            blocksize=chunk_size,  # 512 samples = ~32ms at 16kHz
+            dtype=np.float32,      # Native format for Silero VAD
+            callback=audio_callback,
+            latency='low'          # Request low latency from sounddevice
         ):
-            print(f"Audio stream started for device {device_index}")
+            print(f"Audio stream started for device {device_index} with {chunk_size} sample chunks")
             # Keep the stream alive
             while True:
-                time.sleep(0.1)
+                time.sleep(0.01)
                 
     except KeyboardInterrupt:
         pass
@@ -424,26 +426,40 @@ def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate
 
 def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue):
     """Worker process for processing audio frames (auditory cortex function)
-    Buffers audio frames and uses Silero-VAD when buffer reaches 512 samples.
+    Optimized for real-time streaming with VADIterator and minimal buffering.
     """
     print("Started auditory cortex process")
     frame_count = 0
     start_time = time.time()
     
-    # Audio buffer for accumulating samples
-    audio_buffer = deque()
-    buffer_target_size = 512
+    # Pre-roll buffer for capturing speech beginnings (100ms worth of audio)
+    pre_roll_buffer = deque(maxlen=5)  # ~5 chunks of 32ms = ~160ms buffer
+    speech_active = False
+    speech_buffer = []
     
-    # Initialize Silero VAD
+    # Initialize Silero VAD with VADIterator for streaming
     try:
         # Load Silero VAD model
+        torch.set_num_threads(1)  # Optimize for single-thread performance
         model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                     model='silero_vad',
                                     force_reload=False,
                                     onnx=False)
+        
+        # Extract VADIterator from utils
         (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
-        vad_iterator = VADIterator(model)
-        print("Silero VAD model loaded successfully")
+        
+        # Initialize VADIterator for streaming
+        vad_iterator = VADIterator(
+            model,
+            threshold=0.5,           # Speech probability threshold
+            sampling_rate=16000,     # Must match audio sample rate
+            min_silence_duration_ms=100,  # Minimum silence to end speech
+            speech_pad_ms=30         # Padding around speech segments
+        )
+        
+        print("Silero VAD with VADIterator loaded successfully")
+        
     except Exception as e:
         print(f"Error loading Silero VAD: {e}")
         return
@@ -454,79 +470,111 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
                 # Get audio frame (blocking with timeout)
                 audio_data = raw_audio_queue.get(timeout=1.0)
                 
-                # Add audio frame to buffer
-                audio_buffer.extend(audio_data['audio_frame'])
+                # Process immediately - no accumulation needed for 512-sample chunks
+                audio_chunk = audio_data['audio_frame']
                 
-                # Process when buffer reaches target size
-                if len(audio_buffer) >= buffer_target_size:
-                    # Extract samples for VAD processing
-                    samples_for_vad = np.array(list(audio_buffer)[:buffer_target_size])
+                # Ensure we have exactly 512 samples for consistent processing
+                if len(audio_chunk) != 512:
+                    continue
+                
+                # Convert to tensor for Silero VAD
+                audio_tensor = torch.from_numpy(audio_chunk)
+                
+                # Add to pre-roll buffer
+                pre_roll_buffer.append(audio_chunk)
+                
+                # Run VADIterator - this handles streaming state internally
+                try:
+                    speech_dict = vad_iterator(audio_tensor, return_seconds=True)
                     
-                    # Convert to tensor for Silero VAD (requires 16kHz float32)
-                    audio_tensor = torch.from_numpy(samples_for_vad)
+                    # Process VAD results
+                    if speech_dict:
+                        # Speech event detected (start or end)
+                        if 'start' in speech_dict:
+                            # Speech start detected
+                            print(f"Speech START detected at {speech_dict['start']:.3f}s")
+                            speech_active = True
+                            # Add pre-roll buffer to speech
+                            speech_buffer = list(pre_roll_buffer)
+                            
+                        if 'end' in speech_dict:
+                            # Speech end detected
+                            print(f"Speech END detected at {speech_dict['end']:.3f}s")
+                            speech_active = False
+                            
+                            # Process accumulated speech
+                            if speech_buffer:
+                                # Concatenate all speech chunks
+                                full_speech = np.concatenate(speech_buffer)
+                                
+                                # Create processed audio data
+                                process_timestamp = time.time()
+                                processed_data = {
+                                    'device_index': audio_data['device_index'],
+                                    'audio_samples': full_speech,
+                                    'speech_probability': 1.0,  # Confirmed speech segment
+                                    'speech_detected': True,
+                                    'capture_timestamp': audio_data['capture_timestamp'],
+                                    'auditory_cortex_timestamp': process_timestamp,
+                                    'sample_rate': audio_data['sample_rate'],
+                                    'duration': len(full_speech) / audio_data['sample_rate']
+                                }
+                                
+                                # Put processed audio in output queue
+                                try:
+                                    processed_audio_queue.put_nowait(processed_data)
+                                except:
+                                    # Queue is full, try to remove oldest and add new
+                                    try:
+                                        processed_audio_queue.get_nowait()
+                                        processed_audio_queue.put_nowait(processed_data)
+                                    except:
+                                        pass
+                                
+                                # Add to audio scene queue for further analysis
+                                audio_scene_data = {
+                                    'device_index': audio_data['device_index'],
+                                    'timestamp': audio_data['capture_timestamp'],
+                                    'speech_probability': 1.0,
+                                    'analysis_time': process_timestamp,
+                                    'formatted_time': datetime.fromtimestamp(audio_data['capture_timestamp']).strftime('%H:%M:%S'),
+                                    'audio_samples': full_speech,
+                                    'duration': len(full_speech) / audio_data['sample_rate']
+                                }
+                                
+                                try:
+                                    audio_scene_queue.put_nowait(audio_scene_data)
+                                except:
+                                    # Queue full, remove oldest and add new
+                                    try:
+                                        audio_scene_queue.get_nowait()
+                                        audio_scene_queue.put_nowait(audio_scene_data)
+                                    except:
+                                        pass
+                                
+                                # Clear speech buffer
+                                speech_buffer = []
                     
-                    # Run VAD
-                    speech_prob = model(audio_tensor, 16000).item()
-                    speech_detected = speech_prob > 0.5  # Threshold for speech detection
+                    # If speech is active, add current chunk to buffer
+                    if speech_active:
+                        speech_buffer.append(audio_chunk)
                     
-                    if speech_detected:
-                        print(f"Speech detected with probability: {speech_prob:.3f}")
-                        
-                        # Create processed audio data
-                        process_timestamp = time.time()
-                        processed_data = {
-                            'device_index': audio_data['device_index'],
-                            'audio_samples': samples_for_vad,
-                            'speech_probability': speech_prob,
-                            'speech_detected': speech_detected,
-                            'capture_timestamp': audio_data['capture_timestamp'],
-                            'auditory_cortex_timestamp': process_timestamp,
-                            'sample_rate': audio_data['sample_rate']
-                        }
-                        
-                        # Put processed audio in output queue
-                        try:
-                            processed_audio_queue.put_nowait(processed_data)
-                        except:
-                            # Queue is full, try to remove oldest and add new
-                            try:
-                                processed_audio_queue.get_nowait()
-                                processed_audio_queue.put_nowait(processed_data)
-                            except:
-                                pass
-                        
-                        # Add to audio scene queue for further analysis
-                        audio_scene_data = {
-                            'device_index': audio_data['device_index'],
-                            'timestamp': audio_data['capture_timestamp'],
-                            'speech_probability': speech_prob,
-                            'analysis_time': process_timestamp,
-                            'formatted_time': datetime.fromtimestamp(audio_data['capture_timestamp']).strftime('%H:%M:%S'),
-                            'audio_samples': samples_for_vad  # For potential transcription
-                        }
-                        
-                        try:
-                            audio_scene_queue.put_nowait(audio_scene_data)
-                        except:
-                            # Queue full, remove oldest and add new
-                            try:
-                                audio_scene_queue.get_nowait()
-                                audio_scene_queue.put_nowait(audio_scene_data)
-                            except:
-                                pass
+                    # Alternative: Get raw speech probability for monitoring
+                    # speech_prob = model(audio_tensor, 16000).item()
+                    # if speech_prob > 0.7:  # Higher threshold for immediate response
+                    #     print(f"High confidence speech: {speech_prob:.3f}")
                     
-                    # Remove processed samples from buffer
-                    for _ in range(buffer_target_size):
-                        if audio_buffer:
-                            audio_buffer.popleft()
+                except Exception as vad_error:
+                    print(f"VAD processing error: {vad_error}")
+                    continue
+                
+                # Calculate auditory cortex processing stats
+                frame_count += 1
+                if frame_count % 50 == 0:  # Update every 50 frames (~1.6 seconds)
+                    fps = frame_count / (time.time() - start_time)
+                    stats_dict['auditory_cortex_fps'] = fps
+                    stats_dict['last_auditory_cortex'] = time.time()
                     
-                    # Calculate auditory cortex processing stats
-                    frame_count += 1
-                    if frame_count % 30 == 0:
-                        fps = frame_count / (time.time() - start_time)
-                        stats_dict['auditory_cortex_fps'] = fps
-                        stats_dict['last_auditory_cortex'] = time.time()
-                        
             except queue.Empty:
                 continue
                 
@@ -1155,7 +1203,7 @@ if __name__ == '__main__':
     processed_frame_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     visual_scene_queue = manager.Queue(maxsize=10)
     
-    # NEW: Audio queues
+    #Audio queues
     raw_audio_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     processed_audio_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     audio_scene_queue = manager.Queue(maxsize=10)
