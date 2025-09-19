@@ -5,8 +5,8 @@ import queue
 import time
 import numpy as np
 from datetime import datetime
-import json
-import signal
+import sounddevice as sd
+from collections import deque
 import sys
 from PIL import Image
 import torch
@@ -19,14 +19,22 @@ app = Flask(__name__)
 QUEUE_SIZE = 5   # Maximum number of frames in queue
 FPS_TARGET = 30   # Target FPS for camera capture, Moondream alone will make 1fps a stretch
 
-# Global process tracking
+# ===== GLOBAL PROCESS TRACKING  =====
+# Visual process tracking
 optic_nerve_processes = {}
 visual_cortex_processes = {}
+# Audio process tracking
+auditory_nerve_processes = {}
+auditory_cortex_processes = {}
+#=====================================
 
 # Global VLM (moondream) analysis state
 VLM_availible = False
 VLM_thread = None
 
+"""
+VISUAL
+"""
 def optic_nerve_worker(camera_index, raw_img_queue, stats_dict, fps_target):
     """Worker process for capturing frames from a specific camera (optic nerve function).
     Will drop frames if the queue is full to maintain real-time performance.
@@ -351,185 +359,578 @@ def generate_img_frames(camera_index=None):
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
+"""
+AUDIO
+"""
+def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate=16000, chunk_size=1024):
+    """Worker process for capturing audio frames from a specific device (auditory nerve function).
+    Will drop frames if the queue is full to maintain real-time performance.
+    Will stream to raw_audio_queue."""
+    
+    print(f"Started auditory nerve process for device {device_index}")
+    frame_count = 0
+    start_time = time.time()
+    
+    def audio_callback(indata, frames, time_info, status):
+        nonlocal frame_count
+        if status:
+            print(f"Audio callback status: {status}")
+        
+        # Create audio frame data
+        timestamp = time.time()
+        audio_data = {
+            'device_index': device_index,
+            'audio_frame': indata.copy().flatten(),  # Convert to 1D array
+            'capture_timestamp': timestamp,
+            'sample_rate': sample_rate
+        }
+        
+        # Non-blocking queue put - drop frame if queue is full
+        try:
+            raw_audio_queue.put_nowait(audio_data)
+        except:
+            # Queue is full, skip this frame
+            pass
+        
+        # Calculate and update auditory nerve stats
+        frame_count += 1
+        if frame_count % 100 == 0:  # Update every 100 frames
+            current_time = time.time()
+            fps = frame_count / (current_time - start_time)
+            stats_dict[f'auditory_nerve_fps_{device_index}'] = fps
+            stats_dict[f'last_auditory_nerve_{device_index}'] = current_time
+    
+    try:
+        # Start audio stream
+        with sd.InputStream(
+            device=device_index,
+            channels=1,
+            samplerate=sample_rate,
+            blocksize=chunk_size,
+            dtype=np.float32,
+            callback=audio_callback
+        ):
+            print(f"Audio stream started for device {device_index}")
+            # Keep the stream alive
+            while True:
+                time.sleep(0.1)
+                
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"Audio stream error for device {device_index}: {e}")
+    finally:
+        print(f"Auditory nerve process for device {device_index} stopped")
+
+def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue):
+    """Worker process for processing audio frames (auditory cortex function)
+    Buffers audio frames and uses Silero-VAD when buffer reaches 512 samples.
+    """
+    print("Started auditory cortex process")
+    frame_count = 0
+    start_time = time.time()
+    
+    # Audio buffer for accumulating samples
+    audio_buffer = deque()
+    buffer_target_size = 512
+    
+    # Initialize Silero VAD
+    try:
+        # Load Silero VAD model
+        model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
+                                    model='silero_vad',
+                                    force_reload=False,
+                                    onnx=False)
+        (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
+        vad_iterator = VADIterator(model)
+        print("Silero VAD model loaded successfully")
+    except Exception as e:
+        print(f"Error loading Silero VAD: {e}")
+        return
+    
+    try:
+        while True:
+            try:
+                # Get audio frame (blocking with timeout)
+                audio_data = raw_audio_queue.get(timeout=1.0)
+                
+                # Add audio frame to buffer
+                audio_buffer.extend(audio_data['audio_frame'])
+                
+                # Process when buffer reaches target size
+                if len(audio_buffer) >= buffer_target_size:
+                    # Extract samples for VAD processing
+                    samples_for_vad = np.array(list(audio_buffer)[:buffer_target_size])
+                    
+                    # Convert to tensor for Silero VAD (requires 16kHz float32)
+                    audio_tensor = torch.from_numpy(samples_for_vad)
+                    
+                    # Run VAD
+                    speech_prob = model(audio_tensor, 16000).item()
+                    speech_detected = speech_prob > 0.5  # Threshold for speech detection
+                    
+                    if speech_detected:
+                        print(f"Speech detected with probability: {speech_prob:.3f}")
+                        
+                        # Create processed audio data
+                        process_timestamp = time.time()
+                        processed_data = {
+                            'device_index': audio_data['device_index'],
+                            'audio_samples': samples_for_vad,
+                            'speech_probability': speech_prob,
+                            'speech_detected': speech_detected,
+                            'capture_timestamp': audio_data['capture_timestamp'],
+                            'auditory_cortex_timestamp': process_timestamp,
+                            'sample_rate': audio_data['sample_rate']
+                        }
+                        
+                        # Put processed audio in output queue
+                        try:
+                            processed_audio_queue.put_nowait(processed_data)
+                        except:
+                            # Queue is full, try to remove oldest and add new
+                            try:
+                                processed_audio_queue.get_nowait()
+                                processed_audio_queue.put_nowait(processed_data)
+                            except:
+                                pass
+                        
+                        # Add to audio scene queue for further analysis
+                        audio_scene_data = {
+                            'device_index': audio_data['device_index'],
+                            'timestamp': audio_data['capture_timestamp'],
+                            'speech_probability': speech_prob,
+                            'analysis_time': process_timestamp,
+                            'formatted_time': datetime.fromtimestamp(audio_data['capture_timestamp']).strftime('%H:%M:%S'),
+                            'audio_samples': samples_for_vad  # For potential transcription
+                        }
+                        
+                        try:
+                            audio_scene_queue.put_nowait(audio_scene_data)
+                        except:
+                            # Queue full, remove oldest and add new
+                            try:
+                                audio_scene_queue.get_nowait()
+                                audio_scene_queue.put_nowait(audio_scene_data)
+                            except:
+                                pass
+                    
+                    # Remove processed samples from buffer
+                    for _ in range(buffer_target_size):
+                        if audio_buffer:
+                            audio_buffer.popleft()
+                    
+                    # Calculate auditory cortex processing stats
+                    frame_count += 1
+                    if frame_count % 30 == 0:
+                        fps = frame_count / (time.time() - start_time)
+                        stats_dict['auditory_cortex_fps'] = fps
+                        stats_dict['last_auditory_cortex'] = time.time()
+                        
+            except queue.Empty:
+                continue
+                
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("Auditory cortex process stopped")
 
 """
 HTML Interface - UPDATED with visual scene display functionality
 """
+
 @app.route('/')
 def index():
-    """Basic HTML page to view streams from all cameras with VLM output"""
+    """Updated HTML page with audio controls and display"""
     return '''
-    <html>
-    <head>
-        <title>Multi-Camera OpenCV Stream</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            .camera-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin: 20px 0; }
-            .camera-box { border: 2px solid #ddd; border-radius: 10px; padding: 10px; text-align: center; }
-            .camera-box.active { border-color: #4CAF50; }
-            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 20px 0; }
-            .stat-box { padding: 10px; background: #f0f0f0; border-radius: 5px; text-align: center; }
-            .controls { margin: 20px 0; text-align: center; }
-            button { margin: 5px; padding: 10px 20px; font-size: 14px; cursor: pointer; }
-            .start-btn { background: #4CAF50; color: white; border: none; border-radius: 5px; }
-            .stop-btn { background: #f44336; color: white; border: none; border-radius: 5px; }
-            .visual-scene { margin: 20px 0; padding: 20px; border: 2px solid #ddd; border-radius: 10px; }
-            .scene-item { padding: 10px; margin: 10px 0; background: #f9f9f9; border-left: 4px solid #4CAF50; }
-            .scene-time { color: #666; font-size: 0.9em; }
-            .scene-camera { color: #333; font-weight: bold; }
-            .scene-caption { margin-top: 5px; font-style: italic; }
-            .vlm-status { padding: 10px; margin: 10px 0; text-align: center; border-radius: 5px; }
-            .vlm-busy { background: #ffeb3b; }
-            .vlm-idle { background: #e8f5e8; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Multi-Camera OpenCV Stream with VLM Analysis</h1>
-            
-            <div class="controls">
-                <button class="start-btn" onclick="startCamera(0)">Start Optic Nerve 0</button>
-                <button class="start-btn" onclick="startCamera(1)">Start Optic Nerve 1</button>
-                <button class="start-btn" onclick="startCamera(2)">Start Optic Nerve 2</button>
-                <button class="stop-btn" onclick="stopCamera(0)">Stop Optic Nerve 0</button>
-                <button class="stop-btn" onclick="stopCamera(1)">Stop Optic Nerve 1</button>
-                <button class="stop-btn" onclick="stopCamera(2)">Stop Optic Nerve 2</button>
-                <button class="stop-btn" onclick="stopAll()">Stop All</button>
-            </div>
-            
-            <div class="camera-grid">
-                <div class="camera-box" id="camera-0">
-                    <h3>Camera 0</h3>
-                    <img src="/video_feed/0" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
-                    <div id="status-0">Stopped</div>
+    <!DOCTYPE html>
+<html>
+<head>
+    <title>Multi-Camera OpenCV Stream with Audio</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        
+        /* Audio Section Styles */
+        .audio-section { 
+            margin: 20px 0; 
+            padding: 20px; 
+            border: 2px solid #ddd; 
+            border-radius: 10px; 
+            background: #f9f9f9;
+        }
+        .audio-controls { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+            gap: 15px; 
+            margin: 15px 0; 
+        }
+        .audio-device { 
+            padding: 15px; 
+            border-radius: 10px; 
+            text-align: center; 
+            border: 2px solid #ddd;
+            transition: all 0.3s ease;
+        }
+        .audio-device.connected { 
+            border-color: #4CAF50; 
+            background: #e8f5e8; 
+        }
+        .audio-device.disconnected { 
+            border-color: #f44336; 
+            background: #ffebee; 
+        }
+        .speech-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 10px;
+            transition: all 0.3s ease;
+        }
+        .speech-detected { background-color: #2196F3; }
+        .speech-idle { background-color: white; border: 2px solid #ddd; }
+        .audio-status {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        
+        /* Existing Camera Styles */
+        .camera-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin: 20px 0; }
+        .camera-box { border: 2px solid #ddd; border-radius: 10px; padding: 10px; text-align: center; }
+        .camera-box.active { border-color: #4CAF50; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 20px 0; }
+        .stat-box { padding: 10px; background: #f0f0f0; border-radius: 5px; text-align: center; }
+        .controls { margin: 20px 0; text-align: center; }
+        button { margin: 5px; padding: 10px 20px; font-size: 14px; cursor: pointer; }
+        .start-btn { background: #4CAF50; color: white; border: none; border-radius: 5px; }
+        .stop-btn { background: #f44336; color: white; border: none; border-radius: 5px; }
+        .visual-scene { margin: 20px 0; padding: 20px; border: 2px solid #ddd; border-radius: 10px; }
+        .scene-item { padding: 10px; margin: 10px 0; background: #f9f9f9; border-left: 4px solid #4CAF50; }
+        .scene-time { color: #666; font-size: 0.9em; }
+        .scene-camera { color: #333; font-weight: bold; }
+        .scene-caption { margin-top: 5px; font-style: italic; }
+        .vlm-status { padding: 10px; margin: 10px 0; text-align: center; border-radius: 5px; }
+        .vlm-busy { background: #ffeb3b; }
+        .vlm-idle { background: #e8f5e8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Multi-Camera OpenCV Stream with Audio & VLM Analysis</h1>
+        
+        <!-- Audio Section -->
+        <div class="audio-section">
+            <h2>Audio Processing - Speech Detection</h2>
+            <div class="audio-controls">
+                <div class="audio-device" id="audio-device-0">
+                    <h4>Microphone 0</h4>
+                    <div>
+                        <span class="speech-indicator speech-idle" id="speech-indicator-0"></span>
+                        <span id="speech-status-0">No Speech</span>
+                    </div>
+                    <div class="audio-status" id="audio-connection-0">Disconnected</div>
+                    <button class="start-btn" onclick="startAudioDevice(0)">Start Audio</button>
+                    <button class="stop-btn" onclick="stopAudioDevice(0)">Stop Audio</button>
                 </div>
-                <div class="camera-box" id="camera-1">
-                    <h3>Camera 1</h3>
-                    <img src="/video_feed/1" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
-                    <div id="status-1">Stopped</div>
-                </div>
-                <div class="camera-box" id="camera-2">
-                    <h3>Camera 2</h3>
-                    <img src="/video_feed/2" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
-                    <div id="status-2">Stopped</div>
+                <div class="audio-device" id="audio-device-1">
+                    <h4>Microphone 1</h4>
+                    <div>
+                        <span class="speech-indicator speech-idle" id="speech-indicator-1"></span>
+                        <span id="speech-status-1">No Speech</span>
+                    </div>
+                    <div class="audio-status" id="audio-connection-1">Disconnected</div>
+                    <button class="start-btn" onclick="startAudioDevice(1)">Start Audio</button>
+                    <button class="stop-btn" onclick="stopAudioDevice(1)">Stop Audio</button>
                 </div>
             </div>
-            
-            <div class="stats" id="stats-container">
-                <!-- Stats will be populated by JavaScript -->
-            </div>
-            
             <div class="visual-scene">
-                <h3>Visual Scene Analysis - VLM Output</h3>
-                <div id="vlm-status" class="vlm-status vlm-idle">VLM Status: Idle</div>
-                <div id="scene-analysis">
-                    <p>No scene analysis data available. Start a camera and detect a person to begin analysis.</p>
+                <h3>Audio Scene Analysis - Speech to Text</h3>
+                <div id="audio-scene-analysis">
+                    <p>No speech analysis data available. Start an audio device and speak to begin analysis.</p>
                 </div>
             </div>
-
         </div>
         
-        <script>
-            function startCamera(index) {
-                fetch(`/start/${index}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        console.log(data.message);
-                        document.getElementById(`camera-${index}`).classList.add('active');
-                        document.getElementById(`status-${index}`).textContent = 'Running';
-                    });
-            }
-            
-            function stopCamera(index) {
-                fetch(`/stop/${index}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        console.log(data.message);
-                        document.getElementById(`camera-${index}`).classList.remove('active');
-                        document.getElementById(`status-${index}`).textContent = 'Stopped';
-                    });
-            }
-            
-            function stopAll() {
-                fetch('/stop_all')
-                    .then(response => response.json())
-                    .then(data => {
-                        console.log(data.message);
-                        for (let i = 0; i < 3; i++) {
-                            document.getElementById(`camera-${i}`).classList.remove('active');
-                            document.getElementById(`status-${i}`).textContent = 'Stopped';
+        <!-- Camera Controls -->
+        <div class="controls">
+            <button class="start-btn" onclick="startCamera(0)">Start Optic Nerve 0</button>
+            <button class="start-btn" onclick="startCamera(1)">Start Optic Nerve 1</button>
+            <button class="start-btn" onclick="startCamera(2)">Start Optic Nerve 2</button>
+            <button class="stop-btn" onclick="stopCamera(0)">Stop Optic Nerve 0</button>
+            <button class="stop-btn" onclick="stopCamera(1)">Stop Optic Nerve 1</button>
+            <button class="stop-btn" onclick="stopCamera(2)">Stop Optic Nerve 2</button>
+            <button class="stop-btn" onclick="stopAll()">Stop All</button>
+        </div>
+        
+        <!-- Camera Grid -->
+        <div class="camera-grid">
+            <div class="camera-box" id="camera-0">
+                <h3>Camera 0</h3>
+                <img src="/video_feed/0" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
+                <div id="status-0">Stopped</div>
+            </div>
+            <div class="camera-box" id="camera-1">
+                <h3>Camera 1</h3>
+                <img src="/video_feed/1" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
+                <div id="status-1">Stopped</div>
+            </div>
+            <div class="camera-box" id="camera-2">
+                <h3>Camera 2</h3>
+                <img src="/video_feed/2" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
+                <div id="status-2">Stopped</div>
+            </div>
+        </div>
+        
+        <!-- Stats -->
+        <div class="stats" id="stats-container">
+            <!-- Stats will be populated by JavaScript -->
+        </div>
+        
+        <!-- Visual Scene Analysis -->
+        <div class="visual-scene">
+            <h3>Visual Scene Analysis - VLM Output</h3>
+            <div id="vlm-status" class="vlm-status vlm-idle">VLM Status: Idle</div>
+            <div id="scene-analysis">
+                <p>No scene analysis data available. Start a camera and detect a person to begin analysis.</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Audio control functions
+        function startAudioDevice(index) {
+            fetch(`/start_audio/${index}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data.message);
+                    const deviceElement = document.getElementById(`audio-device-${index}`);
+                    deviceElement.classList.remove('disconnected');
+                    deviceElement.classList.add('connected');
+                    document.getElementById(`audio-connection-${index}`).textContent = 'Connected';
+                })
+                .catch(err => console.error('Audio start failed:', err));
+        }
+        
+        function stopAudioDevice(index) {
+            fetch(`/stop_audio/${index}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data.message);
+                    const deviceElement = document.getElementById(`audio-device-${index}`);
+                    deviceElement.classList.remove('connected');
+                    deviceElement.classList.add('disconnected');
+                    document.getElementById(`audio-connection-${index}`).textContent = 'Disconnected';
+                    // Reset speech indicator
+                    document.getElementById(`speech-indicator-${index}`).className = 'speech-indicator speech-idle';
+                    document.getElementById(`speech-status-${index}`).textContent = 'No Speech';
+                })
+                .catch(err => console.error('Audio stop failed:', err));
+        }
+        
+        function updateAudioStatus() {
+            fetch('/stats')
+                .then(response => response.json())
+                .then(data => {
+                    // Update speech detection indicators
+                    for (let i = 0; i < 2; i++) {
+                        const indicator = document.getElementById(`speech-indicator-${i}`);
+                        const status = document.getElementById(`speech-status-${i}`);
+                        
+                        if (data[`speech_detected_${i}`]) {
+                            indicator.className = 'speech-indicator speech-detected';
+                            status.textContent = 'Speech Detected';
+                        } else {
+                            indicator.className = 'speech-indicator speech-idle';
+                            status.textContent = 'No Speech';
                         }
-                    });
-            }
-            
-            function updateStats() {
-                fetch('/stats')
-                    .then(response => response.json())
-                    .then(data => {
-                        const container = document.getElementById('stats-container');
+                    }
+                    
+                    // Update audio scene analysis if available
+                    if (data.audio_scenes && data.audio_scenes.length > 0) {
+                        const container = document.getElementById('audio-scene-analysis');
                         container.innerHTML = '';
-                        
-                        Object.keys(data).forEach(key => {
-                            if (key !== 'timestamp') {
-                                const statBox = document.createElement('div');
-                                statBox.className = 'stat-box';
-                                const value = typeof data[key] === 'number' ? data[key].toFixed(1) : data[key];
-                                statBox.innerHTML = `<strong>${key.replace(/_/g, ' ').toUpperCase()}:</strong><br>${value}`;
-                                container.appendChild(statBox);
-                            }
+                        data.audio_scenes.slice().reverse().forEach(scene => {
+                            const sceneDiv = document.createElement('div');
+                            sceneDiv.className = 'scene-item';
+                            sceneDiv.innerHTML = `
+                                <div class="scene-time">${scene.formatted_time}</div>
+                                <div class="scene-camera">Microphone ${scene.audio_index}</div>
+                                <div class="scene-caption">"${scene.transcript}"</div>
+                            `;
+                            container.appendChild(sceneDiv);
                         });
-                    })
-                    .catch(err => console.error('Stats update failed:', err));
-            }
-            
-            function updateVisualScenes() {
-                fetch('/visual_scenes')
-                    .then(response => response.json())
-                    .then(data => {
-                        // Update VLM status
-                        const statusDiv = document.getElementById('vlm-status');
-                        if (data.VLM_availible) {
-                            statusDiv.textContent = 'VLM Status: Analyzing...';
-                            statusDiv.className = 'vlm-status vlm-busy';
-                        } else {
-                            statusDiv.textContent = 'VLM Status: Idle';
-                            statusDiv.className = 'vlm-status vlm-idle';
+                    }
+                })
+                .catch(err => console.error('Audio stats update failed:', err));
+        }
+        
+        // Existing camera control functions
+        function startCamera(index) {
+            fetch(`/start/${index}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data.message);
+                    document.getElementById(`camera-${index}`).classList.add('active');
+                    document.getElementById(`status-${index}`).textContent = 'Running';
+                });
+        }
+        
+        function stopCamera(index) {
+            fetch(`/stop/${index}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data.message);
+                    document.getElementById(`camera-${index}`).classList.remove('active');
+                    document.getElementById(`status-${index}`).textContent = 'Stopped';
+                });
+        }
+        
+        function stopAll() {
+            fetch('/stop_all')
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data.message);
+                    for (let i = 0; i < 3; i++) {
+                        document.getElementById(`camera-${i}`).classList.remove('active');
+                        document.getElementById(`status-${i}`).textContent = 'Stopped';
+                    }
+                    // Also stop audio devices
+                    for (let i = 0; i < 2; i++) {
+                        const deviceElement = document.getElementById(`audio-device-${i}`);
+                        deviceElement.classList.remove('connected');
+                        deviceElement.classList.add('disconnected');
+                        document.getElementById(`audio-connection-${i}`).textContent = 'Disconnected';
+                        document.getElementById(`speech-indicator-${i}`).className = 'speech-indicator speech-idle';
+                        document.getElementById(`speech-status-${i}`).textContent = 'No Speech';
+                    }
+                });
+        }
+        
+        function updateStats() {
+            fetch('/stats')
+                .then(response => response.json())
+                .then(data => {
+                    const container = document.getElementById('stats-container');
+                    container.innerHTML = '';
+                    
+                    Object.keys(data).forEach(key => {
+                        if (key !== 'timestamp') {
+                            const statBox = document.createElement('div');
+                            statBox.className = 'stat-box';
+                            const value = typeof data[key] === 'number' ? data[key].toFixed(1) : data[key];
+                            statBox.innerHTML = `<strong>${key.replace(/_/g, ' ').toUpperCase()}:</strong><br>${value}`;
+                            container.appendChild(statBox);
                         }
-                        
-                        // Update scene analysis
-                        const container = document.getElementById('scene-analysis');
-                        if (data.scenes && data.scenes.length > 0) {
-                            container.innerHTML = '';
-                            // Show most recent scenes first
-                            data.scenes.slice().reverse().forEach(scene => {
-                                const sceneDiv = document.createElement('div');
-                                sceneDiv.className = 'scene-item';
-                                sceneDiv.innerHTML = `
-                                    <div class="scene-time">${scene.formatted_time}</div>
-                                    <div class="scene-camera">Camera ${scene.camera_index}</div>
-                                    <div class="scene-caption">"${scene.caption}"</div>
-                                `;
-                                container.appendChild(sceneDiv);
-                            });
-                        } else {
-                            container.innerHTML = '<p>No scene analysis data available. Start a camera and detect a person to begin analysis.</p>';
-                        }
-                    })
-                    .catch(err => console.error('Visual scenes update failed:', err));
-            }
-            
-            // Update intervals
-            setInterval(updateStats, 1000);
-            setInterval(updateVisualScenes, 2000);  // Update scenes every 2 seconds
-            
-            // Initial updates
-            updateStats();
-            updateVisualScenes();
-        </script>
-    </body>
-    </html>
+                    });
+                })
+                .catch(err => console.error('Stats update failed:', err));
+        }
+        
+        function updateVisualScenes() {
+            fetch('/visual_scenes')
+                .then(response => response.json())
+                .then(data => {
+                    // Update VLM status
+                    const statusDiv = document.getElementById('vlm-status');
+                    if (data.VLM_availible) {
+                        statusDiv.textContent = 'VLM Status: Analyzing...';
+                        statusDiv.className = 'vlm-status vlm-busy';
+                    } else {
+                        statusDiv.textContent = 'VLM Status: Idle';
+                        statusDiv.className = 'vlm-status vlm-idle';
+                    }
+                    
+                    // Update scene analysis
+                    const container = document.getElementById('scene-analysis');
+                    if (data.scenes && data.scenes.length > 0) {
+                        container.innerHTML = '';
+                        // Show most recent scenes first
+                        data.scenes.slice().reverse().forEach(scene => {
+                            const sceneDiv = document.createElement('div');
+                            sceneDiv.className = 'scene-item';
+                            sceneDiv.innerHTML = `
+                                <div class="scene-time">${scene.formatted_time}</div>
+                                <div class="scene-camera">Camera ${scene.camera_index}</div>
+                                <div class="scene-caption">"${scene.caption}"</div>
+                            `;
+                            container.appendChild(sceneDiv);
+                        });
+                    } else {
+                        container.innerHTML = '<p>No scene analysis data available. Start a camera and detect a person to begin analysis.</p>';
+                    }
+                })
+                .catch(err => console.error('Visual scenes update failed:', err));
+        }
+        
+        // Update intervals
+        setInterval(updateStats, 1000);
+        setInterval(updateVisualScenes, 2000);
+        setInterval(updateAudioStatus, 500);  // Update audio status more frequently for real-time speech detection
+        
+        // Initial updates
+        updateStats();
+        updateVisualScenes();
+        updateAudioStatus();
+    </script>
+</body>
+</html>
     '''
+
+@app.route('/stats')
+def stats():
+    """API endpoint for performance statistics"""
+    current_stats = dict(stats_dict)
+    current_stats['timestamp'] = datetime.now().isoformat()
+    current_stats['raw_img_queue_size'] = raw_img_queue.qsize()
+    current_stats['processed_queue_size'] = processed_frame_queue.qsize()
+    current_stats['visual_scene_queue_size'] = visual_scene_queue.qsize()
+    
+    # NEW: Audio queue stats
+    current_stats['raw_audio_queue_size'] = raw_audio_queue.qsize()
+    current_stats['processed_audio_queue_size'] = processed_audio_queue.qsize()
+    current_stats['audio_scene_queue_size'] = audio_scene_queue.qsize()
+    
+    current_stats['active_optic_nerves'] = list(optic_nerve_processes.keys())
+    current_stats['active_auditory_nerves'] = list(auditory_nerve_processes.keys())
+    return jsonify(current_stats)
+
+#Visual and Audio full Stop
+@app.route('/stop_all')
+def stop_all():
+    """Stop all optic nerves, visual cortex, auditory nerves, and auditory cortex processing"""
+    global optic_nerve_processes, visual_cortex_processes, auditory_nerve_processes, auditory_cortex_processes
+    
+    # Stop all optic nerve processes
+    for camera_index in list(optic_nerve_processes.keys()):
+        stop_camera(camera_index)
+    
+    # Stop all auditory nerve processes
+    for device_index in list(auditory_nerve_processes.keys()):
+        stop_audio_device(device_index)
+    
+    # Stop visual cortex processes
+    for process in visual_cortex_processes.values():
+        process.terminate()
+        process.join(timeout=2)
+        if process.is_alive():
+            process.kill()
+    
+    # Stop auditory cortex processes
+    for process in auditory_cortex_processes.values():
+        process.terminate()
+        process.join(timeout=2)
+        if process.is_alive():
+            process.kill()
+    
+    visual_cortex_processes.clear()
+    auditory_cortex_processes.clear()
+    stats_dict.clear()
+    
+    return jsonify({
+        'status': 'stopped', 
+        'message': 'All optic nerves, visual cortex, auditory nerves, and auditory cortex stopped'
+    })
 
 
 """
@@ -569,17 +970,6 @@ def visual_scenes():
         'count': len(scenes),
         'VLM_availible': stats_dict.get('VLM_availible', False)
     })
-
-@app.route('/stats')
-def stats():
-    """API endpoint for performance statistics"""
-    current_stats = dict(stats_dict)
-    current_stats['timestamp'] = datetime.now().isoformat()
-    current_stats['raw_img_queue_size'] = raw_img_queue.qsize()
-    current_stats['processed_queue_size'] = processed_frame_queue.qsize()
-    current_stats['visual_scene_queue_size'] = visual_scene_queue.qsize()
-    current_stats['active_optic_nerves'] = list(optic_nerve_processes.keys())
-    return jsonify(current_stats)
 
 @app.route('/start/<int:camera_index>')
 def start_camera(camera_index):
@@ -645,29 +1035,109 @@ def stop_camera(camera_index):
         'message': f'Optic nerve {camera_index} stopped'
     })
 
-@app.route('/stop_all')
-def stop_all():
-    """Stop all optic nerves and visual cortex processing"""
-    global optic_nerve_processes, visual_cortex_processes
+
+"""
+THESE ROUTES PROVIDE THE API ENDPOINTS FOR CONTROLLING THE AUDITORY NERVES AND AUDIO CORTEX
+"""
+# ===== NEW API ROUTES FOR AUDIO =====
+
+@app.route('/start_audio/<int:device_index>')
+def start_audio_device(device_index):
+    """Start auditory nerve and auditory cortex processing for specific audio device"""
+    global auditory_nerve_processes, auditory_cortex_processes
     
-    # Stop all optic nerve processes
-    for camera_index in list(optic_nerve_processes.keys()):
-        stop_camera(camera_index)
+    if device_index in auditory_nerve_processes:
+        return jsonify({
+            'status': 'already_running', 
+            'message': f'Auditory nerve {device_index} is already running'
+        })
     
-    # Stop visual cortex processes
-    for process in visual_cortex_processes.values():
-        process.terminate()
-        process.join(timeout=2)
-        if process.is_alive():
-            process.kill()
+    # Start auditory nerve process for this device
+    auditory_nerve_process = mp.Process(
+        target=auditory_nerve_worker,
+        args=(device_index, raw_audio_queue, stats_dict)
+    )
+    auditory_nerve_process.start()
+    auditory_nerve_processes[device_index] = auditory_nerve_process
     
-    visual_cortex_processes.clear()
-    stats_dict.clear()
+    # Start auditory cortex if not already running
+    if not auditory_cortex_processes:
+        auditory_cortex_process = mp.Process(
+            target=auditory_cortex_worker,
+            args=(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue)
+        )
+        auditory_cortex_process.start()
+        auditory_cortex_processes['main'] = auditory_cortex_process
+    
+    return jsonify({
+        'status': 'started', 
+        'message': f'Auditory nerve {device_index} started'
+    })
+
+@app.route('/stop_audio/<int:device_index>')
+def stop_audio_device(device_index):
+    """Stop auditory nerve for specific audio device"""
+    global auditory_nerve_processes
+    
+    if device_index not in auditory_nerve_processes:
+        return jsonify({
+            'status': 'not_running', 
+            'message': f'Auditory nerve {device_index} is not running'
+        })
+    
+    # Terminate auditory nerve process
+    process = auditory_nerve_processes[device_index]
+    process.terminate()
+    process.join(timeout=2)
+    if process.is_alive():
+        process.kill()
+    
+    del auditory_nerve_processes[device_index]
+    
+    # Clean up stats
+    stats_keys_to_remove = [key for key in stats_dict.keys() 
+                           if key.endswith(f'_audio_{device_index}')]
+    for key in stats_keys_to_remove:
+        del stats_dict[key]
     
     return jsonify({
         'status': 'stopped', 
-        'message': 'All optic nerves and visual cortex stopped'
+        'message': f'Auditory nerve {device_index} stopped'
     })
+
+@app.route('/audio_scenes')
+def audio_scenes():
+    """API endpoint for audio scene analysis data"""
+    scenes = []
+    
+    # Get all available scenes from the queue without blocking
+    while True:
+        try:
+            scene_data = audio_scene_queue.get_nowait()
+            scenes.append({
+                'device_index': scene_data['device_index'],
+                'timestamp': scene_data['timestamp'],
+                'speech_probability': scene_data['speech_probability'],
+                'analysis_time': scene_data['analysis_time'],
+                'formatted_time': scene_data['formatted_time']
+            })
+        except:
+            break
+    
+    # Put them back in the queue (keeping last 10)
+    scenes = scenes[-10:]  # Keep only last 10 analyses
+    for scene_data in scenes:
+        try:
+            audio_scene_queue.put_nowait(scene_data)
+        except:
+            # Queue full, skip older ones
+            break
+    
+    return jsonify({
+        'audio_scenes': scenes,
+        'count': len(scenes)
+    })
+
 
 def signal_handler(sig, frame):
     """Handle shutdown signals"""
@@ -676,16 +1146,25 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 if __name__ == '__main__':
+    import signal
     # Global multiprocessing queues and managers MUST go here because of issues with Windows
     manager = mp.Manager()
-    raw_img_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)  # Larger queue for multiple cameras
+    
+    # Existing visual queues
+    raw_img_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     processed_frame_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
-    visual_scene_queue = manager.Queue(maxsize=10)  # Queue for Moondream analysis results
+    visual_scene_queue = manager.Queue(maxsize=10)
+    
+    # NEW: Audio queues
+    raw_audio_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    processed_audio_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    audio_scene_queue = manager.Queue(maxsize=10)
+    
     stats_dict = manager.dict()
 
     # Set multiprocessing start method
     mp.set_start_method('spawn', force=True)
-    
+
     # Handle shutdown signals
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -709,3 +1188,5 @@ if __name__ == '__main__':
     finally:
         stop_all()
         print("Cleanup complete")
+
+
