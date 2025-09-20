@@ -12,6 +12,7 @@ from PIL import Image
 import torch
 import gc
 import threading
+from typing import Dict, Any
 
 app = Flask(__name__)
 
@@ -31,6 +32,158 @@ auditory_cortex_processes = {}
 # Global VLM (moondream) analysis state
 VLM_availible = False
 VLM_thread = None
+"""
+CENTRAL NERVOUS SYSTEM
+"""
+
+class CentralNervousSystem:
+    """
+    Central queue manager for all sensory processing pipelines.
+    Provides organized access to all inter-process communication queues.
+    """
+    
+    def __init__(self, queue_size: int = 5):
+        self.queue_size = queue_size
+        
+        # Visual processing queues
+        self.optic_nerve_queue = mp.Queue(maxsize=queue_size)
+        self.visual_cortex_queue = mp.Queue(maxsize=queue_size)
+        self.visual_scene_queue = mp.Queue(maxsize=queue_size)
+        
+        # Audio processing queues  
+        self.audio_nerve_queue = mp.Queue(maxsize=queue_size)
+        self.audio_cortex_queue = mp.Queue(maxsize=queue_size)
+        self.audio_scene_queue = mp.Queue(maxsize=queue_size)
+        
+        # Shared state management
+        self.manager = mp.Manager()
+        self.stats_dict = self.manager.dict()
+        self.global_awareness = self.manager.dict()
+        
+        # Process tracking
+        self.optic_nerve_processes: Dict[int, mp.Process] = {}
+        self.visual_cortex_processes: Dict[int, mp.Process] = {}
+        self.auditory_nerve_processes: Dict[int, mp.Process] = {}
+        self.auditory_cortex_processes: Dict[int, mp.Process] = {}
+        
+        # Initialize shared state
+        self._initialize_shared_state()
+    
+    def _initialize_shared_state(self):
+        """Initialize shared state dictionaries with default values."""
+        self.stats_dict.update({
+            'VLM_availible': False,
+            'visual_cortex_fps': 0,
+            'auditory_cortex_fps': 0,
+            'last_visual_cortex': 0,
+            'last_auditory_cortex': 0
+        })
+        
+        self.global_awareness.update({
+            'human': None,
+            'detection_type': {'speech': False, 'visual': False},
+            'detection_timestamp': 0,
+            'device_index': None
+        })
+    
+    def start_optic_nerve(self, camera_index: int, fps_target: int = 30):
+        """Start optic nerve process for a specific camera."""
+        if camera_index in self.optic_nerve_processes:
+            print(f"Optic nerve process for camera {camera_index} already running")
+            return
+            
+        process = mp.Process(
+            target=optic_nerve_worker,
+            args=(camera_index, self.optic_nerve_queue, self.stats_dict, fps_target)
+        )
+        process.start()
+        self.optic_nerve_processes[camera_index] = process
+        print(f"Started optic nerve process for camera {camera_index}")
+    
+    def start_visual_cortex(self):
+        """Start visual cortex process."""
+        if hasattr(self, 'visual_cortex_process') and self.visual_cortex_process.is_alive():
+            print("Visual cortex process already running")
+            return
+            
+        self.visual_cortex_process = mp.Process(
+            target=visual_cortex_worker,
+            args=(self.optic_nerve_queue, self.visual_cortex_queue, 
+                  self.stats_dict, self.visual_scene_queue)
+        )
+        self.visual_cortex_process.start()
+        print("Started visual cortex process")
+    
+    def start_auditory_nerve(self, device_index: int, sample_rate: int = 16000, chunk_size: int = 512):
+        """Start auditory nerve process for a specific audio device."""
+        if device_index in self.auditory_nerve_processes:
+            print(f"Auditory nerve process for device {device_index} already running")
+            return
+            
+        process = mp.Process(
+            target=auditory_nerve_worker,
+            args=(device_index, self.audio_nerve_queue, self.stats_dict, 
+                  self.global_awareness, sample_rate, chunk_size)
+        )
+        process.start()
+        self.auditory_nerve_processes[device_index] = process
+        print(f"Started auditory nerve process for device {device_index}")
+    
+    def start_auditory_cortex(self, device_index: int):
+        """Start auditory cortex process."""
+        if hasattr(self, 'auditory_cortex_process') and self.auditory_cortex_process.is_alive():
+            print("Auditory cortex process already running")
+            return
+            
+        self.auditory_cortex_process = mp.Process(
+            target=auditory_cortex_worker,
+            args=(self.audio_nerve_queue, self.audio_cortex_queue, self.stats_dict,
+                  self.audio_scene_queue, self.global_awareness, device_index)
+        )
+        self.auditory_cortex_process.start()
+        print("Started auditory cortex process")
+    
+    def stop_all_processes(self):
+        """Stop all running processes gracefully."""
+        print("Stopping all nervous system processes...")
+        
+        # Stop optic nerve processes
+        for camera_index, process in self.optic_nerve_processes.items():
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
+                print(f"Stopped optic nerve process for camera {camera_index}")
+        
+        # Stop visual cortex
+        if hasattr(self, 'visual_cortex_process') and self.visual_cortex_process.is_alive():
+            self.visual_cortex_process.terminate()
+            self.visual_cortex_process.join(timeout=2)
+            print("Stopped visual cortex process")
+        
+        # Stop auditory nerve processes
+        for device_index, process in self.auditory_nerve_processes.items():
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
+                print(f"Stopped auditory nerve process for device {device_index}")
+        
+        # Stop auditory cortex
+        if hasattr(self, 'auditory_cortex_process') and self.auditory_cortex_process.is_alive():
+            self.auditory_cortex_process.terminate()
+            self.auditory_cortex_process.join(timeout=2)
+            print("Stopped auditory cortex process")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get current system statistics."""
+        return dict(self.stats_dict)
+    
+    def get_awareness(self) -> Dict[str, Any]:
+        """Get current global awareness state."""
+        return dict(self.global_awareness)
+    
+    def __del__(self):
+        """Cleanup on destruction."""
+        self.stop_all_processes()
 
 """
 VISUAL
