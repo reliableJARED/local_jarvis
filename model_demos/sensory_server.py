@@ -363,6 +363,93 @@ def generate_img_frames(camera_index=None):
 """
 AUDIO
 """
+from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
+import os
+class SpeechTranscriber:
+    """Handles speech transcription using Whisper with offline support"""
+    
+    def __init__(self, model_name="openai/whisper-small"):
+        self.sample_rate = 16000
+        self.model_name = model_name
+        
+        # Load model and processor with offline fallback
+        self.processor, self.model = self._load_models()
+    
+    def _load_models(self):
+        """Load Whisper models with offline support"""
+        # Set offline mode environment variables BEFORE importing/loading
+        os.environ['HF_HUB_OFFLINE'] = '1'
+        os.environ['TRANSFORMERS_OFFLINE'] = '1'
+        os.environ['HF_DATASETS_OFFLINE'] = '1'
+        
+        try:
+            print(f"Loading Whisper model '{self.model_name}' in offline mode...")
+            processor = AutoProcessor.from_pretrained(
+                self.model_name,
+                local_files_only=True
+            )
+            model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                self.model_name,
+                local_files_only=True
+            )
+            print("Whisper model loaded successfully in offline mode!")
+            return processor, model
+            
+        except Exception as e:
+            print(f"Offline loading failed: {e}")
+            print("Attempting online loading...")
+            
+            # Try removing offline flags and attempt online loading
+            os.environ.pop('HF_HUB_OFFLINE', None)
+            os.environ.pop('TRANSFORMERS_OFFLINE', None)
+            os.environ.pop('HF_DATASETS_OFFLINE', None)
+            
+            try:
+                processor = AutoProcessor.from_pretrained(self.model_name)
+                model = AutoModelForSpeechSeq2Seq.from_pretrained(self.model_name)
+                print("Whisper model loaded successfully online!")
+                return processor, model
+                
+            except Exception as online_error:
+                raise RuntimeError(
+                    f"Failed to load Whisper model both offline and online. "
+                    f"Offline error: {e}. Online error: {online_error}. "
+                    f"Make sure to run the model once with internet connection to cache it."
+                )
+    
+    def transcribe(self, audio_data: np.ndarray) -> str:
+        """Transcribe audio data to text"""
+        if len(audio_data) == 0:
+            return ""
+        
+        if audio_data.dtype != np.float32:
+            audio_data = audio_data.astype(np.float32)
+        
+        inputs = self.processor(
+            audio_data,
+            sampling_rate=self.sample_rate,
+            return_tensors="pt"
+        )
+        
+        if "attention_mask" not in inputs:
+            inputs["attention_mask"] = torch.ones(inputs["input_features"].shape[:-1], dtype=torch.long)
+        
+        with torch.no_grad():
+            predicted_ids = self.model.generate(
+                inputs["input_features"],
+                attention_mask=inputs.get("attention_mask"),
+                language="en",
+                task="transcribe",
+                max_length=448,
+                do_sample=False
+            )
+        
+        transcription = self.processor.batch_decode(
+            predicted_ids,
+            skip_special_tokens=True
+        )[0]
+        
+        return transcription.strip()
 
 def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict, global_awareness,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
@@ -425,9 +512,10 @@ def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict, global_aw
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
 
-def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, audio_scene_queue,global_awareness,device_index):
+def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, audio_scene_queue, global_awareness, device_index):
     """Worker process for processing audio frames (auditory cortex function)
     Optimized for real-time streaming with VADIterator and minimal buffering.
+    Now includes speech-to-text transcription.
     """
     print("Started auditory cortex process")
     frame_count = 0
@@ -437,7 +525,15 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
     pre_roll_buffer = deque(maxlen=5)  # ~5 chunks of 32ms = ~160ms buffer
     speech_active = False
     speech_buffer = []
-    min_silence_duration_ms=1000  # Minimum silence to end speech
+    min_silence_duration_ms = 1000  # Minimum silence to end speech
+    
+    # Initialize Speech Transcriber
+    try:
+        speech_transcriber = SpeechTranscriber("openai/whisper-small")
+        print("Speech transcriber loaded successfully")
+    except Exception as e:
+        print(f"Failed to load speech transcriber: {e}")
+        speech_transcriber = None
     
     # Initialize Silero VAD with VADIterator for streaming
     try:
@@ -499,13 +595,13 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
                             # Add pre-roll buffer to speech
                             speech_buffer = list(pre_roll_buffer)
 
-                            #speech is from humans, so system is aware there is human
+                            # Speech is from humans, so system is aware there is human
                             human_time = time.time()
                             global_awareness.update({
                                 'human': 'unknown name', 
                                 'detection_type': {'speech': True}, 
                                 'detection_timestamp': human_time,
-                                'device_index':device_index
+                                'device_index': device_index
                             })
                                                         
                         if 'end' in speech_dict:
@@ -513,18 +609,32 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
                             print(f"Speech END detected at {speech_dict['end']:.3f}s")
                             speech_active = False
 
-                            #TODO: perhaps decay, for now no speech means no human awareness
+                            # TODO: perhaps decay, for now no speech means no human awareness
                             global_awareness.update({
                                 'human': 'unknown name', 
                                 'detection_type': {'speech': False}, 
                                 'detection_timestamp': human_time,
-                                'device_index':device_index
+                                'device_index': device_index
                             })
                             
                             # Process accumulated speech
                             if speech_buffer:
                                 # Concatenate all speech chunks
                                 full_speech = np.concatenate(speech_buffer)
+                                
+                                # Transcribe speech to text
+                                transcription = ""
+                                if speech_transcriber and len(full_speech) > 0:
+                                    try:
+                                        # Only transcribe if we have at least 0.5 seconds of audio
+                                        if len(full_speech) >= 8000:  # 0.5 seconds at 16kHz
+                                            transcription = speech_transcriber.transcribe(full_speech)
+                                            print(f"Transcription: '{transcription}'")
+                                        else:
+                                            transcription = "[Audio too short for transcription]"
+                                    except Exception as e:
+                                        print(f"Transcription error: {e}")
+                                        transcription = "[Transcription failed]"
                                 
                                 # Create processed audio data
                                 process_timestamp = time.time()
@@ -533,6 +643,7 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
                                     'audio_data': full_speech,
                                     'speech_probability': 1.0,  # Confirmed speech segment
                                     'speech_detected': True,
+                                    'transcription': transcription,  # NEW: Add transcription
                                     'capture_timestamp': audio_data['capture_timestamp'],
                                     'auditory_cortex_timestamp': process_timestamp,
                                     'sample_rate': audio_data['sample_rate'],
@@ -555,6 +666,7 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
                                     'device_index': audio_data['device_index'],
                                     'timestamp': audio_data['capture_timestamp'],
                                     'speech_probability': 1.0,
+                                    'transcription': transcription,  # NEW: Add transcription
                                     'analysis_time': process_timestamp,
                                     'formatted_time': datetime.fromtimestamp(audio_data['capture_timestamp']).strftime('%H:%M:%S'),
                                     'audio_data': full_speech,
@@ -595,7 +707,19 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
     except KeyboardInterrupt:
         pass
     finally:
+        # Clean up speech transcriber
+        if speech_transcriber:
+            try:
+                del speech_transcriber.model
+                del speech_transcriber.processor
+                del speech_transcriber
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except:
+                pass
         print("Auditory cortex process stopped")
+
 
 """
 HTML Interface - UPDATED with visual scene display functionality
@@ -657,6 +781,60 @@ def index():
             margin-top: 10px;
         }
         
+        /* Speech-to-text styles */
+        .speech-to-text-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px solid #2196F3;
+            border-radius: 10px;
+            background: #f0f8ff;
+        }
+        .transcription-item {
+            padding: 15px;
+            margin: 10px 0;
+            background: #ffffff;
+            border-left: 4px solid #2196F3;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .transcription-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .transcription-time {
+            color: #666;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+        .transcription-device {
+            color: #2196F3;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        .transcription-text {
+            font-size: 1.1em;
+            line-height: 1.4;
+            color: #333;
+            font-style: italic;
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .transcription-duration {
+            color: #666;
+            font-size: 0.8em;
+            margin-top: 5px;
+        }
+        .no-transcription {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 20px;
+        }
+        
         /* Existing Camera Styles */
         .camera-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin: 20px 0; }
         .camera-box { border: 2px solid #ddd; border-radius: 10px; padding: 10px; text-align: center; }
@@ -706,8 +884,18 @@ def index():
                     <button class="stop-btn" onclick="stopAudioDevice(1)">Stop Audio</button>
                 </div>
             </div>
-
         </div>
+
+        <!-- Speech-to-Text Section -->
+        <div class="speech-to-text-section">
+            <h3>🎤 Speech-to-Text Transcriptions</h3>
+            <div id="transcription-display">
+                <div class="no-transcription">
+                    No speech transcriptions yet. Start an audio device and speak to see transcriptions appear here.
+                </div>
+            </div>
+        </div>
+        
         <h3>Optic Nerves</h3>
         <!-- Camera Controls -->
         <div class="controls">
@@ -742,20 +930,15 @@ def index():
         <!-- Stats -->
         <div class="stats" id="stats-container">
             <!-- Stats will be populated by JavaScript -->
-
-            <!-- Audio Scene Analysis -->
         </div>
-                <div class="visual-scene">
-                <h3>Audio Speech to Text</h3>
-                <div id="audio-scene-analysis">
-                    <p>not connected yet, will stream detected speech-to-text</p>
-                </div>
 
-                <h3>Audio Scene Analysis</h3>
-                <div id="audio-scene-analysis">
-                    <p>Not connected yet, will populate with audio description</p>
-                </div>
+        <!-- Audio Scene Analysis -->
+        <div class="visual-scene">
+            <h3>Audio Scene Analysis</h3>
+            <div id="audio-scene-analysis">
+                <p>Not connected yet, will populate with audio description</p>
             </div>
+        </div>
 
         <!-- Visual Scene Analysis -->
         <div class="visual-scene">
@@ -825,24 +1008,55 @@ def index():
                             status.textContent = 'No Speech';
                         }
                     }
-                    
-                    // Update audio scene analysis if available
-                    if (data.audio_scenes && data.audio_scenes.length > 0) {
-                        const container = document.getElementById('audio-scene-analysis');
-                        container.innerHTML = '';
-                        data.audio_scenes.slice().reverse().forEach(scene => {
-                            const sceneDiv = document.createElement('div');
-                            sceneDiv.className = 'scene-item';
-                            sceneDiv.innerHTML = `
-                                <div class="scene-time">${scene.formatted_time}</div>
-                                <div class="scene-camera">Microphone ${scene.device_index}</div>
-                                <div class="scene-caption">Speech probability: ${scene.speech_probability}</div>
-                            `;
-                            container.appendChild(sceneDiv);
-                        });
-                    }
                 })
                 .catch(err => console.error('Audio stats update failed:', err));
+        }
+        
+        function updateTranscriptions() {
+            fetch('/audio_scenes')
+                .then(response => response.json())
+                .then(data => {
+                    const container = document.getElementById('transcription-display');
+                    
+                    if (data.audio_scenes && data.audio_scenes.length > 0) {
+                        container.innerHTML = '';
+                        
+                        // Show most recent transcriptions first
+                        data.audio_scenes.slice().reverse().forEach(scene => {
+                            if (scene.transcription && scene.transcription.trim() !== '' && 
+                                !scene.transcription.includes('[Audio too short') && 
+                                !scene.transcription.includes('[Transcription failed]')) {
+                                
+                                const transcriptionDiv = document.createElement('div');
+                                transcriptionDiv.className = 'transcription-item';
+                                
+                                const duration = scene.duration ? scene.duration.toFixed(1) : '0.0';
+                                
+                                transcriptionDiv.innerHTML = `
+                                    <div class="transcription-header">
+                                        <div class="transcription-time">${scene.formatted_time}</div>
+                                        <div class="transcription-device">Microphone ${scene.device_index}</div>
+                                    </div>
+                                    <div class="transcription-text">"${scene.transcription}"</div>
+                                    <div class="transcription-duration">Duration: ${duration}s</div>
+                                `;
+                                container.appendChild(transcriptionDiv);
+                            }
+                        });
+                        
+                        // If no valid transcriptions, show placeholder
+                        if (container.children.length === 0) {
+                            container.innerHTML = '<div class="no-transcription">Waiting for speech to transcribe...</div>';
+                        }
+                    } else {
+                        container.innerHTML = '<div class="no-transcription">No speech transcriptions yet. Start an audio device and speak to see transcriptions appear here.</div>';
+                    }
+                })
+                .catch(err => {
+                    console.error('Transcription update failed:', err);
+                    document.getElementById('transcription-display').innerHTML = 
+                        '<div class="no-transcription">Error loading transcriptions.</div>';
+                });
         }
         
         // Existing camera control functions
@@ -943,15 +1157,43 @@ def index():
                 .catch(err => console.error('Visual scenes update failed:', err));
         }
         
+        function updateAudioScenes() {
+            fetch('/audio_scenes')
+                .then(response => response.json())
+                .then(data => {
+                    const container = document.getElementById('audio-scene-analysis');
+                    if (data.audio_scenes && data.audio_scenes.length > 0) {
+                        container.innerHTML = '';
+                        data.audio_scenes.slice().reverse().forEach(scene => {
+                            const sceneDiv = document.createElement('div');
+                            sceneDiv.className = 'scene-item';
+                            sceneDiv.innerHTML = `
+                                <div class="scene-time">${scene.formatted_time}</div>
+                                <div class="scene-camera">Microphone ${scene.device_index}</div>
+                                <div class="scene-caption">Speech probability: ${scene.speech_probability.toFixed(2)}</div>
+                            `;
+                            container.appendChild(sceneDiv);
+                        });
+                    } else {
+                        container.innerHTML = '<p>Not connected yet, will populate with audio description</p>';
+                    }
+                })
+                .catch(err => console.error('Audio scenes update failed:', err));
+        }
+        
         // Update intervals
         setInterval(updateStats, 1000);
         setInterval(updateVisualScenes, 2000);
         setInterval(updateAudioStatus, 500);  // Update audio status more frequently for real-time speech detection
+        setInterval(updateTranscriptions, 1000);  // Update transcriptions every second
+        setInterval(updateAudioScenes, 2000);  // Update audio scenes
         
         // Initial updates
         updateStats();
         updateVisualScenes();
         updateAudioStatus();
+        updateTranscriptions();
+        updateAudioScenes();
     </script>
 </body>
 </html>
@@ -1192,7 +1434,7 @@ def stop_audio_device(device_index):
 
 @app.route('/audio_scenes')
 def audio_scenes():
-    """API endpoint for audio scene analysis data"""
+    """API endpoint for audio scene analysis data with transcriptions"""
     scenes = []
     
     # Get all available scenes from the queue without blocking
@@ -1203,8 +1445,10 @@ def audio_scenes():
                 'device_index': scene_data['device_index'],
                 'timestamp': scene_data['timestamp'],
                 'speech_probability': scene_data['speech_probability'],
+                'transcription': scene_data.get('transcription', ''),  # NEW: Include transcription
                 'analysis_time': scene_data['analysis_time'],
-                'formatted_time': scene_data['formatted_time']
+                'formatted_time': scene_data['formatted_time'],
+                'duration': scene_data.get('duration', 0)
             })
         except:
             break
@@ -1222,7 +1466,6 @@ def audio_scenes():
         'audio_scenes': scenes,
         'count': len(scenes)
     })
-
 
 def signal_handler(sig, frame):
     """Handle shutdown signals"""
