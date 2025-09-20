@@ -363,7 +363,7 @@ def generate_img_frames(camera_index=None):
 AUDIO
 """
 
-def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate=16000, chunk_size=512):
+def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, global_awareness,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
     Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.
     """
@@ -424,7 +424,7 @@ def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, sample_rate
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
 
-def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue):
+def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue,global_awareness,device_index):
     """Worker process for processing audio frames (auditory cortex function)
     Optimized for real-time streaming with VADIterator and minimal buffering.
     """
@@ -436,6 +436,7 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
     pre_roll_buffer = deque(maxlen=5)  # ~5 chunks of 32ms = ~160ms buffer
     speech_active = False
     speech_buffer = []
+    min_silence_duration_ms=1000  # Minimum silence to end speech
     
     # Initialize Silero VAD with VADIterator for streaming
     try:
@@ -454,7 +455,7 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
             model,
             threshold=0.5,           # Speech probability threshold
             sampling_rate=16000,     # Must match audio sample rate
-            min_silence_duration_ms=100,  # Minimum silence to end speech
+            min_silence_duration_ms=min_silence_duration_ms,  # Minimum silence to end speech
             speech_pad_ms=30         # Padding around speech segments
         )
         
@@ -496,11 +497,28 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
                             speech_active = True
                             # Add pre-roll buffer to speech
                             speech_buffer = list(pre_roll_buffer)
-                            
+
+                            #speech is from humans, so system is aware there is human
+                            human_time = time.time()
+                            global_awareness.update({
+                                'human': 'unknown name', 
+                                'detection_type': {'speech': True}, 
+                                'detection_timestamp': human_time,
+                                'device_index':device_index
+                            })
+                                                        
                         if 'end' in speech_dict:
                             # Speech end detected
                             print(f"Speech END detected at {speech_dict['end']:.3f}s")
                             speech_active = False
+
+                            #TODO: perhaps decay, for now no speech means no human awareness
+                            global_awareness.update({
+                                'human': 'unknown name', 
+                                'detection_type': {'speech': False}, 
+                                'detection_timestamp': human_time,
+                                'device_index':device_index
+                            })
                             
                             # Process accumulated speech
                             if speech_buffer:
@@ -511,7 +529,7 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
                                 process_timestamp = time.time()
                                 processed_data = {
                                     'device_index': audio_data['device_index'],
-                                    'audio_samples': full_speech,
+                                    'audio_data': full_speech,
                                     'speech_probability': 1.0,  # Confirmed speech segment
                                     'speech_detected': True,
                                     'capture_timestamp': audio_data['capture_timestamp'],
@@ -538,7 +556,7 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
                                     'speech_probability': 1.0,
                                     'analysis_time': process_timestamp,
                                     'formatted_time': datetime.fromtimestamp(audio_data['capture_timestamp']).strftime('%H:%M:%S'),
-                                    'audio_samples': full_speech,
+                                    'audio_data': full_speech,
                                     'duration': len(full_speech) / audio_data['sample_rate']
                                 }
                                 
@@ -558,12 +576,7 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
                     # If speech is active, add current chunk to buffer
                     if speech_active:
                         speech_buffer.append(audio_chunk)
-                    
-                    # Alternative: Get raw speech probability for monitoring
-                    # speech_prob = model(audio_tensor, 16000).item()
-                    # if speech_prob > 0.7:  # Higher threshold for immediate response
-                    #     print(f"High confidence speech: {speech_prob:.3f}")
-                    
+
                 except Exception as vad_error:
                     print(f"VAD processing error: {vad_error}")
                     continue
@@ -594,7 +607,7 @@ def index():
     <!DOCTYPE html>
 <html>
 <head>
-    <title>Multi-Camera OpenCV Stream with Audio</title>
+    <title>Temporal Lobe</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
@@ -669,7 +682,7 @@ def index():
         
         <!-- Audio Section -->
         <div class="audio-section">
-            <h2>Audio Processing - Speech Detection</h2>
+            <h3>Auditory Nerves</h3>
             <div class="audio-controls">
                 <div class="audio-device" id="audio-device-0">
                     <h4>Microphone 0</h4>
@@ -692,14 +705,9 @@ def index():
                     <button class="stop-btn" onclick="stopAudioDevice(1)">Stop Audio</button>
                 </div>
             </div>
-            <div class="visual-scene">
-                <h3>Audio Scene Analysis - Speech to Text</h3>
-                <div id="audio-scene-analysis">
-                    <p>No speech analysis data available. Start an audio device and speak to begin analysis.</p>
-                </div>
-            </div>
+
         </div>
-        
+        <h3>Optic Nerves</h3>
         <!-- Camera Controls -->
         <div class="controls">
             <button class="start-btn" onclick="startCamera(0)">Start Optic Nerve 0</button>
@@ -733,8 +741,16 @@ def index():
         <!-- Stats -->
         <div class="stats" id="stats-container">
             <!-- Stats will be populated by JavaScript -->
+
+            <!-- Audio Scene Analysis -->
         </div>
-        
+                    <div class="visual-scene">
+                <h3>Audio Scene Analysis - Speech to Text</h3>
+                <div id="audio-scene-analysis">
+                    <p>No speech analysis data available. Start an audio device and speak to begin analysis.</p>
+                </div>
+            </div>
+
         <!-- Visual Scene Analysis -->
         <div class="visual-scene">
             <h3>Visual Scene Analysis - VLM Output</h3>
@@ -780,12 +796,22 @@ def index():
             fetch('/stats')
                 .then(response => response.json())
                 .then(data => {
-                    // Update speech detection indicators
+                    // Check global_awareness for human speech detection
+                    const speechDetected = data.present_subjects && 
+                                        data.present_subjects.detection_type && 
+                                        data.present_subjects.detection_type.speech;
+                    
+                    const speechDeviceIndex = data.present_subjects && 
+                                            data.present_subjects.device_index !== undefined ? 
+                                            data.present_subjects.device_index : -1;
+                    
+                    // Update speech detection indicators for both microphones
                     for (let i = 0; i < 2; i++) {
                         const indicator = document.getElementById(`speech-indicator-${i}`);
                         const status = document.getElementById(`speech-status-${i}`);
                         
-                        if (data[`speech_detected_${i}`]) {
+                        // Only show speech detected for the specific device that detected it
+                        if (speechDetected && speechDeviceIndex === i) {
                             indicator.className = 'speech-indicator speech-detected';
                             status.textContent = 'Speech Detected';
                         } else {
@@ -803,8 +829,8 @@ def index():
                             sceneDiv.className = 'scene-item';
                             sceneDiv.innerHTML = `
                                 <div class="scene-time">${scene.formatted_time}</div>
-                                <div class="scene-camera">Microphone ${scene.audio_index}</div>
-                                <div class="scene-caption">"${scene.transcript}"</div>
+                                <div class="scene-camera">Microphone ${scene.device_index}</div>
+                                <div class="scene-caption">Speech probability: ${scene.speech_probability}</div>
                             `;
                             container.appendChild(sceneDiv);
                         });
@@ -931,16 +957,21 @@ def stats():
     current_stats = dict(stats_dict)
     current_stats['timestamp'] = datetime.now().isoformat()
     current_stats['raw_img_queue_size'] = raw_img_queue.qsize()
+
+    #Visual queue stats
     current_stats['processed_queue_size'] = processed_frame_queue.qsize()
     current_stats['visual_scene_queue_size'] = visual_scene_queue.qsize()
+    current_stats['active_optic_nerves'] = list(optic_nerve_processes.keys())
     
-    # NEW: Audio queue stats
+    #Audio queue stats
     current_stats['raw_audio_queue_size'] = raw_audio_queue.qsize()
     current_stats['processed_audio_queue_size'] = processed_audio_queue.qsize()
     current_stats['audio_scene_queue_size'] = audio_scene_queue.qsize()
-    
-    current_stats['active_optic_nerves'] = list(optic_nerve_processes.keys())
     current_stats['active_auditory_nerves'] = list(auditory_nerve_processes.keys())
+
+    #Object/Person awareness
+    current_stats['present_subjects'] = dict(global_awareness)
+
     return jsonify(current_stats)
 
 #Visual and Audio full Stop
@@ -1103,7 +1134,7 @@ def start_audio_device(device_index):
     # Start auditory nerve process for this device
     auditory_nerve_process = mp.Process(
         target=auditory_nerve_worker,
-        args=(device_index, raw_audio_queue, stats_dict)
+        args=(device_index, raw_audio_queue, stats_dict,global_awareness)
     )
     auditory_nerve_process.start()
     auditory_nerve_processes[device_index] = auditory_nerve_process
@@ -1112,7 +1143,7 @@ def start_audio_device(device_index):
     if not auditory_cortex_processes:
         auditory_cortex_process = mp.Process(
             target=auditory_cortex_worker,
-            args=(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue)
+            args=(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue,global_awareness,device_index)
         )
         auditory_cortex_process.start()
         auditory_cortex_processes['main'] = auditory_cortex_process
@@ -1209,6 +1240,10 @@ if __name__ == '__main__':
     audio_scene_queue = manager.Queue(maxsize=10)
     
     stats_dict = manager.dict()
+
+    # Initialize global awareness structure
+    global_awareness = manager.dict()  # Global awareness tracking
+
 
     # Set multiprocessing start method
     mp.set_start_method('spawn', force=True)
