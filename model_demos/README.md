@@ -71,12 +71,18 @@ then get the rest of the requirements.
 ```bash
     pip install -r requirements.txt
 ```
-## Windows only Last Step libvips - Mac/Linux You're Done :)
+## Windows only Last Step libvips 
 ### Moondream2 Issue without libvips
 We need to add libvips library to the system path on Windows to use moondream2.  The bin zip is already in this repo in the model_demos/dependencies/libvips/vips-dev-w64-web-8.17.2.zip you can unzip in place and add to system PATH, or run the helper function to automatically do that
 ```bash
 python libvips_win_helper.py
 ```
+## Pre-Load Models
+All dependencies should be in. Restart terminal just to make sure (more of a windows issue), then download all the models
+```bash
+python model_loader.py
+```
+Done!
 
 ## Deactivating the Virtual Environment
 

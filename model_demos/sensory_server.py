@@ -858,7 +858,12 @@ def index():
 <body>
     <div class="container">
         <h1>TEMPORAL LOBE</h1>
-        
+
+        <!-- Stats -->
+        <div class="stats" id="stats-container">
+            <!-- Stats will be populated by JavaScript -->
+        </div>
+
         <!-- Audio Section -->
         <div class="audio-section">
             <h3>Auditory Nerves</h3>
@@ -886,15 +891,7 @@ def index():
             </div>
         </div>
 
-        <!-- Speech-to-Text Section -->
-        <div class="speech-to-text-section">
-            <h3>🎤 Speech-to-Text Transcriptions</h3>
-            <div id="transcription-display">
-                <div class="no-transcription">
-                    No speech transcriptions yet. Start an audio device and speak to see transcriptions appear here.
-                </div>
-            </div>
-        </div>
+        
         
         <h3>Optic Nerves</h3>
         <!-- Camera Controls -->
@@ -927,9 +924,14 @@ def index():
             </div>
         </div>
         
-        <!-- Stats -->
-        <div class="stats" id="stats-container">
-            <!-- Stats will be populated by JavaScript -->
+        <!-- Speech-to-Text Section -->
+        <div class="speech-to-text-section">
+            <h3>Speech-to-Text Transcriptions</h3>
+            <div id="transcription-display">
+                <div class="no-transcription">
+                    No speech transcriptions yet. Start an audio device and speak to see transcriptions appear here.
+                </div>
+            </div>
         </div>
 
         <!-- Audio Scene Analysis -->
@@ -1283,8 +1285,8 @@ def visual_scenes():
         except:
             break
     
-    # Put them back in the queue (keeping last 10)
-    scenes = scenes[-10:]  # Keep only last 10 analyses
+    # Put them back in the queue (keeping last 3)
+    scenes = scenes[-3:]  # Keep only last 3 analyses
     for scene_data in scenes:
         try:
             visual_scene_queue.put_nowait(scene_data)
@@ -1445,7 +1447,7 @@ def audio_scenes():
                 'device_index': scene_data['device_index'],
                 'timestamp': scene_data['timestamp'],
                 'speech_probability': scene_data['speech_probability'],
-                'transcription': scene_data.get('transcription', ''),  # NEW: Include transcription
+                'transcription': scene_data.get('transcription', ''),  # Include speech transcription
                 'analysis_time': scene_data['analysis_time'],
                 'formatted_time': scene_data['formatted_time'],
                 'duration': scene_data.get('duration', 0)
@@ -1453,8 +1455,8 @@ def audio_scenes():
         except:
             break
     
-    # Put them back in the queue (keeping last 10)
-    scenes = scenes[-10:]  # Keep only last 10 analyses
+    # Put them back in the queue (keeping last 3)
+    scenes = scenes[-3:]  # Keep only last 3 analyses
     for scene_data in scenes:
         try:
             audio_scene_queue.put_nowait(scene_data)
