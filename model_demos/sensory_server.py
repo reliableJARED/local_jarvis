@@ -744,10 +744,15 @@ def index():
 
             <!-- Audio Scene Analysis -->
         </div>
-                    <div class="visual-scene">
-                <h3>Audio Scene Analysis - Speech to Text</h3>
+                <div class="visual-scene">
+                h3>Audio Speech to Text</h3>
                 <div id="audio-scene-analysis">
-                    <p>No speech analysis data available. Start an audio device and speak to begin analysis.</p>
+                    <p>not connected yet, will stream detected speech-to-text</p>
+                </div>
+
+                <h3>Audio Scene Analysis</h3>
+                <div id="audio-scene-analysis">
+                    <p>Not connected yet, will populate with audio description</p>
                 </div>
             </div>
 

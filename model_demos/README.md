@@ -41,7 +41,7 @@ Set up the virtual environment for Orenda.
 
 1. **Create the virtual environment:**
    ```bash
-   python -m venv orenda
+   python3.12 -m venv orenda
    ```
 
 2. **Activate the virtual environment:**
@@ -55,13 +55,18 @@ Set up the virtual environment for Orenda.
 ## Installing Dependencies
 Once your virtual environment is activated, install the required packages:
 
-Torch Libs for use with Nvidia 5000 series needs to be from the nightly build at the moment (Sept 2025). So install specific torch requirements first
+Torch Libs for use with Nvidia 5000 series needs to be from the nightly build at the moment (Sept 2025). For those machines/GPU cards use
+
+```bash
+    pip install -r pytorch-cu128-requirements.txt
+```
+Else non-5000 series Nvida card OR mac/linux use:
 
 ```bash
     pip install -r pytorch-requirements.txt
 ```
 
-then
+then get the rest of the requirements.
 
 ```bash
     pip install -r requirements.txt
