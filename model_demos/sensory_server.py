@@ -35,11 +35,11 @@ VLM_thread = None
 """
 VISUAL
 """
-def optic_nerve_worker(camera_index, raw_img_queue, stats_dict, fps_target):
+def optic_nerve_worker(camera_index, optic_nerve_queue, stats_dict, fps_target):
     """Worker process for capturing frames from a specific camera (optic nerve function).
     Will drop frames if the queue is full to maintain real-time performance.
     will also update stats_dict with fps and last frame time.
-    will stream to raw_img_queue."""
+    will stream to optic_nerve_queue."""
     cap = cv2.VideoCapture(camera_index)
     
     # Camera setup
@@ -74,7 +74,7 @@ def optic_nerve_worker(camera_index, raw_img_queue, stats_dict, fps_target):
             
             # Non-blocking queue put - drop frame if queue is full
             try:
-                raw_img_queue.put_nowait(frame_data)
+                optic_nerve_queue.put_nowait(frame_data)
             except:
                 # Queue is full, skip this frame
                 pass
@@ -96,7 +96,7 @@ def optic_nerve_worker(camera_index, raw_img_queue, stats_dict, fps_target):
         cap.release()
         print(f"Optic nerve process for camera {camera_index} stopped")
 
-def visual_cortex_worker(raw_img_queue, processed_queue, stats_dict, visual_scene_queue):
+def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, visual_scene_queue):
     """Worker process for processing image frames from all cameras (visual cortex function)
     LIFO - will always process the most recent frame in the queue, dropping older frames.
     If person is detected a more detailed VLM is run in a thread. """
@@ -127,7 +127,7 @@ def visual_cortex_worker(raw_img_queue, processed_queue, stats_dict, visual_scen
                 # Keep getting frames until queue is empty, keeping only the last one
                 while True:
                     try:
-                        frame_data = raw_img_queue.get_nowait()
+                        frame_data = optic_nerve_queue.get_nowait()
                         frames_discarded += 1
                     except queue.Empty:
                         break
@@ -177,12 +177,12 @@ def visual_cortex_worker(raw_img_queue, processed_queue, stats_dict, visual_scen
                     
                     # Put processed frame in output queue
                     try:
-                        processed_queue.put_nowait(processed_data)
+                        visual_cortex_queue.put_nowait(processed_data)
                     except:
                         # Queue is full, try to remove oldest and add new
                         try:
-                            processed_queue.get_nowait()
-                            processed_queue.put_nowait(processed_data)
+                            visual_cortex_queue.get_nowait()
+                            visual_cortex_queue.put_nowait(processed_data)
                         except:
                             pass
                     
@@ -318,7 +318,7 @@ def generate_img_frames(camera_index=None):
     while True:
         try:
             # Get processed frame (blocking with timeout)
-            frame_data = processed_frame_queue.get(timeout=1.0)
+            frame_data = visual_cortex_queue.get(timeout=1.0)
             
             # Filter by camera index if specified
             if camera_index is not None and frame_data['camera_index'] != camera_index:
@@ -363,7 +363,7 @@ def generate_img_frames(camera_index=None):
 AUDIO
 """
 
-def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, global_awareness,sample_rate=16000, chunk_size=512):
+def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict, global_awareness,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
     Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.
     """
@@ -388,7 +388,7 @@ def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, global_awar
         
         # Non-blocking queue put - drop frame if queue is full
         try:
-            raw_audio_queue.put_nowait(audio_data)
+            audio_nerve_queue.put_nowait(audio_data)
         except:
             # Queue is full, skip this frame to maintain real-time performance
             pass
@@ -424,7 +424,7 @@ def auditory_nerve_worker(device_index, raw_audio_queue, stats_dict, global_awar
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
 
-def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue,global_awareness,device_index):
+def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, audio_scene_queue,global_awareness,device_index):
     """Worker process for processing audio frames (auditory cortex function)
     Optimized for real-time streaming with VADIterator and minimal buffering.
     """
@@ -469,7 +469,7 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
         while True:
             try:
                 # Get audio frame (blocking with timeout)
-                audio_data = raw_audio_queue.get(timeout=1.0)
+                audio_data = audio_nerve_queue.get(timeout=1.0)
                 
                 # Process immediately - no accumulation needed for 512-sample chunks
                 audio_chunk = audio_data['audio_frame']
@@ -540,12 +540,12 @@ def auditory_cortex_worker(raw_audio_queue, processed_audio_queue, stats_dict, a
                                 
                                 # Put processed audio in output queue
                                 try:
-                                    processed_audio_queue.put_nowait(processed_data)
+                                    audio_cortex_queue.put_nowait(processed_data)
                                 except:
                                     # Queue is full, try to remove oldest and add new
                                     try:
-                                        processed_audio_queue.get_nowait()
-                                        processed_audio_queue.put_nowait(processed_data)
+                                        audio_cortex_queue.get_nowait()
+                                        audio_cortex_queue.put_nowait(processed_data)
                                     except:
                                         pass
                                 
@@ -678,7 +678,7 @@ def index():
 </head>
 <body>
     <div class="container">
-        <h1>TEMPORAL LOBEE</h1>
+        <h1>TEMPORAL LOBE</h1>
         
         <!-- Audio Section -->
         <div class="audio-section">
@@ -745,7 +745,7 @@ def index():
             <!-- Audio Scene Analysis -->
         </div>
                 <div class="visual-scene">
-                h3>Audio Speech to Text</h3>
+                <h3>Audio Speech to Text</h3>
                 <div id="audio-scene-analysis">
                     <p>not connected yet, will stream detected speech-to-text</p>
                 </div>
@@ -961,16 +961,16 @@ def stats():
     """API endpoint for performance statistics"""
     current_stats = dict(stats_dict)
     current_stats['timestamp'] = datetime.now().isoformat()
-    current_stats['raw_img_queue_size'] = raw_img_queue.qsize()
+    current_stats['optic_nerve_queue_size'] = optic_nerve_queue.qsize()
 
     #Visual queue stats
-    current_stats['processed_queue_size'] = processed_frame_queue.qsize()
+    current_stats['processed_queue_size'] = visual_cortex_queue.qsize()
     current_stats['visual_scene_queue_size'] = visual_scene_queue.qsize()
     current_stats['active_optic_nerves'] = list(optic_nerve_processes.keys())
     
     #Audio queue stats
-    current_stats['raw_audio_queue_size'] = raw_audio_queue.qsize()
-    current_stats['processed_audio_queue_size'] = processed_audio_queue.qsize()
+    current_stats['audio_nerve_queue_size'] = audio_nerve_queue.qsize()
+    current_stats['audio_cortex_queue_size'] = audio_cortex_queue.qsize()
     current_stats['audio_scene_queue_size'] = audio_scene_queue.qsize()
     current_stats['active_auditory_nerves'] = list(auditory_nerve_processes.keys())
 
@@ -1069,7 +1069,7 @@ def start_camera(camera_index):
     # Start optic nerve process for this camera
     optic_nerve_process = mp.Process(
         target=optic_nerve_worker,
-        args=(camera_index, raw_img_queue, stats_dict, FPS_TARGET)
+        args=(camera_index, optic_nerve_queue, stats_dict, FPS_TARGET)
     )
     optic_nerve_process.start()
     optic_nerve_processes[camera_index] = optic_nerve_process
@@ -1078,7 +1078,7 @@ def start_camera(camera_index):
     if not visual_cortex_processes:
         visual_cortex_process = mp.Process(
             target=visual_cortex_worker,
-            args=(raw_img_queue, processed_frame_queue, stats_dict, visual_scene_queue)
+            args=(optic_nerve_queue, visual_cortex_queue, stats_dict, visual_scene_queue)
         )
         visual_cortex_process.start()
         visual_cortex_processes['main'] = visual_cortex_process
@@ -1139,7 +1139,7 @@ def start_audio_device(device_index):
     # Start auditory nerve process for this device
     auditory_nerve_process = mp.Process(
         target=auditory_nerve_worker,
-        args=(device_index, raw_audio_queue, stats_dict,global_awareness)
+        args=(device_index, audio_nerve_queue, stats_dict,global_awareness)
     )
     auditory_nerve_process.start()
     auditory_nerve_processes[device_index] = auditory_nerve_process
@@ -1148,7 +1148,7 @@ def start_audio_device(device_index):
     if not auditory_cortex_processes:
         auditory_cortex_process = mp.Process(
             target=auditory_cortex_worker,
-            args=(raw_audio_queue, processed_audio_queue, stats_dict, audio_scene_queue,global_awareness,device_index)
+            args=(audio_nerve_queue, audio_cortex_queue, stats_dict, audio_scene_queue,global_awareness,device_index)
         )
         auditory_cortex_process.start()
         auditory_cortex_processes['main'] = auditory_cortex_process
@@ -1235,13 +1235,13 @@ if __name__ == '__main__':
     manager = mp.Manager()
     
     # Existing visual queues
-    raw_img_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
-    processed_frame_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    optic_nerve_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    visual_cortex_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     visual_scene_queue = manager.Queue(maxsize=10)
     
     #Audio queues
-    raw_audio_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
-    processed_audio_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    audio_nerve_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    audio_cortex_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     audio_scene_queue = manager.Queue(maxsize=10)
     
     stats_dict = manager.dict()
