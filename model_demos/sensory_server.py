@@ -678,7 +678,7 @@ def index():
 </head>
 <body>
     <div class="container">
-        <h1>Multi-Camera OpenCV Stream with Audio & VLM Analysis</h1>
+        <h1>TEMPORAL LOBEE</h1>
         
         <!-- Audio Section -->
         <div class="audio-section">
