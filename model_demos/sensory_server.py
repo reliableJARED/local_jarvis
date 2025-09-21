@@ -366,7 +366,10 @@ AUDIO
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 import os
 class SpeechTranscriber:
-    """Handles speech transcription using Whisper with offline support"""
+    """Handles speech transcription using Whisper with offline support
+    MULTILINGUAL:
+      (Speech) English, French, German, Italian, Spanish, Chinese, Japanese -> English (Transcript)
+    """
     
     def __init__(self, model_name="openai/whisper-small"):
         self.sample_rate = 16000

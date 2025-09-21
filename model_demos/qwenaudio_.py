@@ -223,14 +223,14 @@ def main():
             model = Qwen2AudioForConditionalGeneration.from_pretrained(
                 "Qwen/Qwen2-Audio-7B-Instruct",
                 device_map="auto",
-                torch_dtype=dtype,
+                dtype=dtype,
                 low_cpu_mem_usage=True,
             ).eval()
         elif device == "mps":
             model = Qwen2AudioForConditionalGeneration.from_pretrained(
                 "Qwen/Qwen2-Audio-7B-Instruct",
                 device_map="mps",
-                torch_dtype=dtype,
+                dtype=dtype,
                 low_cpu_mem_usage=True
             ).eval()
         else:
