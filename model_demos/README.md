@@ -25,8 +25,9 @@ Set up the virtual environment for Orenda.
 ### Windows
 
 1. **Create the virtual environment:**
+get rid of the -3.12 arg if your system version was already 3.12
    ```cmd
-   py -m venv orenda
+   py -3.12 -m venv orenda
    ```
 
 2. **Activate the virtual environment:**
@@ -40,6 +41,7 @@ Set up the virtual environment for Orenda.
 ### Mac/Linux
 
 1. **Create the virtual environment:**
+get rid of the -3.12 arg if your system version was already 3.12
    ```bash
    python3.12 -m venv orenda
    ```
