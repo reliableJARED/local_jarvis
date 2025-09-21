@@ -1,3 +1,9 @@
+"""
+TODO: Think about sound buffer comparison - should we average? or do frame by frame comparison.
+
+https://claude.ai/chat/236e1f68-c6af-4d7f-906d-9c3e8e45325e
+"""
+
 import threading
 import queue
 import time
