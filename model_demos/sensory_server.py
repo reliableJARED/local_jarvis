@@ -13,6 +13,13 @@ import torch
 import gc
 import threading
 from typing import Dict, Any
+import logging
+
+logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CRITICAL + 1)
+
+# Set the Werkzeug logger level to ERROR to ignore INFO messages
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 
@@ -32,6 +39,18 @@ auditory_cortex_processes = {}
 # Global VLM (moondream) analysis state
 VLM_availible = False
 VLM_thread = None
+
+#Audio Analyis reference
+AUDIO_SCENE = {'device_index': None,
+                    'audio_data': None,
+                    'speech_detected': None,
+                    'final_transcript':False,
+                    'transcription': None, 
+                    'capture_timestamp': None,
+                    'formatted_time':None,
+                    'auditory_cortex_timestamp': None,
+                    'sample_rate':None,
+                    'duration': None}
 
 """
 VISUAL
@@ -106,7 +125,7 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
     start_time = time.time()
 
     # Global VLM state for this process
-    VLM_availible_local = False
+    VLM_availible_local = True
 
     #Visual Cortex Processing Core CNN (yolo)
     from yolo_ import YOLOhf
@@ -146,25 +165,24 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
                                                   IMG_DETECTION_CNN)
                     
                     # If person detected and VLM not busy, start async analysis
-                    if person_detected and not VLM_availible_local:
+                    if person_detected and VLM_availible_local:
                         print(f"Starting VLM analysis - person detected and VLM not busy")
                         
                         # Set busy states
-                        VLM_availible_local = True
-                        stats_dict['VLM_availible'] = True
+                        VLM_availible_local = False
+                        stats_dict['VLM_availible'] = False
 
-                        
                         # Start VLM Moondream analysis in separate thread
                         VLM_thread = threading.Thread(
                             target=visual_cortex_process_vlm_analysis_thread,
                             args=(frame_data['frame'], frame_data['camera_index'], 
-                                frame_data['capture_timestamp'], visual_scene_queue, stats_dict)
+                                frame_data['capture_timestamp'], visual_scene_queue, stats_dict),
+                                daemon = True
                             )  
-                         
-                        VLM_thread.daemon = True
+
                         VLM_thread.start()
 
-                    elif person_detected and VLM_availible_local:
+                    elif person_detected and not VLM_availible_local:
                         print(f"Person detected but VLM busy - skipping analysis")
                     
                     # Create processed frame data
@@ -254,7 +272,7 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
             break
         if time.time() - wait_start > max_wait_time:
             print(f"Timeout waiting for GPU memory, aborting VLM analysis")
-            stats_dict['VLM_availible'] = False
+            stats_dict['VLM_availible'] = True
             return
         time.sleep(0.1)  # Check every 100ms
         
@@ -308,7 +326,7 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
         except:
             pass
 
-        stats_dict['VLM_availible'] = False
+        stats_dict['VLM_availible'] = True
         print(f"VLM analysis thread finished for camera {camera_index}")
 
 def generate_img_frames(camera_index=None):
@@ -363,13 +381,11 @@ def generate_img_frames(camera_index=None):
 """
 AUDIO
 """
+### Move SpeechTranscriber to it's own file after testing here
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 import os
 class SpeechTranscriber:
-    """Handles speech transcription using Whisper with offline support
-    MULTILINGUAL:
-      (Speech) English, French, German, Italian, Spanish, Chinese, Japanese -> English (Transcript)
-    """
+    """Handles speech transcription using Whisper with offline support"""
     
     def __init__(self, model_name="openai/whisper-small"):
         self.sample_rate = 16000
@@ -454,7 +470,7 @@ class SpeechTranscriber:
         
         return transcription.strip()
 
-def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict, global_awareness,sample_rate=16000, chunk_size=512):
+def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
     Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.
     """
@@ -515,7 +531,7 @@ def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict, global_aw
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
 
-def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, audio_scene_queue, global_awareness, device_index):
+def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
     """Worker process for processing audio frames (auditory cortex function)
     Optimized for real-time streaming with VADIterator and minimal buffering.
     Now includes speech-to-text transcription.
@@ -523,13 +539,17 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
     print("Started auditory cortex process")
     frame_count = 0
     start_time = time.time()
-    
+    process_timestamp = time.time()
     # Pre-roll buffer for capturing speech beginnings (100ms worth of audio)
     pre_roll_buffer = deque(maxlen=5)  # ~5 chunks of 32ms = ~160ms buffer
     speech_active = False
     speech_buffer = []
+    full_speech = [] #holds numpy array of speech data
     min_silence_duration_ms = 1000  # Minimum silence to end speech
-    
+    import queue 
+    # Internal queue to hold audio items that need additional analysis (transcriptions, detections, descriptions)
+    internal_queue_transcription = queue.Queue(maxsize=10)
+
     # Initialize Speech Transcriber
     try:
         speech_transcriber = SpeechTranscriber("openai/whisper-small")
@@ -567,8 +587,10 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
     
     try:
         while True:
+            
             try:
-                # Get audio frame (blocking with timeout)
+               
+                # Get audio frame (blocking with timeout) from the nerve
                 audio_data = audio_nerve_queue.get(timeout=1.0)
                 
                 # Process immediately - no accumulation needed for 512-sample chunks
@@ -593,105 +615,79 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
                         # Speech event detected (start or end)
                         if 'start' in speech_dict:
                             # Speech start detected
-                            print(f"Speech START detected at {speech_dict['start']:.3f}s")
+                            logging.info(f"Speech START detected at {speech_dict['start']:.3f}s")
                             speech_active = True
                             # Add pre-roll buffer to speech
                             speech_buffer = list(pre_roll_buffer)
-
-                            # Speech is from humans, so system is aware there is human
-                            human_time = time.time()
-                            global_awareness.update({
-                                'human': 'unknown name', 
-                                'detection_type': {'speech': True}, 
-                                'detection_timestamp': human_time,
-                                'device_index': device_index
-                            })
                                                         
                         if 'end' in speech_dict:
                             # Speech end detected
-                            print(f"Speech END detected at {speech_dict['end']:.3f}s")
+                            logging.info(f"Speech END detected at {speech_dict['end']:.3f}s")
                             speech_active = False
 
-                            # TODO: perhaps decay, for now no speech means no human awareness
-                            global_awareness.update({
-                                'human': 'unknown name', 
-                                'detection_type': {'speech': False}, 
-                                'detection_timestamp': human_time,
-                                'device_index': device_index
-                            })
-                            
-                            # Process accumulated speech
+                            #Now, Process accumulated final speech
                             if speech_buffer:
                                 # Concatenate all speech chunks
                                 full_speech = np.concatenate(speech_buffer)
                                 
-                                # Transcribe speech to text
-                                transcription = ""
                                 if speech_transcriber and len(full_speech) > 0:
                                     try:
                                         # Only transcribe if we have at least 0.5 seconds of audio
                                         if len(full_speech) >= 8000:  # 0.5 seconds at 16kHz
-                                            transcription = speech_transcriber.transcribe(full_speech)
-                                            print(f"Transcription: '{transcription}'")
-                                        else:
-                                            transcription = "[Audio too short for transcription]"
+
+                                            # Start transcription worker thread
+                                            final = True#indicate there is no more speech
+                                            transcription_thread = threading.Thread(target=auditory_cortex_process_stt, 
+                                                                                    args=(full_speech, speech_transcriber,final,internal_queue_transcription),
+                                                                                    daemon = True)
+                                            transcription_thread.start()
+
+
+                                            # Clear speech buffer after sending final for transcription
+                                            speech_buffer = []
+
                                     except Exception as e:
-                                        print(f"Transcription error: {e}")
-                                        transcription = "[Transcription failed]"
+                                        print(f"Transcription thread start error: {e}")
+
                                 
-                                # Create processed audio data
-                                process_timestamp = time.time()
-                                processed_data = {
-                                    'device_index': audio_data['device_index'],
-                                    'audio_data': full_speech,
-                                    'speech_probability': 1.0,  # Confirmed speech segment
-                                    'speech_detected': True,
-                                    'transcription': transcription,  # NEW: Add transcription
-                                    'capture_timestamp': audio_data['capture_timestamp'],
-                                    'auditory_cortex_timestamp': process_timestamp,
-                                    'sample_rate': audio_data['sample_rate'],
-                                    'duration': len(full_speech) / audio_data['sample_rate']
-                                }
-                                
-                                # Put processed audio in output queue
-                                try:
-                                    audio_cortex_queue.put_nowait(processed_data)
-                                except:
-                                    # Queue is full, try to remove oldest and add new
-                                    try:
-                                        audio_cortex_queue.get_nowait()
-                                        audio_cortex_queue.put_nowait(processed_data)
-                                    except:
-                                        pass
-                                
-                                # Add to audio scene queue for further analysis
-                                audio_scene_data = {
-                                    'device_index': audio_data['device_index'],
-                                    'timestamp': audio_data['capture_timestamp'],
-                                    'speech_probability': 1.0,
-                                    'transcription': transcription,  # NEW: Add transcription
-                                    'analysis_time': process_timestamp,
-                                    'formatted_time': datetime.fromtimestamp(audio_data['capture_timestamp']).strftime('%H:%M:%S'),
-                                    'audio_data': full_speech,
-                                    'duration': len(full_speech) / audio_data['sample_rate']
-                                }
-                                
-                                try:
-                                    audio_scene_queue.put_nowait(audio_scene_data)
-                                except:
-                                    # Queue full, remove oldest and add new
-                                    try:
-                                        audio_scene_queue.get_nowait()
-                                        audio_scene_queue.put_nowait(audio_scene_data)
-                                    except:
-                                        pass
-                                
-                                # Clear speech buffer
-                                speech_buffer = []
+                                    
                     
                     # If speech is active, add current chunk to buffer
                     if speech_active:
                         speech_buffer.append(audio_chunk)
+                       
+                    
+                    transcription = {'transcription':"",'final_transcript':False}
+                    try:
+                        transcription = internal_queue_transcription.get(block=False)#don't wait
+                    except queue.Empty:
+                        logging.debug("No data in Transcription")
+
+                    #Update The Audio Cortex Output Queue
+                    processed_data = {'device_index': audio_data['device_index'],
+                            'audio_data': full_speech,
+                            'speech_detected': speech_active,
+                            'final_transcript': transcription.get('final_transcript',""),
+                            'transcription': transcription.get('transcription',""),
+                            'capture_timestamp': audio_data['capture_timestamp'],
+                            'formatted_time': datetime.fromtimestamp(audio_data['capture_timestamp']).strftime('%H:%M:%S'),
+                            'auditory_cortex_timestamp': process_timestamp,
+                            'sample_rate': audio_data['sample_rate'],
+                            'duration': len(full_speech) / audio_data['sample_rate']}
+                    
+                    # Put processed audio in output queue
+                    try:
+                        audio_cortex_queue.put_nowait(processed_data)
+                    except:
+                        # Queue is full, try to remove oldest and add new
+                        try:
+                            print("WARNING AUDIO FULL")
+                            #audio_cortex_data = audio_cortex_queue.get_nowait()
+                            #audio_cortex_data_update = audio_cortex_data | processed_data
+                            #audio_cortex_queue.put_nowait(audio_cortex_data_update)
+                        except:
+                            pass
+
 
                 except Exception as vad_error:
                     print(f"VAD processing error: {vad_error}")
@@ -723,6 +719,27 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict, au
                 pass
         print("Auditory cortex process stopped")
 
+def auditory_cortex_process_stt(speech_audio_data, speech_transcriber,final, internal_queue_transcription):
+    #generate transcript from speech audio    
+    transcription = speech_transcriber.transcribe(speech_audio_data)
+    print(f"Transcription: '{transcription}'")
+                                        
+    #don't indicate no active speaker here because we could be transcribing mid talking for real time transcription
+    transcript_data = {'transcription':transcription,
+                        'final_transcript':final}
+    # Put processed audio in output queue
+    try:
+        internal_queue_transcription.put(transcript_data, block=True, timeout=1)#wait one second
+    except:
+        # Queue is full, try to remove oldest and add new
+        try:
+            internal_queue_transcription.put(transcript_data, block=False)#Force Data in
+        except:
+            pass
+    finally:
+        # Clean up
+        gc.collect()
+    
 
 """
 HTML Interface - UPDATED with visual scene display functionality
@@ -937,13 +954,7 @@ def index():
             </div>
         </div>
 
-        <!-- Audio Scene Analysis -->
-        <div class="visual-scene">
-            <h3>Audio Scene Analysis</h3>
-            <div id="audio-scene-analysis">
-                <p>Not connected yet, will populate with audio description</p>
-            </div>
-        </div>
+        
 
         <!-- Visual Scene Analysis -->
         <div class="visual-scene">
@@ -953,6 +964,15 @@ def index():
                 <p>No scene analysis data available. Start a camera and detect a person to begin analysis.</p>
             </div>
         </div>
+
+        <!-- Audio Scene Analysis -->
+        <div class="visual-scene">
+            <h3>Audio Scene Analysis</h3>
+            <div id="audio-scene-analysis">
+                <p>Not connected yet, will populate with audio description</p>
+            </div>
+        </div>
+        
     </div>
     
     <script>
@@ -990,16 +1010,14 @@ def index():
             fetch('/stats')
                 .then(response => response.json())
                 .then(data => {
-                    // Check global_awareness for human speech detection
-                    const speechDetected = data.present_subjects && 
-                                        data.present_subjects.detection_type && 
-                                        data.present_subjects.detection_type.speech;
+                    // Check for human speech 
+                    const speechDetected = data.audio_cortex && data.audio_cortex.speech_detected;
                     
-                    const speechDeviceIndex = data.present_subjects && 
-                                            data.present_subjects.device_index !== undefined ? 
-                                            data.present_subjects.device_index : -1;
+                    const speechDeviceIndex = data.audio_cortex && 
+                                            data.audio_cortex.device_index !== undefined ? 
+                                            data.audio_cortex.device_index : -1;
                     
-                    // Update speech detection indicators for both microphones
+                    // Update speech detection indicators
                     for (let i = 0; i < 2; i++) {
                         const indicator = document.getElementById(`speech-indicator-${i}`);
                         const status = document.getElementById(`speech-status-${i}`);
@@ -1175,7 +1193,6 @@ def index():
                             sceneDiv.innerHTML = `
                                 <div class="scene-time">${scene.formatted_time}</div>
                                 <div class="scene-camera">Microphone ${scene.device_index}</div>
-                                <div class="scene-caption">Speech probability: ${scene.speech_probability.toFixed(2)}</div>
                             `;
                             container.appendChild(sceneDiv);
                         });
@@ -1191,7 +1208,7 @@ def index():
         setInterval(updateVisualScenes, 2000);
         setInterval(updateAudioStatus, 500);  // Update audio status more frequently for real-time speech detection
         setInterval(updateTranscriptions, 1000);  // Update transcriptions every second
-        setInterval(updateAudioScenes, 2000);  // Update audio scenes
+        setInterval(updateAudioScenes, 500);  // Update audio scenes
         
         // Initial updates
         updateStats();
@@ -1207,6 +1224,7 @@ def index():
 @app.route('/stats')
 def stats():
     """API endpoint for performance statistics"""
+    global AUDIO_SCENE
     current_stats = dict(stats_dict)
     current_stats['timestamp'] = datetime.now().isoformat()
     current_stats['optic_nerve_queue_size'] = optic_nerve_queue.qsize()
@@ -1219,11 +1237,23 @@ def stats():
     #Audio queue stats
     current_stats['audio_nerve_queue_size'] = audio_nerve_queue.qsize()
     current_stats['audio_cortex_queue_size'] = audio_cortex_queue.qsize()
-    current_stats['audio_scene_queue_size'] = audio_scene_queue.qsize()
     current_stats['active_auditory_nerves'] = list(auditory_nerve_processes.keys())
 
     #Object/Person awareness
-    current_stats['present_subjects'] = dict(global_awareness)
+    current_stats['audio_cortex'] = {}
+
+    #We want to make sure we remove the raw data, only take fields that UI needs
+    try:
+        current_stats['audio_cortex'] = {
+                                    'device_index': AUDIO_SCENE['device_index'],
+                                    'speech_detected': AUDIO_SCENE['speech_detected']}
+    except queue.Empty:
+        print("The audio cortex queue is empty. Waiting for new data...")
+        current_stats['audio_cortex'] = {
+                                    'device_index': False,
+                                    'speech_detected': False}
+
+    
 
     return jsonify(current_stats)
 
@@ -1268,6 +1298,7 @@ def stop_all():
 """
 THESE ROUTES PROVIDE THE API ENDPOINTS FOR CONTROLLING THE OPTIC NERVES AND VISUAL CORTEX
 """
+# ===== API ROUTES FOR VIDEO =====
 @app.route('/video_feed')
 @app.route('/video_feed/<int:camera_index>')
 def video_feed(camera_index=None):
@@ -1371,8 +1402,7 @@ def stop_camera(camera_index):
 """
 THESE ROUTES PROVIDE THE API ENDPOINTS FOR CONTROLLING THE AUDITORY NERVES AND AUDIO CORTEX
 """
-# ===== NEW API ROUTES FOR AUDIO =====
-
+# ===== API ROUTES FOR AUDIO =====
 @app.route('/start_audio/<int:device_index>')
 def start_audio_device(device_index):
     """Start auditory nerve and auditory cortex processing for specific audio device"""
@@ -1387,7 +1417,7 @@ def start_audio_device(device_index):
     # Start auditory nerve process for this device
     auditory_nerve_process = mp.Process(
         target=auditory_nerve_worker,
-        args=(device_index, audio_nerve_queue, stats_dict,global_awareness)
+        args=(device_index, audio_nerve_queue, stats_dict)
     )
     auditory_nerve_process.start()
     auditory_nerve_processes[device_index] = auditory_nerve_process
@@ -1396,7 +1426,7 @@ def start_audio_device(device_index):
     if not auditory_cortex_processes:
         auditory_cortex_process = mp.Process(
             target=auditory_cortex_worker,
-            args=(audio_nerve_queue, audio_cortex_queue, stats_dict, audio_scene_queue,global_awareness,device_index)
+            args=(audio_nerve_queue, audio_cortex_queue, stats_dict)
         )
         auditory_cortex_process.start()
         auditory_cortex_processes['main'] = auditory_cortex_process
@@ -1437,39 +1467,41 @@ def stop_audio_device(device_index):
         'message': f'Auditory nerve {device_index} stopped'
     })
 
+
+#global variable for transcription history
+TRANSCRIPTION_HISTORY = []
+MAX_TRANSCRIPTION_HISTORY = 3
 @app.route('/audio_scenes')
 def audio_scenes():
     """API endpoint for audio scene analysis data with transcriptions"""
-    scenes = []
-    
-    # Get all available scenes from the queue without blocking
+    global AUDIO_SCENE, TRANSCRIPTION_HISTORY
     while True:
+        #get all of the audio data frames from the audio cortex
         try:
-            scene_data = audio_scene_queue.get_nowait()
-            scenes.append({
-                'device_index': scene_data['device_index'],
-                'timestamp': scene_data['timestamp'],
-                'speech_probability': scene_data['speech_probability'],
-                'transcription': scene_data.get('transcription', ''),  # Include speech transcription
-                'analysis_time': scene_data['analysis_time'],
-                'formatted_time': scene_data['formatted_time'],
-                'duration': scene_data.get('duration', 0)
-            })
-        except:
+            current_scene = audio_cortex_queue.get_nowait()
+            # Only add to history if we have a valid transcription
+            if (current_scene.get('transcription', "").strip() != ""):
+                
+                scene_data = {
+                    'device_index': current_scene['device_index'],
+                    'timestamp': current_scene['auditory_cortex_timestamp'],
+                    'transcription': current_scene.get('transcription', ''),
+                    'formatted_time': current_scene['formatted_time'],
+                    'duration': current_scene.get('duration', 0)
+                }
+                
+                # Add to history and keep only recent ones
+                TRANSCRIPTION_HISTORY.append(scene_data)
+                TRANSCRIPTION_HISTORY = TRANSCRIPTION_HISTORY[-MAX_TRANSCRIPTION_HISTORY:]
+                
+            AUDIO_SCENE = current_scene
+        except Exception as e:
+            logging.debug(e)#should be No more data exception since we got it all from the queue
             break
-    
-    # Put them back in the queue (keeping last 3)
-    scenes = scenes[-3:]  # Keep only last 3 analyses
-    for scene_data in scenes:
-        try:
-            audio_scene_queue.put_nowait(scene_data)
-        except:
-            # Queue full, skip older ones
-            break
-    
+
     return jsonify({
-        'audio_scenes': scenes,
-        'count': len(scenes)
+        'audio_scenes': TRANSCRIPTION_HISTORY,
+        'count': len(TRANSCRIPTION_HISTORY)
     })
 
 def signal_handler(sig, frame):
@@ -1480,6 +1512,7 @@ def signal_handler(sig, frame):
 
 if __name__ == '__main__':
     import signal
+
     # Global multiprocessing queues and managers MUST go here because of issues with Windows
     manager = mp.Manager()
     
@@ -1491,14 +1524,10 @@ if __name__ == '__main__':
     #Audio queues
     audio_nerve_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     audio_cortex_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
-    audio_scene_queue = manager.Queue(maxsize=10)
-    
+     
     stats_dict = manager.dict()
 
-    # Initialize global awareness structure
-    global_awareness = manager.dict()  # Global awareness tracking
-
-
+   
     # Set multiprocessing start method
     mp.set_start_method('spawn', force=True)
 
@@ -1525,5 +1554,4 @@ if __name__ == '__main__':
     finally:
         stop_all()
         print("Cleanup complete")
-
 
