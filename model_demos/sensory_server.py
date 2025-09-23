@@ -456,23 +456,14 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
     speech_active = False
     speech_buffer = []
     full_speech = [] #holds numpy array of speech data
-    min_silence_duration_ms = 750  # Minimum silence to end speech, 1000 = 1 second
+    min_silence_duration_ms = 500  # Minimum silence to end speech, 1000 = 1 second
     import queue
-    from stt import SpeechTranscriber
+
 
     # internal queue to hold speech audio that needs transcription
     internal_queue_speech_audio = queue.Queue(maxsize=100) 
     # Internal queue to hold stt results (transcriptions)
     internal_queue_transcription = queue.Queue(maxsize=5)
-
-
-    # Initialize Speech Transcriber
-    try:
-        speech_transcriber = SpeechTranscriber()
-        print("Speech transcriber loaded successfully")
-    except Exception as e:
-        print(f"Failed to load speech transcriber: {e}")
-        speech_transcriber = None
     
     # Initialize Silero VAD with VADIterator for streaming
     try:
@@ -503,7 +494,7 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
     
     try:
         speech_to_text_thread = threading.Thread(target=auditory_cortex_process_stt_thread, 
-                                                args=(speech_transcriber,internal_queue_speech_audio,internal_queue_transcription),
+                                                args=(internal_queue_speech_audio,internal_queue_transcription),
                                                  daemon = True)
         speech_to_text_thread.start()
     except Exception as e:
@@ -637,16 +628,27 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
                 pass
         print("Auditory cortex process stopped")
 
-def auditory_cortex_process_stt_thread(speech_transcriber, internal_queue_speech_audio, internal_queue_transcription):
+def auditory_cortex_process_stt_thread(internal_queue_speech_audio, internal_queue_transcription):
     """
     This is a threaded worker that will process audio chunks known to have speech.
     Uses LIFO - only processes the most recent audio data, skip and remove older data tasks from queue.
     Uses sliding window approach to build up transcript incrementally.
     """
+    from stt import SpeechTranscriber
+    
+    # Initialize Speech Transcriber
+    try:
+        speech_transcriber = SpeechTranscriber()
+        print("Speech transcriber loaded successfully")
+    except Exception as e:
+        print(f"Failed to load speech transcriber: {e}")
+        speech_transcriber = None
+
     def find_overlap_position(old_transcript, new_raw_transcript):
         """
         Find where the new raw transcript overlaps with the existing working transcript.
         Returns the position in the working transcript where we should splice.
+        Searches from the END of the old transcript backwards to find the most recent overlap.
         """
         if not old_transcript or not new_raw_transcript:
             return len(old_transcript)
@@ -661,15 +663,31 @@ def auditory_cortex_process_stt_thread(speech_transcriber, internal_queue_speech
         # Look for overlapping sequences of words (using original case for position calculation)
         original_old_words = old_transcript.split()
         
-        for i in range(len(old_words)):
-            for j in range(min(len(old_words) - i, len(new_words))):
-                if old_words[i:i+j+1] == new_words[0:j+1]:
-                    if j + 1 > max_overlap_len:
-                        max_overlap_len = j + 1
-                        # Calculate character position in old transcript using original case
-                        best_overlap_pos = len(' '.join(original_old_words[:i]))
-                        if i > 0:  # Add space before if not at start
-                            best_overlap_pos += 1
+        # FIXED: Search backwards from the end of old_words to find the LATEST overlap
+        for i in range(len(old_words) - 1, -1, -1):  # Start from end, go backwards
+            # Check how many words from position i match the beginning of new_words
+            max_possible_match = min(len(old_words) - i, len(new_words))
+            
+            for j in range(max_possible_match):
+                if old_words[i + j] != new_words[j]:
+                    break
+            else:
+                # If we didn't break, we have a match of length max_possible_match
+                j = max_possible_match - 1
+            
+            # j+1 is the length of the match (if any)
+            match_length = j + 1 if old_words[i] == new_words[0] else 0
+            
+            if match_length > 0 and match_length > max_overlap_len:
+                max_overlap_len = match_length
+                # Calculate character position in old transcript using original case
+                best_overlap_pos = len(' '.join(original_old_words[:i]))
+                if i > 0:  # Add space before if not at start
+                    best_overlap_pos += 1
+                
+                # Since we're searching backwards, the first (largest index) match we find
+                # is the one closest to the end, so we can break here for efficiency
+                break
         
         return best_overlap_pos
 
@@ -720,7 +738,7 @@ def auditory_cortex_process_stt_thread(speech_transcriber, internal_queue_speech
                     chunk_to_process = full_audio_data[:min_chunk_size + overlap_samples] if more_speech_coming else full_audio_data
 
                 #continued speaking of long speaking or final speaking of long speeking
-                elif total_audio_processed > 0:
+                elif (len(full_audio_data) - total_audio_processed) >= overlap_samples or not more_speech_coming:
                     # Subsequent passes - start from overlap point to include word boundaries
                     start_pos = max(0, total_audio_processed - overlap_samples)
                     chunk_to_process = full_audio_data[start_pos:]
@@ -1175,6 +1193,7 @@ def index():
                             statBox.innerHTML = `<strong>${key.replace(/_/g, ' ').toUpperCase()}:</strong><br>${value}`;
                             container.appendChild(statBox);
                         }
+                        
                     });
                 })
                 .catch(err => console.error('Stats update failed:', err));
