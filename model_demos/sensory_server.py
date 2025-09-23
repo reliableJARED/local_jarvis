@@ -381,95 +381,6 @@ def generate_img_frames(camera_index=None):
 """
 AUDIO
 """
-### Move SpeechTranscriber to it's own file after testing here
-from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
-import os
-class SpeechTranscriber:
-    """Handles speech transcription using Whisper with offline support"""
-    
-    def __init__(self, model_name="openai/whisper-small"):
-        self.sample_rate = 16000
-        self.model_name = model_name
-        
-        # Load model and processor with offline fallback
-        self.processor, self.model = self._load_models()
-    
-    def _load_models(self):
-        """Load Whisper models with offline support"""
-        # Set offline mode environment variables BEFORE importing/loading
-        os.environ['HF_HUB_OFFLINE'] = '1'
-        os.environ['TRANSFORMERS_OFFLINE'] = '1'
-        os.environ['HF_DATASETS_OFFLINE'] = '1'
-        
-        try:
-            print(f"Loading Whisper model '{self.model_name}' in offline mode...")
-            processor = AutoProcessor.from_pretrained(
-                self.model_name,
-                local_files_only=True
-            )
-            model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                self.model_name,
-                local_files_only=True
-            )
-            print("Whisper model loaded successfully in offline mode!")
-            return processor, model
-            
-        except Exception as e:
-            print(f"Offline loading failed: {e}")
-            print("Attempting online loading...")
-            
-            # Try removing offline flags and attempt online loading
-            os.environ.pop('HF_HUB_OFFLINE', None)
-            os.environ.pop('TRANSFORMERS_OFFLINE', None)
-            os.environ.pop('HF_DATASETS_OFFLINE', None)
-            
-            try:
-                processor = AutoProcessor.from_pretrained(self.model_name)
-                model = AutoModelForSpeechSeq2Seq.from_pretrained(self.model_name)
-                print("Whisper model loaded successfully online!")
-                return processor, model
-                
-            except Exception as online_error:
-                raise RuntimeError(
-                    f"Failed to load Whisper model both offline and online. "
-                    f"Offline error: {e}. Online error: {online_error}. "
-                    f"Make sure to run the model once with internet connection to cache it."
-                )
-    
-    def transcribe(self, audio_data: np.ndarray) -> str:
-        """Transcribe audio data to text"""
-        if len(audio_data) == 0:
-            return ""
-        
-        if audio_data.dtype != np.float32:
-            audio_data = audio_data.astype(np.float32)
-        
-        inputs = self.processor(
-            audio_data,
-            sampling_rate=self.sample_rate,
-            return_tensors="pt"
-        )
-        
-        if "attention_mask" not in inputs:
-            inputs["attention_mask"] = torch.ones(inputs["input_features"].shape[:-1], dtype=torch.long)
-        
-        with torch.no_grad():
-            predicted_ids = self.model.generate(
-                inputs["input_features"],
-                attention_mask=inputs.get("attention_mask"),
-                language="en",
-                task="transcribe",
-                max_length=448,
-                do_sample=False
-            )
-        
-        transcription = self.processor.batch_decode(
-            predicted_ids,
-            skip_special_tokens=True
-        )[0]
-        
-        return transcription.strip()
-
 def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
     Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.
@@ -540,19 +451,24 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
     frame_count = 0
     start_time = time.time()
     process_timestamp = time.time()
-    # Pre-roll buffer for capturing speech beginnings (100ms worth of audio)
-    pre_roll_buffer = deque(maxlen=5)  # ~5 chunks of 32ms = ~160ms buffer
+    # Pre-roll buffer for capturing speech beginnings (audio right before the speech was detected)
+    pre_speech_buffer = deque(maxlen=10)  # ~10 chunks of 32ms = ~320ms buffer
     speech_active = False
     speech_buffer = []
     full_speech = [] #holds numpy array of speech data
-    min_silence_duration_ms = 1000  # Minimum silence to end speech
-    import queue 
-    # Internal queue to hold audio items that need additional analysis (transcriptions, detections, descriptions)
-    internal_queue_transcription = queue.Queue(maxsize=10)
+    min_silence_duration_ms = 750  # Minimum silence to end speech, 1000 = 1 second
+    import queue
+    from stt import SpeechTranscriber
+
+    # internal queue to hold speech audio that needs transcription
+    internal_queue_speech_audio = queue.Queue(maxsize=100) 
+    # Internal queue to hold stt results (transcriptions)
+    internal_queue_transcription = queue.Queue(maxsize=5)
+
 
     # Initialize Speech Transcriber
     try:
-        speech_transcriber = SpeechTranscriber("openai/whisper-small")
+        speech_transcriber = SpeechTranscriber()
         print("Speech transcriber loaded successfully")
     except Exception as e:
         print(f"Failed to load speech transcriber: {e}")
@@ -561,7 +477,7 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
     # Initialize Silero VAD with VADIterator for streaming
     try:
         # Load Silero VAD model
-        torch.set_num_threads(1)  # Optimize for single-thread performance
+        #torch.set_num_threads(1)  # Optimize for single-thread performance
         model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                     model='silero_vad',
                                     force_reload=False,
@@ -574,7 +490,7 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
         vad_iterator = VADIterator(
             model,
             threshold=0.5,           # Speech probability threshold
-            sampling_rate=16000,     # Must match audio sample rate
+            sampling_rate=16000,     # Must match audio sample rate 16hz
             min_silence_duration_ms=min_silence_duration_ms,  # Minimum silence to end speech
             speech_pad_ms=30         # Padding around speech segments
         )
@@ -586,10 +502,18 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
         return
     
     try:
+        speech_to_text_thread = threading.Thread(target=auditory_cortex_process_stt_thread, 
+                                                args=(speech_transcriber,internal_queue_speech_audio,internal_queue_transcription),
+                                                 daemon = True)
+        speech_to_text_thread.start()
+    except Exception as e:
+        logging.debug(f"Error starting speech to text worker thread: {e}")
+        return
+    
+    try:
         while True:
             
             try:
-               
                 # Get audio frame (blocking with timeout) from the nerve
                 audio_data = audio_nerve_queue.get(timeout=1.0)
                 
@@ -603,8 +527,8 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
                 # Convert to tensor for Silero VAD
                 audio_tensor = torch.from_numpy(audio_chunk)
                 
-                # Add to pre-roll buffer
-                pre_roll_buffer.append(audio_chunk)
+                # Add to pre-speech buffer
+                pre_speech_buffer.append(audio_chunk)
                 
                 # Run VADIterator - this handles streaming state internally
                 try:
@@ -618,48 +542,45 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
                             logging.info(f"Speech START detected at {speech_dict['start']:.3f}s")
                             speech_active = True
                             # Add pre-roll buffer to speech
-                            speech_buffer = list(pre_roll_buffer)
+                            speech_buffer = list(pre_speech_buffer)
                                                         
                         if 'end' in speech_dict:
                             # Speech end detected
                             logging.info(f"Speech END detected at {speech_dict['end']:.3f}s")
-                            speech_active = False
+                            speech_active = False                               
 
-                            #Now, Process accumulated final speech
-                            if speech_buffer:
-                                # Concatenate all speech chunks
-                                full_speech = np.concatenate(speech_buffer)
-                                
-                                if speech_transcriber and len(full_speech) > 0:
-                                    try:
-                                        # Only transcribe if we have at least 0.5 seconds of audio
-                                        if len(full_speech) >= 8000:  # 0.5 seconds at 16kHz
-
-                                            # Start transcription worker thread
-                                            final = True#indicate there is no more speech
-                                            transcription_thread = threading.Thread(target=auditory_cortex_process_stt, 
-                                                                                    args=(full_speech, speech_transcriber,final,internal_queue_transcription),
-                                                                                    daemon = True)
-                                            transcription_thread.start()
-
-
-                                            # Clear speech buffer after sending final for transcription
-                                            speech_buffer = []
-
-                                    except Exception as e:
-                                        print(f"Transcription thread start error: {e}")
-
-                                
-                                    
-                    
-                    # If speech is active, add current chunk to buffer
-                    if speech_active:
+                    if speech_active or (not speech_active and len(full_speech)>0):
+                        #add to our audio with speech buffer
                         speech_buffer.append(audio_chunk)
-                       
-                    
+                        # Concatenate all speech audio chunks
+                        full_speech = np.concatenate(speech_buffer)
+                        try :
+                            #when speech_active is False, that will indicate it's our final chunk with speech audio
+                            internal_queue_speech_audio.put_nowait((full_speech.copy(),speech_active))
+                        except queue.Full:
+                            print("internal_queue_speech_audio FULL - will clear queue and put data.")
+                            try :
+                                # Drain the queue
+                                while True:
+                                    try:
+                                        trash = internal_queue_speech_audio.get_nowait()
+                                    except queue.Empty:
+                                        break
+                                #return to putting out data
+                                internal_queue_speech_audio.put_nowait((full_speech.copy(),speech_active))
+                            except queue.Full:
+                                print("Tried making space but internal_queue_speech_audio still FULL")
+
+                        if not speech_active:
+                                # Clear speech buffers after sending final audio for transcription
+                                speech_buffer = []
+                                full_speech = []
+
+                     
+
                     transcription = {'transcription':"",'final_transcript':False}
                     try:
-                        transcription = internal_queue_transcription.get(block=False)#don't wait
+                        transcription = internal_queue_transcription.get_nowait()#don't block
                     except queue.Empty:
                         logging.debug("No data in Transcription")
 
@@ -677,14 +598,11 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
                     
                     # Put processed audio in output queue
                     try:
-                        audio_cortex_queue.put_nowait(processed_data)
+                        audio_cortex_queue.put_nowait(processed_data)#-This will drop frame if queue is full
                     except:
                         # Queue is full, try to remove oldest and add new
                         try:
-                            print("WARNING AUDIO FULL")
-                            #audio_cortex_data = audio_cortex_queue.get_nowait()
-                            #audio_cortex_data_update = audio_cortex_data | processed_data
-                            #audio_cortex_queue.put_nowait(audio_cortex_data_update)
+                            logging.debug("audio_cortex_queue FULL - Try and consume faster")
                         except:
                             pass
 
@@ -719,27 +637,145 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
                 pass
         print("Auditory cortex process stopped")
 
-def auditory_cortex_process_stt(speech_audio_data, speech_transcriber,final, internal_queue_transcription):
-    #generate transcript from speech audio    
-    transcription = speech_transcriber.transcribe(speech_audio_data)
-    print(f"Transcription: '{transcription}'")
-                                        
-    #don't indicate no active speaker here because we could be transcribing mid talking for real time transcription
-    transcript_data = {'transcription':transcription,
-                        'final_transcript':final}
-    # Put processed audio in output queue
-    try:
-        internal_queue_transcription.put(transcript_data, block=True, timeout=1)#wait one second
-    except:
-        # Queue is full, try to remove oldest and add new
-        try:
-            internal_queue_transcription.put(transcript_data, block=False)#Force Data in
-        except:
-            pass
-    finally:
-        # Clean up
-        gc.collect()
+def auditory_cortex_process_stt_thread(speech_transcriber, internal_queue_speech_audio, internal_queue_transcription):
+    """
+    This is a threaded worker that will process audio chunks known to have speech.
+    Uses LIFO - only processes the most recent audio data, skip and remove older data tasks from queue.
+    Uses sliding window approach to build up transcript incrementally.
+    """
+    def find_overlap_position(old_transcript, new_raw_transcript):
+        """
+        Find where the new raw transcript overlaps with the existing working transcript.
+        Returns the position in the working transcript where we should splice.
+        """
+        if not old_transcript or not new_raw_transcript:
+            return len(old_transcript)
+        
+        # Try to find the best overlap by comparing word sequences (case-insensitive)
+        old_words = old_transcript.lower().split()
+        new_words = new_raw_transcript.lower().split()
+        
+        best_overlap_pos = len(old_transcript)
+        max_overlap_len = 0
+        
+        # Look for overlapping sequences of words (using original case for position calculation)
+        original_old_words = old_transcript.split()
+        
+        for i in range(len(old_words)):
+            for j in range(min(len(old_words) - i, len(new_words))):
+                if old_words[i:i+j+1] == new_words[0:j+1]:
+                    if j + 1 > max_overlap_len:
+                        max_overlap_len = j + 1
+                        # Calculate character position in old transcript using original case
+                        best_overlap_pos = len(' '.join(original_old_words[:i]))
+                        if i > 0:  # Add space before if not at start
+                            best_overlap_pos += 1
+        
+        return best_overlap_pos
+
+    working_transcript = ""
+    total_audio_processed = 0  # Track total audio length processed
+    #16000 chunks @16hz = 1 second audio
+    min_chunk_size = 64000  # 4 seconds min before starting transcription for non final speech
+    overlap_samples = 6000  # overlap for splicing long speech transcriptions together
     
+    while True:
+        try:
+            # Hold all items from the queue
+            tasks = []
+
+            # Get first item (blocking)
+            task = internal_queue_speech_audio.get(timeout=1.0)
+            if task is None:  # Shutdown signal
+                break
+            tasks.append(task)
+
+            # Drain the rest of the queue (non-blocking) if there is additional data
+            while True:
+                try:
+                    task = internal_queue_speech_audio.get_nowait()
+                    if task is None:  # Shutdown signal
+                        break
+                    tasks.append(task)  # only appending so we can count how much was missed if any
+                except queue.Empty:
+                    break
+
+            # Only process the LAST (most recent) task
+            latest_task = tasks[-1]
+            # track how many frames we missed
+            items_skipped = len(tasks) - 1
+
+            if items_skipped > 0:
+                logging.debug(f"Skipped {items_skipped} older transcription tasks, processing most recent")
+
+            # Process only the most recent task
+            full_audio_data, more_speech_coming = latest_task
+            
+            # Process if we have enough data or if this is the final chunk
+            if len(full_audio_data) >= min_chunk_size or not more_speech_coming:
+                
+                #First chunk of a long speeking situation
+                if total_audio_processed == 0 and more_speech_coming:
+                    # First pass - process from beginning
+                    chunk_to_process = full_audio_data[:min_chunk_size + overlap_samples] if more_speech_coming else full_audio_data
+
+                #continued speaking of long speaking or final speaking of long speeking
+                elif total_audio_processed > 0:
+                    # Subsequent passes - start from overlap point to include word boundaries
+                    start_pos = max(0, total_audio_processed - overlap_samples)
+                    chunk_to_process = full_audio_data[start_pos:]
+
+                #Less than min_chunk_size input, final response    
+                elif total_audio_processed == 0 and not more_speech_coming:
+                    chunk_to_process = full_audio_data
+
+                # Transcribe the audio chunk
+                raw_transcription = speech_transcriber.transcribe(chunk_to_process)
+                
+                # Update working transcript
+                if working_transcript != "":
+                    # Find where this new transcription overlaps with existing
+                    overlap_pos = find_overlap_position(working_transcript, raw_transcription)
+                    
+                    # Merge transcripts
+                    if overlap_pos < len(working_transcript):
+                        working_transcript = working_transcript[:overlap_pos] + " " + raw_transcription
+                    else:
+                        working_transcript = working_transcript + " " + raw_transcription
+                    
+                    working_transcript = working_transcript.strip()
+                # First transcription
+                else:    
+                    working_transcript = raw_transcription
+                
+                # Update total processed for next iteration (only if more speech coming)
+                if more_speech_coming:
+                    total_audio_processed = len(full_audio_data) - overlap_samples
+                
+                # Prepare transcript data
+                transcript_data = {
+                    'transcription': working_transcript,
+                    'final_transcript': not more_speech_coming
+                }
+                
+                # Reset buffers if this was final
+                if not more_speech_coming:
+                    working_transcript = ""
+                    total_audio_processed = 0
+
+                # Send transcription result
+                try:
+                    internal_queue_transcription.put_nowait(transcript_data)
+                except queue.Full:
+                    logging.debug("internal_queue_transcription FULL - consume faster")
+
+        except queue.Empty:
+            continue
+        except Exception as e:
+            logging.error(f"Transcription worker error: {e}")
+        finally:
+            # Clean up
+            gc.collect()
 
 """
 HTML Interface - UPDATED with visual scene display functionality
@@ -1414,7 +1450,7 @@ def start_audio_device(device_index):
             'message': f'Auditory nerve {device_index} is already running'
         })
     
-    # Start auditory nerve process for this device
+    # Start auditory nerve process for this device. This will capture and supply raw audio data to audio_nerve_queue
     auditory_nerve_process = mp.Process(
         target=auditory_nerve_worker,
         args=(device_index, audio_nerve_queue, stats_dict)
@@ -1422,7 +1458,8 @@ def start_audio_device(device_index):
     auditory_nerve_process.start()
     auditory_nerve_processes[device_index] = auditory_nerve_process
     
-    # Start auditory cortex if not already running
+    # Start auditory cortex if not already running, will read from audio_nerve_queue and provide analysis to audio_cortex_queue.
+    #Single instance shared by all nerves
     if not auditory_cortex_processes:
         auditory_cortex_process = mp.Process(
             target=auditory_cortex_worker,
@@ -1478,7 +1515,7 @@ def audio_scenes():
     while True:
         #get all of the audio data frames from the audio cortex
         try:
-            current_scene = audio_cortex_queue.get_nowait()
+            current_scene = audio_cortex_queue.get_nowait()#get no wait to drain the queue
             # Only add to history if we have a valid transcription
             if (current_scene.get('transcription', "").strip() != ""):
                 
