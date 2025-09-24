@@ -37,7 +37,7 @@ auditory_cortex_processes = {}
 #=====================================
 
 # Global VLM (moondream) analysis state
-VLM_availible = False
+VLM_availible = True
 VLM_thread = None
 
 #Audio Analyis reference
@@ -138,7 +138,7 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
         while True:
             try:
                 # Sync local VLM busy state with global state
-                VLM_availible_local = stats_dict.get('VLM_availible', False)
+                VLM_availible_local = stats_dict.get('VLM_availible', True)
                 
                 # Get the most recent frame by draining the queue
                 frame_data = None
@@ -381,7 +381,7 @@ def generate_img_frames(camera_index=None):
 """
 AUDIO
 """
-def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict,sample_rate=16000, chunk_size=512):
+def auditory_nerve_connection(device_index, audio_nerve_queue, stats_dict,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
     Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.
     """
@@ -442,8 +442,9 @@ def auditory_nerve_worker(device_index, audio_nerve_queue, stats_dict,sample_rat
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
 
-def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
-    """Worker process for processing audio frames (auditory cortex function)
+def auditory_cortex(audio_nerve_queue, audio_cortex_queue, stats_dict,audio_cortex_internal_queue_speech_audio,audio_cortex_internal_queue_transcription):
+    """
+    Worker process for processing audio frames (auditory cortex function)
     Optimized for real-time streaming with VADIterator and minimal buffering.
     Now includes speech-to-text transcription.
     """
@@ -456,14 +457,7 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
     speech_active = False
     speech_buffer = []
     full_speech = [] #holds numpy array of speech data
-    min_silence_duration_ms = 500  # Minimum silence to end speech, 1000 = 1 second
-    import queue
-
-
-    # internal queue to hold speech audio that needs transcription
-    internal_queue_speech_audio = queue.Queue(maxsize=100) 
-    # Internal queue to hold stt results (transcriptions)
-    internal_queue_transcription = queue.Queue(maxsize=5)
+    min_silence_duration_ms = 1000  # Minimum silence to end speech, 1000 = 1 second
     
     # Initialize Silero VAD with VADIterator for streaming
     try:
@@ -490,15 +484,6 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
         
     except Exception as e:
         print(f"Error loading Silero VAD: {e}")
-        return
-    
-    try:
-        speech_to_text_thread = threading.Thread(target=auditory_cortex_process_stt_thread, 
-                                                args=(internal_queue_speech_audio,internal_queue_transcription),
-                                                 daemon = True)
-        speech_to_text_thread.start()
-    except Exception as e:
-        logging.debug(f"Error starting speech to text worker thread: {e}")
         return
     
     try:
@@ -547,18 +532,18 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
                         full_speech = np.concatenate(speech_buffer)
                         try :
                             #when speech_active is False, that will indicate it's our final chunk with speech audio
-                            internal_queue_speech_audio.put_nowait((full_speech.copy(),speech_active))
+                            audio_cortex_internal_queue_speech_audio.put_nowait((full_speech.copy(),speech_active))
                         except queue.Full:
                             print("internal_queue_speech_audio FULL - will clear queue and put data.")
                             try :
                                 # Drain the queue
                                 while True:
                                     try:
-                                        trash = internal_queue_speech_audio.get_nowait()
+                                        trash = audio_cortex_internal_queue_speech_audio.get_nowait()
                                     except queue.Empty:
                                         break
-                                #return to putting out data
-                                internal_queue_speech_audio.put_nowait((full_speech.copy(),speech_active))
+                                #try again to put our data in
+                                audio_cortex_internal_queue_speech_audio.put_nowait((full_speech.copy(),speech_active))
                             except queue.Full:
                                 print("Tried making space but internal_queue_speech_audio still FULL")
 
@@ -571,7 +556,7 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
 
                     transcription = {'transcription':"",'final_transcript':False}
                     try:
-                        transcription = internal_queue_transcription.get_nowait()#don't block
+                        transcription = audio_cortex_internal_queue_transcription.get_nowait()#don't block
                     except queue.Empty:
                         logging.debug("No data in Transcription")
 
@@ -615,26 +600,24 @@ def auditory_cortex_worker(audio_nerve_queue, audio_cortex_queue, stats_dict):
     except KeyboardInterrupt:
         pass
     finally:
-        # Clean up speech transcriber
-        if speech_transcriber:
             try:
-                del speech_transcriber.model
-                del speech_transcriber.processor
-                del speech_transcriber
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             except:
                 pass
-        print("Auditory cortex process stopped")
+            print("Auditory cortex process stopped")
 
-def auditory_cortex_process_stt_thread(internal_queue_speech_audio, internal_queue_transcription):
+def auditory_cortex_worker_stt(internal_queue_speech_audio, internal_queue_transcription):
     """
-    This is a threaded worker that will process audio chunks known to have speech.
+    This is a multiprocess worker that will process audio chunks known to have speech.
     Uses LIFO - only processes the most recent audio data, skip and remove older data tasks from queue.
     Uses sliding window approach to build up transcript incrementally.
     """
     from stt import SpeechTranscriber
+    import logging
+    import queue
+    import gc
     
     # Initialize Speech Transcriber
     try:
@@ -643,36 +626,31 @@ def auditory_cortex_process_stt_thread(internal_queue_speech_audio, internal_que
     except Exception as e:
         print(f"Failed to load speech transcriber: {e}")
         speech_transcriber = None
+        return
 
     def find_overlap_position(old_transcript, new_raw_transcript):
         """
         Find where the new raw transcript overlaps with the existing working transcript.
         Returns the position in the working transcript where we should splice.
-        Only searches within the last ~5 seconds of speech (roughly 50-75 characters).
-        If no good overlap found, falls back to simple append or word-boundary fallback.
         """
         if not old_transcript or not new_raw_transcript:
             return len(old_transcript)
         
-        # Limit search to last ~5 seconds of speech (approximately 50-75 characters)
-        # Average speaking rate is ~150 words/min = 2.5 words/sec = ~12-15 chars/sec
+        # Limit search to last ~100 characters for efficiency
         max_lookback_chars = 100
         search_start_pos = max(0, len(old_transcript) - max_lookback_chars)
         search_portion = old_transcript[search_start_pos:]
         
-        # Try to find the best overlap by comparing word sequences (case-insensitive)
         old_words = search_portion.lower().split()
         new_words = new_raw_transcript.lower().split()
         
         best_overlap_pos = len(old_transcript)  # Default: append to end
         max_overlap_len = 0
         
-        # Look for overlapping sequences of words within the limited search area
         original_old_words = search_portion.split()
         
-        # Search backwards from the end of the limited portion
+        # Search backwards from the end
         for i in range(len(old_words) - 1, -1, -1):
-            # Check how many consecutive words match from position i
             match_length = 0
             for j in range(min(len(old_words) - i, len(new_words))):
                 if old_words[i + j] == new_words[j]:
@@ -680,141 +658,198 @@ def auditory_cortex_process_stt_thread(internal_queue_speech_audio, internal_que
                 else:
                     break
             
-            # Only consider matches of at least 2 words to avoid false positives
             if match_length >= 2 and match_length > max_overlap_len:
                 max_overlap_len = match_length
-                # Calculate absolute position in the full transcript
                 chars_before_match = len(' '.join(original_old_words[:i]))
-                if i > 0:  # Add space before if not at start of search portion
+                if i > 0:
                     chars_before_match += 1
                 best_overlap_pos = search_start_pos + chars_before_match
-                break  # Take the first (most recent) good match
+                break
         
-        # Fallback: if no good overlap found, try to find a reasonable word boundary
-        if max_overlap_len < 2:
-            # Look for the first word of new_raw_transcript in the last few words
-            new_first_word = new_words[0] if new_words else ""
-            if new_first_word:
-                # Check last 10 words for a single word match
-                last_words = old_words[-10:] if len(old_words) > 10 else old_words
-                for i in range(len(last_words) - 1, -1, -1):
-                    if last_words[i] == new_first_word:
-                        # Found single word match - use it as splice point
-                        words_from_end = len(last_words) - i
-                        total_old_words = len(old_transcript.split())
-                        splice_word_index = total_old_words - words_from_end
-                        
-                        original_words = old_transcript.split()
-                        best_overlap_pos = len(' '.join(original_words[:splice_word_index]))
-                        if splice_word_index > 0:
-                            best_overlap_pos += 1
-                        break
+        # Fallback for single word match if no good overlap found
+        if max_overlap_len < 2 and new_words:
+            new_first_word = new_words[0]
+            last_words = old_words[-10:] if len(old_words) > 10 else old_words
+            for i in range(len(last_words) - 1, -1, -1):
+                if last_words[i] == new_first_word:
+                    words_from_end = len(last_words) - i
+                    total_old_words = len(old_transcript.split())
+                    splice_word_index = total_old_words - words_from_end
+                    original_words = old_transcript.split()
+                    best_overlap_pos = len(' '.join(original_words[:splice_word_index]))
+                    if splice_word_index > 0:
+                        best_overlap_pos += 1
+                    break
         
         return best_overlap_pos
 
+    # State tracking
     working_transcript = ""
-    total_audio_processed = 0  # Track total audio length processed
-    #16000 chunks @16hz = 1 second audio
-    min_chunk_size = 64000  # 4 seconds min before starting transcription for non final speech
-    overlap_samples = 6000  # overlap for splicing long speech transcriptions together
+    last_processed_length = 0  # Track how much of the current speech we've processed
+    current_speech_id = 0  # Track speech session changes
+    
+    # Parameters (at 16kHz sample rate)
+    min_chunk_size = 80000  # 5 seconds minimum before starting transcription
+    overlap_samples = 16000  # 1 second overlap for word boundary detection
+    incremental_threshold = 48000  # 3 seconds of new audio before processing again
     
     while True:
         try:
-            # Hold all items from the queue
-            tasks = []
-
+            # LIFO Implementation: Get most recent data
+            latest_task = None
+            items_skipped = 0
+            
             # Get first item (blocking)
-            task = internal_queue_speech_audio.get(timeout=1.0)
-            if task is None:  # Shutdown signal
+            try:
+                latest_task = internal_queue_speech_audio.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            
+            if latest_task is None:  # Shutdown signal
                 break
-            tasks.append(task)
-
-            # Drain the rest of the queue (non-blocking) if there is additional data
+            
+            # Drain queue to get the most recent item (LIFO behavior)
             while True:
                 try:
-                    task = internal_queue_speech_audio.get_nowait()
-                    if task is None:  # Shutdown signal
+                    newer_task = internal_queue_speech_audio.get_nowait()
+                    if newer_task is None:
                         break
-                    tasks.append(task)  # only appending so we can count how much was missed if any
+                    latest_task = newer_task
+                    items_skipped += 1
                 except queue.Empty:
                     break
-
-            # Only process the LAST (most recent) task
-            latest_task = tasks[-1]
-            # track how many frames we missed
-            items_skipped = len(tasks) - 1
-
-            if items_skipped > 0:
-                logging.debug(f"Skipped {items_skipped} older transcription tasks, processing most recent")
-
-            # Process only the most recent task
-            full_audio_data, more_speech_coming = latest_task
             
-            # Process if we have enough data or if this is the final chunk
-            if len(full_audio_data) >= min_chunk_size or not more_speech_coming:
-                
-                #First chunk of a long speeking situation
-                if total_audio_processed == 0 and more_speech_coming:
-                    # First pass - process from beginning
-                    chunk_to_process = full_audio_data[:min_chunk_size + overlap_samples] if more_speech_coming else full_audio_data
-
-                #continued speaking of long speaking or final speaking of long speeking
-                elif (len(full_audio_data) - total_audio_processed) >= overlap_samples or not more_speech_coming:
-                    # Subsequent passes - start from overlap point to include word boundaries
-                    start_pos = max(0, total_audio_processed - overlap_samples)
-                    chunk_to_process = full_audio_data[start_pos:]
-
-                #Less than min_chunk_size input, final response    
-                elif total_audio_processed == 0 and not more_speech_coming:
+            if items_skipped > 0:
+                logging.debug(f"Skipped {items_skipped} older audio chunks (LIFO mode)")
+            
+            # Unpack the latest task
+            full_audio_data, more_speech_coming = latest_task
+            current_audio_length = len(full_audio_data)
+            
+            logging.debug(f"Audio length: {current_audio_length}, More coming: {more_speech_coming}, Last processed: {last_processed_length}")
+            
+            # Determine if we should process
+            should_process = False
+            chunk_to_process = None
+            
+            # Case 1: Final chunk (speech ended)
+            if not more_speech_coming:
+                should_process = True
+                if last_processed_length == 0:
+                    # Short utterance - process everything
                     chunk_to_process = full_audio_data
-
-                # Transcribe the audio chunk
-                raw_transcription = speech_transcriber.transcribe(chunk_to_process)
+                    logging.debug("Processing final chunk (short utterance)")
+                else:
+                    # Long utterance ending - process remaining unprocessed audio with overlap
+                    start_pos = max(0, last_processed_length - overlap_samples)
+                    chunk_to_process = full_audio_data[start_pos:]
+                    logging.debug(f"Processing final chunk (long utterance) from {start_pos}")
                 
-                # Update working transcript
-                if working_transcript != "":
-                    # Find where this new transcription overlaps with existing
-                    overlap_pos = find_overlap_position(working_transcript, raw_transcription)
+                # Reset for next speech session
+                last_processed_length = 0
+                
+            # Case 2: Ongoing speech - check if we have enough new audio
+            elif current_audio_length >= min_chunk_size:
+                new_audio_length = current_audio_length - last_processed_length
+                
+                # First chunk of long speech
+                if last_processed_length == 0:
+                    should_process = True
+                    chunk_to_process = full_audio_data
+                    last_processed_length = current_audio_length
+                    logging.debug(f"Processing first chunk of long speech: {current_audio_length} samples")
                     
-                    # Merge transcripts
-                    if overlap_pos < len(working_transcript):
-                        working_transcript = working_transcript[:overlap_pos] + " " + raw_transcription
-                    else:
-                        working_transcript = working_transcript + " " + raw_transcription
-                    
-                    working_transcript = working_transcript.strip()
-                # First transcription
-                else:    
-                    working_transcript = raw_transcription
-                
-                # Update total processed for next iteration (only if more speech coming)
-                if more_speech_coming:
-                    total_audio_processed = len(full_audio_data) - overlap_samples
-                
-                # Prepare transcript data
-                transcript_data = {
-                    'transcription': working_transcript,
-                    'final_transcript': not more_speech_coming
-                }
-                
-                # Reset buffers if this was final
-                if not more_speech_coming:
-                    working_transcript = ""
-                    total_audio_processed = 0
-
-                # Send transcription result
+                # Incremental processing for long speech
+                elif new_audio_length >= incremental_threshold:
+                    should_process = True
+                    # Process from overlap point to get better word boundaries
+                    start_pos = max(0, last_processed_length - overlap_samples)
+                    chunk_to_process = full_audio_data[start_pos:]
+                    last_processed_length = current_audio_length
+                    logging.debug(f"Processing incremental chunk from {start_pos}, new audio: {new_audio_length}")
+                else:
+                    logging.debug(f"Waiting for more audio: {new_audio_length} < {incremental_threshold}")
+            else:
+                logging.debug(f"Not enough audio yet: {current_audio_length} < {min_chunk_size}")
+            
+            # Process the audio if we should
+            if should_process and chunk_to_process is not None and len(chunk_to_process) > 0:
                 try:
-                    internal_queue_transcription.put_nowait(transcript_data)
-                except queue.Full:
-                    logging.debug("internal_queue_transcription FULL - consume faster")
-
-        except queue.Empty:
-            continue
+                    # Transcribe the audio chunk
+                    raw_transcription = speech_transcriber.transcribe(chunk_to_process)
+                    
+                    # Update working transcript
+                    if working_transcript and more_speech_coming:
+                        # Find overlap and merge for ongoing speech
+                        overlap_pos = find_overlap_position(working_transcript, raw_transcription)
+                        
+                        if overlap_pos < len(working_transcript):
+                            working_transcript = working_transcript[:overlap_pos] + " " + raw_transcription
+                        else:
+                            working_transcript = working_transcript + " " + raw_transcription
+                        
+                        working_transcript = working_transcript.strip()
+                    else:
+                        # First transcription or final independent chunk
+                        if not more_speech_coming and working_transcript:
+                            # Final chunk of long speech - merge
+                            overlap_pos = find_overlap_position(working_transcript, raw_transcription)
+                            if overlap_pos < len(working_transcript):
+                                working_transcript = working_transcript[:overlap_pos] + " " + raw_transcription
+                            else:
+                                working_transcript = working_transcript + " " + raw_transcription
+                            working_transcript = working_transcript.strip()
+                        else:
+                            # New transcription
+                            working_transcript = raw_transcription
+                    
+                    # Prepare and send transcript data
+                    transcript_data = {
+                        'transcription': working_transcript,
+                        'final_transcript': not more_speech_coming
+                    }
+                    
+                    # Clear the transcription queue before putting new data (LIFO behavior)
+                    while True:
+                        try:
+                            _ = internal_queue_transcription.get_nowait()
+                            logging.debug("Cleared old transcription from queue")
+                        except queue.Empty:
+                            break
+                    
+                    # Send the latest transcription
+                    try:
+                        internal_queue_transcription.put_nowait(transcript_data)
+                        logging.debug(f"Sent {'final' if not more_speech_coming else 'interim'} transcript: {len(working_transcript)} chars")
+                    except queue.Full:
+                        logging.error("Transcription queue still full after clearing!")
+                    
+                    # Reset working transcript if this was final
+                    if not more_speech_coming:
+                        working_transcript = ""
+                        logging.debug("Reset working transcript for next speech session")
+                        
+                except Exception as e:
+                    logging.error(f"Transcription error: {e}")
+                    # Reset on error to avoid getting stuck
+                    if not more_speech_coming:
+                        working_transcript = ""
+                        last_processed_length = 0
+            
         except Exception as e:
-            logging.error(f"Transcription worker error: {e}")
+            logging.error(f"STT worker error: {e}")
+            # Reset state on error
+            working_transcript = ""
+            last_processed_length = 0
+        
         finally:
             # Clean up
             gc.collect()
+
+
+"""
+TEMPORAL LOBE
+"""
 
 """
 HTML Interface - UPDATED with visual scene display functionality
@@ -1437,6 +1472,8 @@ def start_camera(camera_index):
         )
         visual_cortex_process.start()
         visual_cortex_processes['main'] = visual_cortex_process
+
+        
     
     return jsonify({
         'status': 'started', 
@@ -1490,23 +1527,33 @@ def start_audio_device(device_index):
             'message': f'Auditory nerve {device_index} is already running'
         })
     
-    # Start auditory nerve process for this device. This will capture and supply raw audio data to audio_nerve_queue
+    #Start auditory nerve process for this device. This will capture and supply raw audio data to audio_nerve_queue
     auditory_nerve_process = mp.Process(
-        target=auditory_nerve_worker,
+        target=auditory_nerve_connection,
         args=(device_index, audio_nerve_queue, stats_dict)
     )
     auditory_nerve_process.start()
     auditory_nerve_processes[device_index] = auditory_nerve_process
     
-    # Start auditory cortex if not already running, will read from audio_nerve_queue and provide analysis to audio_cortex_queue.
+    #Start auditory cortex if not already running, will read from audio_nerve_queue and provide analysis to audio_cortex_queue.
     #Single instance shared by all nerves
     if not auditory_cortex_processes:
+        #Primary
         auditory_cortex_process = mp.Process(
-            target=auditory_cortex_worker,
-            args=(audio_nerve_queue, audio_cortex_queue, stats_dict)
+            target=auditory_cortex,
+            args=(audio_nerve_queue, audio_cortex_queue, stats_dict,audio_cortex_internal_queue_speech_audio,audio_cortex_internal_queue_transcription)
         )
         auditory_cortex_process.start()
         auditory_cortex_processes['main'] = auditory_cortex_process
+
+        #Specific speech to text process
+        stt_worker = mp.Process(
+            target=auditory_cortex_worker_stt,
+            args=(audio_cortex_internal_queue_speech_audio,audio_cortex_internal_queue_transcription)
+        )
+        stt_worker.start()
+        auditory_cortex_processes['stt'] = stt_worker
+
     
     return jsonify({
         'status': 'started', 
@@ -1601,6 +1648,10 @@ if __name__ == '__main__':
     #Audio queues
     audio_nerve_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     audio_cortex_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    # internally used by Audio Cortex to hold speech audio that needs transcription
+    audio_cortex_internal_queue_speech_audio = manager.Queue(maxsize=100)  #100 chunks of 32ms = ~3200ms (3.2 second) buffer
+    # internally used by Audio Cortex to hold speech to text results (transcriptions)
+    audio_cortex_internal_queue_transcription = manager.Queue(maxsize=5)
      
     stats_dict = manager.dict()
 
