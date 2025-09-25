@@ -34,11 +34,10 @@ visual_cortex_processes = {}
 # Audio process tracking
 auditory_nerve_processes = {}
 auditory_cortex_processes = {}
+#Temporal Lobe
+temporal_lobe_processes = {}
 #=====================================
 
-# Global VLM (moondream) analysis state
-VLM_availible = True
-VLM_thread = None
 
 #Audio Analyis reference
 AUDIO_SCENE = {'device_index': None,
@@ -116,7 +115,7 @@ def optic_nerve_worker(camera_index, optic_nerve_queue, stats_dict, fps_target):
         cap.release()
         print(f"Optic nerve process for camera {camera_index} stopped")
 
-def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, visual_scene_queue):
+def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, visual_cortex_queue_img_display,visual_cortex_internal_queue_vlm):
     """Worker process for processing image frames from all cameras (visual cortex function)
     LIFO - will always process the most recent frame in the queue, dropping older frames.
     If person is detected a more detailed VLM is run in a thread. """
@@ -137,9 +136,6 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
     try:
         while True:
             try:
-                # Sync local VLM busy state with global state
-                VLM_availible_local = stats_dict.get('VLM_availible', True)
-                
                 # Get the most recent frame by draining the queue
                 frame_data = None
                 frames_discarded = 0
@@ -156,7 +152,7 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
                 if frame_data is not None:
                     frames_discarded -= 1  # Don't count the frame we're actually processing
                     if frames_discarded > 0:
-                        print(f"Visual cortex: Discarded {frames_discarded} older frames, processing most recent")
+                        logging.debug(f"Visual cortex: Discarded {frames_discarded} older frames, processing most recent")
                     
                     # Process the frame
                     processed_frame, person_detected = visual_cortex_process_img(frame_data['frame'], 
@@ -166,42 +162,72 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
                     
                     # If person detected and VLM not busy, start async analysis
                     if person_detected and VLM_availible_local:
-                        print(f"Starting VLM analysis - person detected and VLM not busy")
+                        logging.debug(f"Starting VLM analysis - person detected and VLM not busy")
                         
                         # Set busy states
                         VLM_availible_local = False
-                        stats_dict['VLM_availible'] = False
+                        stats_dict['VLM_availible'] = VLM_availible_local
 
+                        """
+                        Why Threading not Multiprocessing
+                        Although MP would be faster, it leaves the VLM loaded in the GPU. Using threading so that we can more easily 
+                        repurpose gpu memeory as needed. The VLM uses a lot of GPU space ~4GB.  
+                        This is different than the Audio cortex speech to text since that is a much smaller model
+                        """
                         # Start VLM Moondream analysis in separate thread
                         VLM_thread = threading.Thread(
                             target=visual_cortex_process_vlm_analysis_thread,
                             args=(frame_data['frame'], frame_data['camera_index'], 
-                                frame_data['capture_timestamp'], visual_scene_queue, stats_dict),
+                                frame_data['capture_timestamp'], visual_cortex_internal_queue_vlm),
                                 daemon = True
                             )  
 
                         VLM_thread.start()
 
-                    elif person_detected and not VLM_availible_local:
-                        print(f"Person detected but VLM busy - skipping analysis")
                     
                     # Create processed frame data
                     process_timestamp = time.time()
+                    vlm_data = {
+                            'vlm_ready':VLM_availible_local,
+                            'camera_index': frame_data['camera_index'],
+                            'timestamp': process_timestamp,
+                            'caption': None,
+                            'analysis_time': process_timestamp,
+                            'formatted_time': datetime.fromtimestamp(process_timestamp).strftime('%H:%M:%S')
+                        }
+                    try:
+                        vlm_data = visual_cortex_internal_queue_vlm.get_nowait()#don't block
+                    except queue.Empty:
+                        logging.debug("No data in vlm")
+
+                    #Update our VLM Ready flag
+                    VLM_availible_local = vlm_data['vlm_ready']
+
                     processed_data = {
                         'camera_index': frame_data['camera_index'],
-                        'frame': processed_frame,
+                        'formatted_time': datetime.fromtimestamp(process_timestamp).strftime('%H:%M:%S'),
+                        'person_detected':person_detected,
+                        'frame':processed_frame,  
                         'capture_timestamp': frame_data['capture_timestamp'],
-                        'visual_cortex_timestamp': process_timestamp
+                        'visual_cortex_timestamp': process_timestamp,
+                        'vlm':vlm_data
                     }
+                    
+                    #Queue used for the GUI
+                    try:
+                        visual_cortex_queue_img_display.put_nowait(processed_data.copy())
+                    except:
+                        print("\ncan't put data on visual_cortex_queue_img_display\n")
+                        pass
                     
                     # Put processed frame in output queue
                     try:
-                        visual_cortex_queue.put_nowait(processed_data)
+                        visual_cortex_queue.put_nowait(processed_data.copy())
                     except:
                         # Queue is full, try to remove oldest and add new
                         try:
                             visual_cortex_queue.get_nowait()
-                            visual_cortex_queue.put_nowait(processed_data)
+                            visual_cortex_queue.put_nowait(processed_data.copy())
                         except:
                             pass
                     
@@ -217,6 +243,9 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
                     
             except queue.Empty:
                 continue
+        
+            #slow the loop a bit to help CPU
+            time.sleep(0.001)
                 
     except KeyboardInterrupt:
         pass
@@ -239,7 +268,7 @@ def visual_cortex_process_img(frame, camera_index, timestamp, IMG_DETECTION_CNN)
         if class_name.lower() == 'person':  # Only print person detections
             person_detected = True
             box_rounded = [round(i, 2) for i in box.tolist()]
-            print(f"Detected {class_name} with confidence {round(score.item(), 3)} at location {box_rounded}")
+            logging.debug(f"Detected {class_name} with confidence {round(score.item(), 3)} at location {box_rounded}")
 
     # Draw annotations (filter for person only)
     frame = IMG_DETECTION_CNN.draw_detections(frame, results, filter_person_only=True)
@@ -248,11 +277,11 @@ def visual_cortex_process_img(frame, camera_index, timestamp, IMG_DETECTION_CNN)
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()  # Force GPU memory cleanup
-        print(f"GPU memory after cleanup: {torch.cuda.memory_allocated()/1024**2:.1f}MB")
+        logging.debug(f"GPU memory after cleanup: {torch.cuda.memory_allocated()/1024**2:.1f}MB")
 
     return frame, person_detected
 
-def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, visual_scene_queue, stats_dict):
+def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, visual_cortex_internal_queue_vlm):
     """Thread function to run VLM (Moondream) analysis without blocking main processing"""
     # Import and initialize VLM Moondream (done in thread to avoid blocking memory if it stays loaded)
     from moondream_ import MoondreamWrapper
@@ -275,11 +304,27 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
             stats_dict['VLM_availible'] = True
             return
         time.sleep(0.1)  # Check every 100ms
-        
+    
+    #push empty data to queue to indicate VLM is about to go to work 
+    visual_scene_data = {
+            'vlm_ready':False,
+            'camera_index': camera_index,
+            'timestamp': timestamp,
+            'caption': None,
+            'analysis_time': time.time(),
+            'formatted_time': datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
+        }
+    
     try:
-        print(f"Starting VLM (moondream) analysis for camera {camera_index}")
+        visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
+    except:
+        # Queue full, don't bother
+        logging.error(f"visual_cortex_internal_queue_vlm FULL, skipping blank data")
+
+    try:
+        logging.debug(f"Starting VLM (moondream) analysis for camera {camera_index}")
         if torch.cuda.is_available():
-            print(f"GPU memory available: {available_memory:.1f}MB")
+            logging.debug(f"GPU memory available: {available_memory:.1f}MB")
         
         # Convert to PIL Image
         pil_frame = Image.fromarray(frame_rgb)
@@ -289,6 +334,7 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
         
         # Add to visual scene queue
         visual_scene_data = {
+            'vlm_ready':True,
             'camera_index': camera_index,
             'timestamp': timestamp,
             'caption': caption,
@@ -296,24 +342,14 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
             'formatted_time': datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
         }
         
-        try:
-            visual_scene_queue.put_nowait(visual_scene_data)
-            print(f"Added VLM analysis to queue: {caption}")
-        except:
-            # Queue full, remove oldest and add new
-            try:
-                visual_scene_queue.get_nowait()
-                visual_scene_queue.put_nowait(visual_scene_data)
-                print(f"Queue full, replaced oldest analysis: {caption}")
-            except:
-                print(f"Failed to add analysis to queue: {caption}")
         
-        print(f"VLM analysis complete: {caption}")
         
     except Exception as e:
         print(f"VLM analysis error: {e}")
         import traceback
         traceback.print_exc()
+
+        
     finally:
         # Clean up and ensure VLM_availible is reset
         try:
@@ -323,21 +359,35 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()  # Force GPU memory cleanup
                 print(f"GPU memory after cleanup: {torch.cuda.memory_allocated()/1024**2:.1f}MB")
-        except:
-            pass
+            
+            #Send Update
+            try:
+                visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
+                print(f"Added VLM analysis to queue: {caption}")
+            except:
+                # Queue full, remove oldest and add new. Here it is important to put our analysis
+                try:
+                    visual_cortex_internal_queue_vlm.get_nowait()
+                    visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
+                    print(f"Queue full, replaced oldest analysis: {caption}")
+                except:
+                    print(f"Failed to add analysis to queue: {caption}")
+            
+            print(f"VLM analysis complete: {caption}")
 
-        stats_dict['VLM_availible'] = True
-        print(f"VLM analysis thread finished for camera {camera_index}")
+        except:
+            print(f"VLM analysis thread error for camera {camera_index}")
+            pass
 
 def generate_img_frames(camera_index=None):
     """Generator function for video streaming from specific camera or all cameras"""
     frame_count = 0
     start_time = time.time()
-    
+    global visual_cortex_queue_img_display
     while True:
         try:
             # Get processed frame (blocking with timeout)
-            frame_data = visual_cortex_queue.get(timeout=1.0)
+            frame_data = visual_cortex_queue_img_display.get(timeout=1)
             
             # Filter by camera index if specified
             if camera_index is not None and frame_data['camera_index'] != camera_index:
@@ -377,6 +427,7 @@ def generate_img_frames(camera_index=None):
                 frame_bytes = buffer.tobytes()
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
 
 """
 AUDIO
@@ -451,7 +502,7 @@ def auditory_cortex(audio_nerve_queue, audio_cortex_queue, stats_dict,audio_cort
     print("Started auditory cortex process")
     frame_count = 0
     start_time = time.time()
-    process_timestamp = time.time()
+
     # Pre-roll buffer for capturing speech beginnings (audio right before the speech was detected)
     pre_speech_buffer = deque(maxlen=10)  # ~10 chunks of 32ms = ~320ms buffer
     speech_active = False
@@ -559,7 +610,8 @@ def auditory_cortex(audio_nerve_queue, audio_cortex_queue, stats_dict,audio_cort
                         transcription = audio_cortex_internal_queue_transcription.get_nowait()#don't block
                     except queue.Empty:
                         logging.debug("No data in Transcription")
-
+                    
+                    process_timestamp = time.time()
                     #Update The Audio Cortex Output Queue
                     processed_data = {'device_index': audio_data['device_index'],
                             'audio_data': full_speech,
@@ -576,7 +628,6 @@ def auditory_cortex(audio_nerve_queue, audio_cortex_queue, stats_dict,audio_cort
                     try:
                         audio_cortex_queue.put_nowait(processed_data)#-This will drop frame if queue is full
                     except:
-                        # Queue is full, try to remove oldest and add new
                         try:
                             logging.debug("audio_cortex_queue FULL - Try and consume faster")
                         except:
@@ -818,6 +869,7 @@ def auditory_cortex_worker_stt(internal_queue_speech_audio, internal_queue_trans
                             break
                     
                     # Send the latest transcription
+                    print(transcript_data)
                     try:
                         internal_queue_transcription.put_nowait(transcript_data)
                         logging.debug(f"Sent {'final' if not more_speech_coming else 'interim'} transcript: {len(working_transcript)} chars")
@@ -850,6 +902,189 @@ def auditory_cortex_worker_stt(internal_queue_speech_audio, internal_queue_trans
 """
 TEMPORAL LOBE
 """
+def temporal_lobe(audio_cortex_queue, visual_cortex_queue, temporal_lobe_queue):
+    """
+    Gets Data from the audio and visual cortex and puts on the temporal_lobe_queue for digestion
+    """
+    process_timestamp = time.time()
+    temporal_lobe_data_template = {
+        'formatted_time': datetime.fromtimestamp(process_timestamp).strftime('%H:%M:%S'),
+        'temporal_lobe_timestamp': process_timestamp,
+        'audio': {
+            'device_index': None,
+            'audio_data': None,
+            'speech_detected': None,
+            'final_transcript': None,
+            'transcription': None,
+            'capture_timestamp': None,
+            'formatted_time': None,
+            'auditory_cortex_timestamp': None,
+            'sample_rate': None,
+            'duration': None
+        },
+        'visual': {
+            'camera_index': None,
+            'timestamp': None,
+            'person_detected': None,
+            'analysis_time': None,
+            'formatted_time': None,
+            'vlm': {
+                'vlm_ready': True,
+                'camera_index': None,
+                'timestamp': process_timestamp,
+                'caption': None,
+                'analysis_time': process_timestamp,
+                'formatted_time': datetime.fromtimestamp(process_timestamp).strftime('%H:%M:%S')
+            }
+        }
+    }
+    
+    while True:
+        tl_timestamp = time.time()
+        
+        try:
+            # Get latest audio data (LIFO Implementation)
+            latest_audio_cortex_data = temporal_lobe_data_template['audio'].copy()
+            audio_cortex_items_skipped = 0
+            
+            try:
+                latest_audio_cortex_data = audio_cortex_queue.get(timeout=0.1)  # Shorter timeout
+                
+                # Drain queue to get the most recent item (LIFO behavior)
+                while True:
+                    try:
+                        newer_task = audio_cortex_queue.get_nowait()
+                        if newer_task is None:
+                            break
+                        latest_audio_cortex_data = newer_task
+                        audio_cortex_items_skipped += 1
+                    except queue.Empty:
+                        break
+                        
+                #print(f"Temporal Lobe: Got audio data, skipped {audio_cortex_items_skipped} items")
+                
+            except queue.Empty:
+                #print("Temporal Lobe: audio_cortex_queue EMPTY")
+                # Don't continue - process with None audio data
+                pass
+            
+            # Get latest visual data (LIFO Implementation) 
+            latest_visual_cortex_data = temporal_lobe_data_template['visual'].copy()
+            visual_cortex_items_skipped = 0
+            
+            try:
+                latest_visual_cortex_data = visual_cortex_queue.get(timeout=0.1)  # Shorter timeout
+                
+                # Drain queue to get the most recent item (LIFO behavior)
+                # FIXED: Use visual_cortex_queue instead of audio_cortex_queue
+                while True:
+                    try:
+                        newer_task = visual_cortex_queue.get_nowait()  # FIXED LINE
+                        if newer_task is None:
+                            break
+                        latest_visual_cortex_data = newer_task
+                        visual_cortex_items_skipped += 1
+                    except queue.Empty:
+                        break
+                        
+                #print(f"Temporal Lobe: Got visual data, skipped {visual_cortex_items_skipped} items")
+                
+            except queue.Empty:
+                #print("Temporal Lobe: visual_cortex_queue EMPTY")
+                # Don't continue - process with None visual data
+                pass
+            
+            # Create output data (process even if one or both inputs are None)
+            tl_out = temporal_lobe_data_template.copy()  # Make a copy to avoid modifying template
+            tl_out.update({
+                'formatted_time': datetime.fromtimestamp(tl_timestamp).strftime('%H:%M:%S'),
+                'temporal_lobe_timestamp': tl_timestamp,
+                'audio': latest_audio_cortex_data,
+                'visual': latest_visual_cortex_data
+            })
+            
+            # Put data on temporal lobe queue
+            try:
+                temporal_lobe_queue.put_nowait(tl_out)  # This will drop frame if queue is full
+                #print("Temporal Lobe Data Added")
+                #print(f"Audio items skipped: {audio_cortex_items_skipped}, Visual items skipped: {visual_cortex_items_skipped}")
+                
+            except queue.Full:
+                logging.debug("temporal_lobe_queue FULL - Consumer needs to process faster")
+                
+                
+        except Exception as e:
+            logging.error(f"Temporal Lobe Data Queue Read Error: {e}")
+            # Continue processing instead of crashing
+            
+        # Small delay to prevent excessive CPU usage
+        time.sleep(0.001)  # 1ms delay
+ 
+# Global state to hold the latest temporal lobe data
+TEMPORAL_LOBE_STATE = {
+    'current_data': None,
+    'visual_scenes': [],
+    'audio_scenes': [],
+    'last_update': None
+}
+MAX_TRANSCRIPTION_HISTORY = 3
+def temporal_lobe_state():
+    """
+    Middleware function that reads from temporal_lobe_queue and maintains state
+    for multiple consumers to access the same data
+    """
+    global TEMPORAL_LOBE_STATE, MAX_TRANSCRIPTION_HISTORY,temporal_lobe_queue
+    
+    # Process all available data from the queue
+    new_data_processed = False
+    
+    while True:
+        try:
+            scene_data = temporal_lobe_queue.get(timeout=1)
+            
+            # Update current state
+            TEMPORAL_LOBE_STATE['current_data'] = scene_data
+            TEMPORAL_LOBE_STATE['last_update'] = time.time()
+            
+            # Add visual data if caption exists
+            if (scene_data.get('visual', {}).get('vlm', {}).get('caption') is not None):
+                TEMPORAL_LOBE_STATE['visual_scenes'].append(scene_data['visual']['vlm'])
+                # Keep only recent visual scenes (optional limit)
+                TEMPORAL_LOBE_STATE['visual_scenes'] = TEMPORAL_LOBE_STATE['visual_scenes'][-10:]
+            
+            # Add audio data if transcription exists
+            if (scene_data.get('audio', {}).get('transcription', "")  is not None ):
+                audio_scene = {
+                    'device_index': scene_data['audio']['device_index'],
+                    'timestamp': scene_data['audio']['auditory_cortex_timestamp'],
+                    'transcription': scene_data['audio']['transcription'],
+                    'formatted_time': scene_data['audio']['formatted_time'],
+                    'duration': scene_data['audio'].get('duration', 0)
+                }
+                TEMPORAL_LOBE_STATE['audio_scenes'].append(audio_scene)
+                # Keep only recent audio scenes
+                TEMPORAL_LOBE_STATE['audio_scenes'] = TEMPORAL_LOBE_STATE['audio_scenes'][-MAX_TRANSCRIPTION_HISTORY:]
+            
+            new_data_processed = True
+            
+        except queue.Empty:
+            break
+        except Exception as e:
+            logging.error(f"Error processing temporal lobe data: {e}")
+            break
+    
+    return new_data_processed
+
+#Background thread to continuously update state
+def temporal_lobe_state_updater():
+    """Background thread function to continuously update temporal lobe state"""
+    while True:
+        try:
+            temporal_lobe_state()
+            time.sleep(0.01)  # 10ms update interval
+        except Exception as e:
+            logging.error(f"Temporal lobe state updater error: {e}")
+            time.sleep(0.1)  # Longer sleep on error
 
 """
 HTML Interface - UPDATED with visual scene display functionality
@@ -1261,7 +1496,7 @@ def index():
                 .then(data => {
                     // Update VLM status
                     const statusDiv = document.getElementById('vlm-status');
-                    if (data.VLM_availible) {
+                    if (!data.VLM_availible) {
                         statusDiv.textContent = 'VLM Status: Analyzing...';
                         statusDiv.className = 'vlm-status vlm-busy';
                     } else {
@@ -1342,7 +1577,7 @@ def stats():
 
     #Visual queue stats
     current_stats['processed_queue_size'] = visual_cortex_queue.qsize()
-    current_stats['visual_scene_queue_size'] = visual_scene_queue.qsize()
+    current_stats['visual_cortex_internal_queue_vlm_size'] = visual_cortex_internal_queue_vlm.qsize()
     current_stats['active_optic_nerves'] = list(optic_nerve_processes.keys())
     
     #Audio queue stats
@@ -1420,35 +1655,22 @@ def video_feed(camera_index=None):
 @app.route('/visual_scenes')
 def visual_scenes():
     """API endpoint for visual scene analysis data"""
-    scenes = []
+    global TEMPORAL_LOBE_STATE, stats_dict
     
-    # Get all available scenes from the queue without blocking
-    while True:
-        try:
-            scene_data = visual_scene_queue.get_nowait()
-            scenes.append(scene_data)
-        except:
-            break
-    
-    # Put them back in the queue (keeping last 3)
-    scenes = scenes[-3:]  # Keep only last 3 analyses
-    for scene_data in scenes:
-        try:
-            visual_scene_queue.put_nowait(scene_data)
-        except:
-            # Queue full, skip older ones
-            break
+    # Update state from temporal lobe queue
+    temporal_lobe_state()
     
     return jsonify({
-        'scenes': scenes,
-        'count': len(scenes),
-        'VLM_availible': stats_dict.get('VLM_availible', False)
+        'scenes': TEMPORAL_LOBE_STATE['visual_scenes'].copy(),  # Return copy to avoid modification
+        'count': len(TEMPORAL_LOBE_STATE['visual_scenes']),
+        'VLM_availible': stats_dict['VLM_availible'],
+        'last_update': TEMPORAL_LOBE_STATE['last_update']
     })
 
 @app.route('/start/<int:camera_index>')
 def start_camera(camera_index):
     """Start optic nerve and visual cortex processing for specific camera"""
-    global optic_nerve_processes, visual_cortex_processes
+    global optic_nerve_processes, visual_cortex_processes, visual_cortex_internal_queue_vlm
     
     if camera_index in optic_nerve_processes:
         return jsonify({
@@ -1468,7 +1690,7 @@ def start_camera(camera_index):
     if not visual_cortex_processes:
         visual_cortex_process = mp.Process(
             target=visual_cortex_worker,
-            args=(optic_nerve_queue, visual_cortex_queue, stats_dict, visual_scene_queue)
+            args=(optic_nerve_queue, visual_cortex_queue, stats_dict,visual_cortex_queue_img_display, visual_cortex_internal_queue_vlm)
         )
         visual_cortex_process.start()
         visual_cortex_processes['main'] = visual_cortex_process
@@ -1592,40 +1814,18 @@ def stop_audio_device(device_index):
     })
 
 
-#global variable for transcription history
-TRANSCRIPTION_HISTORY = []
-MAX_TRANSCRIPTION_HISTORY = 3
 @app.route('/audio_scenes')
 def audio_scenes():
     """API endpoint for audio scene analysis data with transcriptions"""
-    global AUDIO_SCENE, TRANSCRIPTION_HISTORY
-    while True:
-        #get all of the audio data frames from the audio cortex
-        try:
-            current_scene = audio_cortex_queue.get_nowait()#get no wait to drain the queue
-            # Only add to history if we have a valid transcription
-            if (current_scene.get('transcription', "").strip() != ""):
-                
-                scene_data = {
-                    'device_index': current_scene['device_index'],
-                    'timestamp': current_scene['auditory_cortex_timestamp'],
-                    'transcription': current_scene.get('transcription', ''),
-                    'formatted_time': current_scene['formatted_time'],
-                    'duration': current_scene.get('duration', 0)
-                }
-                
-                # Add to history and keep only recent ones
-                TRANSCRIPTION_HISTORY.append(scene_data)
-                TRANSCRIPTION_HISTORY = TRANSCRIPTION_HISTORY[-MAX_TRANSCRIPTION_HISTORY:]
-                
-            AUDIO_SCENE = current_scene
-        except Exception as e:
-            logging.debug(e)#should be No more data exception since we got it all from the queue
-            break
-
+    global TEMPORAL_LOBE_STATE
+    
+    # Update state from temporal lobe queue
+    temporal_lobe_state()
+    
     return jsonify({
-        'audio_scenes': TRANSCRIPTION_HISTORY,
-        'count': len(TRANSCRIPTION_HISTORY)
+        'audio_scenes': TEMPORAL_LOBE_STATE['audio_scenes'].copy(),  # Return copy to avoid modification
+        'count': len(TEMPORAL_LOBE_STATE['audio_scenes']),
+        'last_update': TEMPORAL_LOBE_STATE['last_update']
     })
 
 def signal_handler(sig, frame):
@@ -1640,10 +1840,11 @@ if __name__ == '__main__':
     # Global multiprocessing queues and managers MUST go here because of issues with Windows
     manager = mp.Manager()
     
-    # Existing visual queues
+    # Visual queues
     optic_nerve_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
     visual_cortex_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
-    visual_scene_queue = manager.Queue(maxsize=10)
+    visual_cortex_queue_img_display = manager.Queue(maxsize=QUEUE_SIZE * 4)
+    visual_cortex_internal_queue_vlm = manager.Queue(maxsize=10)
     
     #Audio queues
     audio_nerve_queue = manager.Queue(maxsize=QUEUE_SIZE * 4)
@@ -1652,8 +1853,23 @@ if __name__ == '__main__':
     audio_cortex_internal_queue_speech_audio = manager.Queue(maxsize=100)  #100 chunks of 32ms = ~3200ms (3.2 second) buffer
     # internally used by Audio Cortex to hold speech to text results (transcriptions)
     audio_cortex_internal_queue_transcription = manager.Queue(maxsize=5)
+
+    #Temporal Lobe - holds outputs of final combined data from AC and VC
+    temporal_lobe_queue = manager.Queue(maxsize=5)
+
+    #Start temporal lobe
+    tl = mp.Process(
+        target=temporal_lobe,
+        args=(audio_cortex_queue,visual_cortex_queue,temporal_lobe_queue))
+    
+    tl.start()
+    temporal_lobe_processes['main'] = tl
+    temporal_lobe_updater_thread = threading.Thread(target=temporal_lobe_state_updater, daemon=True)
+    temporal_lobe_updater_thread.start()
+
      
     stats_dict = manager.dict()
+    stats_dict['VLM_availible'] = True
 
    
     # Set multiprocessing start method
