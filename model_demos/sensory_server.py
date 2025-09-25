@@ -177,10 +177,12 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
                         # Start VLM Moondream analysis in separate thread
                         VLM_thread = threading.Thread(
                             target=visual_cortex_process_vlm_analysis_thread,
-                            args=(frame_data['frame'], frame_data['camera_index'], 
-                                frame_data['capture_timestamp'], visual_cortex_internal_queue_vlm),
-                                daemon = True
-                            )  
+                            args=(frame_data['frame'], 
+                                  frame_data['camera_index'], 
+                                  frame_data['capture_timestamp'],
+                                  person_detected, 
+                                  visual_cortex_internal_queue_vlm),
+                                  daemon = True)  
 
                         VLM_thread.start()
 
@@ -217,7 +219,7 @@ def visual_cortex_worker(optic_nerve_queue, visual_cortex_queue, stats_dict, vis
                     try:
                         visual_cortex_queue_img_display.put_nowait(processed_data.copy())
                     except:
-                        print("\ncan't put data on visual_cortex_queue_img_display\n")
+                        print("\nvisual_cortex_queue_img_display queue full - Consume faster\n")
                         pass
                     
                     # Put processed frame in output queue
@@ -281,7 +283,7 @@ def visual_cortex_process_img(frame, camera_index, timestamp, IMG_DETECTION_CNN)
 
     return frame, person_detected
 
-def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, visual_cortex_internal_queue_vlm):
+def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, person_detected,visual_cortex_internal_queue_vlm):
     """Thread function to run VLM (Moondream) analysis without blocking main processing"""
     # Import and initialize VLM Moondream (done in thread to avoid blocking memory if it stays loaded)
     from moondream_ import MoondreamWrapper
@@ -308,6 +310,7 @@ def visual_cortex_process_vlm_analysis_thread(frame, camera_index, timestamp, vi
     #push empty data to queue to indicate VLM is about to go to work 
     visual_scene_data = {
             'vlm_ready':False,
+            'person_detected':person_detected,
             'camera_index': camera_index,
             'timestamp': timestamp,
             'caption': None,
@@ -482,9 +485,10 @@ def auditory_nerve_connection(device_index, audio_nerve_queue, stats_dict,sample
             latency='low'          # Request low latency from sounddevice
         ):
             print(f"Audio stream started for device {device_index} with {chunk_size} sample chunks")
+            
             # Keep the stream alive
             while True:
-                time.sleep(0.01)
+                time.sleep(0.001)
                 
     except KeyboardInterrupt:
         pass
@@ -610,7 +614,9 @@ def auditory_cortex(audio_nerve_queue, audio_cortex_queue, stats_dict,audio_cort
                         transcription = audio_cortex_internal_queue_transcription.get_nowait()#don't block
                     except queue.Empty:
                         logging.debug("No data in Transcription")
-                    
+                        
+
+                    print(f"\n\n{transcription}\n\n")
                     process_timestamp = time.time()
                     #Update The Audio Cortex Output Queue
                     processed_data = {'device_index': audio_data['device_index'],
@@ -647,6 +653,9 @@ def auditory_cortex(audio_nerve_queue, audio_cortex_queue, stats_dict,audio_cort
                     
             except queue.Empty:
                 continue
+
+            # Small delay to prevent excessive CPU usage
+            time.sleep(0.001)  # 1ms delay
                 
     except KeyboardInterrupt:
         pass
@@ -860,21 +869,21 @@ def auditory_cortex_worker_stt(internal_queue_speech_audio, internal_queue_trans
                         'final_transcript': not more_speech_coming
                     }
                     
-                    # Clear the transcription queue before putting new data (LIFO behavior)
-                    while True:
-                        try:
-                            _ = internal_queue_transcription.get_nowait()
-                            logging.debug("Cleared old transcription from queue")
-                        except queue.Empty:
-                            break
-                    
                     # Send the latest transcription
-                    print(transcript_data)
+                    print(transcript_data['transcription'])
                     try:
                         internal_queue_transcription.put_nowait(transcript_data)
                         logging.debug(f"Sent {'final' if not more_speech_coming else 'interim'} transcript: {len(working_transcript)} chars")
                     except queue.Full:
-                        logging.error("Transcription queue still full after clearing!")
+                        logging.debug("Transcription queue still full start clearing!")
+                        # Clear the transcription queue before putting new data (LIFO behavior)
+                        while True:
+                            try:
+                                _ = internal_queue_transcription.get_nowait()
+                                logging.debug("Cleared old transcription from queue")
+                            except queue.Empty:
+                                internal_queue_transcription.put_nowait(transcript_data)
+                                break
                     
                     # Reset working transcript if this was final
                     if not more_speech_coming:
@@ -948,7 +957,7 @@ def temporal_lobe(audio_cortex_queue, visual_cortex_queue, temporal_lobe_queue):
             audio_cortex_items_skipped = 0
             
             try:
-                latest_audio_cortex_data = audio_cortex_queue.get(timeout=0.1)  # Shorter timeout
+                latest_audio_cortex_data = audio_cortex_queue.get_nowait()
                 
                 # Drain queue to get the most recent item (LIFO behavior)
                 while True:
@@ -961,10 +970,10 @@ def temporal_lobe(audio_cortex_queue, visual_cortex_queue, temporal_lobe_queue):
                     except queue.Empty:
                         break
                         
-                #print(f"Temporal Lobe: Got audio data, skipped {audio_cortex_items_skipped} items")
+                logging.debug(f"Temporal Lobe: Got audio data, skipped {audio_cortex_items_skipped} items")
                 
             except queue.Empty:
-                #print("Temporal Lobe: audio_cortex_queue EMPTY")
+                logging.debug("Temporal Lobe: audio_cortex_queue EMPTY")
                 # Don't continue - process with None audio data
                 pass
             
@@ -973,10 +982,9 @@ def temporal_lobe(audio_cortex_queue, visual_cortex_queue, temporal_lobe_queue):
             visual_cortex_items_skipped = 0
             
             try:
-                latest_visual_cortex_data = visual_cortex_queue.get(timeout=0.1)  # Shorter timeout
+                latest_visual_cortex_data = visual_cortex_queue.get_nowait() 
                 
                 # Drain queue to get the most recent item (LIFO behavior)
-                # FIXED: Use visual_cortex_queue instead of audio_cortex_queue
                 while True:
                     try:
                         newer_task = visual_cortex_queue.get_nowait()  # FIXED LINE
@@ -987,10 +995,10 @@ def temporal_lobe(audio_cortex_queue, visual_cortex_queue, temporal_lobe_queue):
                     except queue.Empty:
                         break
                         
-                #print(f"Temporal Lobe: Got visual data, skipped {visual_cortex_items_skipped} items")
+                logging.debug(f"Temporal Lobe: Got visual data, skipped {visual_cortex_items_skipped} items")
                 
             except queue.Empty:
-                #print("Temporal Lobe: visual_cortex_queue EMPTY")
+                logging.debug("Temporal Lobe: visual_cortex_queue EMPTY")
                 # Don't continue - process with None visual data
                 pass
             
@@ -1006,8 +1014,8 @@ def temporal_lobe(audio_cortex_queue, visual_cortex_queue, temporal_lobe_queue):
             # Put data on temporal lobe queue
             try:
                 temporal_lobe_queue.put_nowait(tl_out)  # This will drop frame if queue is full
-                #print("Temporal Lobe Data Added")
-                #print(f"Audio items skipped: {audio_cortex_items_skipped}, Visual items skipped: {visual_cortex_items_skipped}")
+                logging.debug("Temporal Lobe Data Added")
+                logging.debug(f"Audio items skipped: {audio_cortex_items_skipped}, Visual items skipped: {visual_cortex_items_skipped}")
                 
             except queue.Full:
                 logging.debug("temporal_lobe_queue FULL - Consumer needs to process faster")
@@ -1017,6 +1025,7 @@ def temporal_lobe(audio_cortex_queue, visual_cortex_queue, temporal_lobe_queue):
             logging.error(f"Temporal Lobe Data Queue Read Error: {e}")
             # Continue processing instead of crashing
             
+        #print(tl_out)
         # Small delay to prevent excessive CPU usage
         time.sleep(0.001)  # 1ms delay
  
@@ -1027,51 +1036,73 @@ TEMPORAL_LOBE_STATE = {
     'audio_scenes': [],
     'last_update': None
 }
-MAX_TRANSCRIPTION_HISTORY = 3
+MAX_TRANSCRIPTION_HISTORY = 10
 def temporal_lobe_state():
     """
     Middleware function that reads from temporal_lobe_queue and maintains state
     for multiple consumers to access the same data
     """
-    global TEMPORAL_LOBE_STATE, MAX_TRANSCRIPTION_HISTORY,temporal_lobe_queue
+    global TEMPORAL_LOBE_STATE, MAX_TRANSCRIPTION_HISTORY, temporal_lobe_queue
     
-    # Process all available data from the queue
-    new_data_processed = False
-    
+    # First, collect all frames from the queue
+    frames = []
     while True:
         try:
-            scene_data = temporal_lobe_queue.get(timeout=1)
-            
-            # Update current state
-            TEMPORAL_LOBE_STATE['current_data'] = scene_data
-            TEMPORAL_LOBE_STATE['last_update'] = time.time()
-            
-            # Add visual data if caption exists
-            if (scene_data.get('visual', {}).get('vlm', {}).get('caption') is not None):
-                TEMPORAL_LOBE_STATE['visual_scenes'].append(scene_data['visual']['vlm'])
-                # Keep only recent visual scenes (optional limit)
-                TEMPORAL_LOBE_STATE['visual_scenes'] = TEMPORAL_LOBE_STATE['visual_scenes'][-10:]
-            
-            # Add audio data if transcription exists
-            if (scene_data.get('audio', {}).get('transcription', "")  is not None ):
-                audio_scene = {
-                    'device_index': scene_data['audio']['device_index'],
-                    'timestamp': scene_data['audio']['auditory_cortex_timestamp'],
-                    'transcription': scene_data['audio']['transcription'],
-                    'formatted_time': scene_data['audio']['formatted_time'],
-                    'duration': scene_data['audio'].get('duration', 0)
-                }
-                TEMPORAL_LOBE_STATE['audio_scenes'].append(audio_scene)
-                # Keep only recent audio scenes
-                TEMPORAL_LOBE_STATE['audio_scenes'] = TEMPORAL_LOBE_STATE['audio_scenes'][-MAX_TRANSCRIPTION_HISTORY:]
-            
-            new_data_processed = True
-            
+            scene_data = temporal_lobe_queue.get_nowait()  # Non-blocking get
+            frames.append(scene_data)
         except queue.Empty:
             break
         except Exception as e:
-            logging.error(f"Error processing temporal lobe data: {e}")
+            logging.error(f"Error reading from temporal lobe queue: {e}")
             break
+    
+    if not frames:
+        return False  # No new data processed
+    
+    # Process frames in LIFO order (most recent first)
+    frames.reverse()  # Now most recent frame is at index 0
+    
+    new_data_processed = False
+    visual_updated = False
+    audio_updated = False
+    
+    try:
+        # Update current state with the most recent frame
+        TEMPORAL_LOBE_STATE['current_data'] = frames[0]
+        TEMPORAL_LOBE_STATE['last_update'] = time.time()
+        
+        # Process visual data - find most recent frame with visual data
+        for scene_data in frames:
+            if not visual_updated and scene_data.get('visual', {}).get('vlm', {}).get('caption') is not None:
+                TEMPORAL_LOBE_STATE['visual_scenes'].append(scene_data['visual']['vlm'])
+                # Keep only recent visual scenes
+                TEMPORAL_LOBE_STATE['visual_scenes'] = TEMPORAL_LOBE_STATE['visual_scenes'][-MAX_TRANSCRIPTION_HISTORY:]
+                visual_updated = True
+                new_data_processed = True
+        
+        # Process audio data - find most recent frame with audio data
+        for scene_data in frames:
+            if not audio_updated and scene_data.get('audio', {}).get('transcription'):
+                transcription = scene_data.get('audio', {}).get('transcription', "").strip()
+                if transcription:
+                    audio_scene = {
+                        'device_index': scene_data['audio']['device_index'],
+                        'speech_detected': scene_data['audio']['speech_detected'],
+                        'timestamp': scene_data['audio']['auditory_cortex_timestamp'],
+                        'transcription': transcription,
+                        'formatted_time': scene_data['audio']['formatted_time'],
+                        'duration': scene_data['audio'].get('duration', 0)
+                    }
+                    TEMPORAL_LOBE_STATE['audio_scenes'].append(audio_scene)
+                    # Keep only recent audio scenes
+                    TEMPORAL_LOBE_STATE['audio_scenes'] = TEMPORAL_LOBE_STATE['audio_scenes'][-MAX_TRANSCRIPTION_HISTORY:]
+                    audio_updated = True
+                    new_data_processed = True
+        
+        #print(f"\n\n{TEMPORAL_LOBE_STATE}\n\n")
+        
+    except Exception as e:
+        logging.error(f"Error processing temporal lobe data: {e}")
     
     return new_data_processed
 
@@ -1080,7 +1111,9 @@ def temporal_lobe_state_updater():
     """Background thread function to continuously update temporal lobe state"""
     while True:
         try:
-            temporal_lobe_state()
+            success = temporal_lobe_state()
+            if not success:
+                logging.debug("Failed to update temoral lobe state")
             time.sleep(0.01)  # 10ms update interval
         except Exception as e:
             logging.error(f"Temporal lobe state updater error: {e}")
@@ -1093,475 +1126,608 @@ HTML Interface - UPDATED with visual scene display functionality
 @app.route('/')
 def index():
     """Updated HTML page with audio controls and display"""
-    return '''
-    <!DOCTYPE html>
-<html>
+    return '''<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title>Temporal Lobe</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neural Processing Interface</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap');
         
-        /* Audio Section Styles */
-        .audio-section { 
-            margin: 20px 0; 
-            padding: 20px; 
-            border: 2px solid #ddd; 
-            border-radius: 10px; 
-            background: #f9f9f9;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-        .audio-controls { 
-            display: grid; 
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
-            gap: 15px; 
-            margin: 15px 0; 
+
+        body {
+            background: linear-gradient(135deg, #2c1810 0%, #1a0f0a 50%, #0f0805 100%);
+            min-height: 100vh;
+            font-family: 'Crimson Text', serif;
+            color: #d4af37;
+            overflow-x: auto;
         }
-        .audio-device { 
-            padding: 15px; 
-            border-radius: 10px; 
-            text-align: center; 
-            border: 2px solid #ddd;
-            transition: all 0.3s ease;
+
+        .main-container {
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
         }
-        .audio-device.connected { 
-            border-color: #4CAF50; 
-            background: #e8f5e8; 
-        }
-        .audio-device.disconnected { 
-            border-color: #f44336; 
-            background: #ffebee; 
-        }
-        .speech-indicator {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 10px;
-            transition: all 0.3s ease;
-        }
-        .speech-detected { background-color: #2196F3; }
-        .speech-idle { background-color: white; border: 2px solid #ddd; }
-        .audio-status {
-            font-weight: bold;
-            margin-top: 10px;
-        }
-        
-        /* Speech-to-text styles */
-        .speech-to-text-section {
+
+        .section {
+            background: linear-gradient(145deg, rgba(139, 69, 19, 0.3), rgba(101, 67, 33, 0.2));
+            border: 3px solid #8b4513;
+            border-radius: 15px;
             margin: 20px 0;
             padding: 20px;
-            border: 2px solid #2196F3;
+            box-shadow: 
+                0 0 20px rgba(212, 175, 55, 0.3),
+                inset 0 0 15px rgba(139, 69, 19, 0.2);
+            position: relative;
+        }
+
+        .section::before {
+            content: '';
+            position: absolute;
+            top: -5px;
+            left: -5px;
+            right: -5px;
+            bottom: -5px;
+            background: linear-gradient(45deg, #d4af37, #8b4513, #d4af37, #8b4513);
+            border-radius: 20px;
+            z-index: -1;
+            opacity: 0.7;
+        }
+
+        .section-title {
+            font-family: 'Cinzel', serif;
+            font-size: 1.8rem;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 20px;
+            color: #d4af37;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            letter-spacing: 2px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: rgba(139, 69, 19, 0.4);
+            border: 2px solid #8b4513;
             border-radius: 10px;
-            background: #f0f8ff;
-        }
-        .transcription-item {
             padding: 15px;
-            margin: 10px 0;
-            background: #ffffff;
-            border-left: 4px solid #2196F3;
-            border-radius: 5px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
         }
-        .transcription-header {
+
+        .stat-label {
+            font-family: 'Cinzel', serif;
+            font-size: 0.9rem;
+            color: #cd853f;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #d4af37;
+        }
+
+        .device-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .device-card {
+            background: linear-gradient(145deg, rgba(101, 67, 33, 0.6), rgba(139, 69, 19, 0.4));
+            border: 2px solid #8b4513;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 
+                0 5px 15px rgba(0, 0, 0, 0.4),
+                inset 0 0 10px rgba(212, 175, 55, 0.1);
+        }
+
+        .device-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
         }
-        .transcription-time {
-            color: #666;
-            font-size: 0.9em;
-            font-weight: bold;
+
+        .device-title {
+            font-family: 'Cinzel', serif;
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #d4af37;
         }
-        .transcription-device {
-            color: #2196F3;
-            font-weight: bold;
-            font-size: 0.9em;
+
+        .status-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #8b4513;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
         }
-        .transcription-text {
-            font-size: 1.1em;
-            line-height: 1.4;
-            color: #333;
-            font-style: italic;
-            background: #f8f9fa;
+
+        .status-active { background: radial-gradient(circle, #00ff00, #008000); box-shadow: 0 0 15px #00ff00; }
+        .status-inactive { background: radial-gradient(circle, #666, #333); }
+        .status-speech { background: radial-gradient(circle, #ff4500, #ff6347); box-shadow: 0 0 15px #ff4500; }
+        .status-person { background: radial-gradient(circle, #1e90ff, #4169e1); box-shadow: 0 0 15px #1e90ff; }
+
+        .steam-button {
+            background: linear-gradient(145deg, #8b4513, #654321);
+            border: 2px solid #d4af37;
+            color: #d4af37;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-family: 'Cinzel', serif;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .steam-button:hover {
+            background: linear-gradient(145deg, #a0522d, #8b4513);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .steam-button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .steam-button.active {
+            background: linear-gradient(145deg, #228b22, #006400);
+            border-color: #00ff00;
+            color: #fff;
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.3);
+        }
+
+        .transcript-container, .vlm-container {
+            max-height: 200px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #8b4513;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .transcript-item, .vlm-item {
+            background: rgba(139, 69, 19, 0.2);
+            border-left: 4px solid #d4af37;
             padding: 10px;
-            border-radius: 4px;
-            margin-top: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
         }
-        .transcription-duration {
-            color: #666;
-            font-size: 0.8em;
-            margin-top: 5px;
-        }
-        .no-transcription {
-            text-align: center;
-            color: #666;
+
+        .timestamp {
+            font-size: 0.8rem;
+            color: #cd853f;
             font-style: italic;
-            padding: 20px;
         }
-        
-        /* Existing Camera Styles */
-        .camera-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin: 20px 0; }
-        .camera-box { border: 2px solid #ddd; border-radius: 10px; padding: 10px; text-align: center; }
-        .camera-box.active { border-color: #4CAF50; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 20px 0; }
-        .stat-box { padding: 10px; background: #f0f0f0; border-radius: 5px; text-align: center; }
-        .controls { margin: 20px 0; text-align: center; }
-        button { margin: 5px; padding: 10px 20px; font-size: 14px; cursor: pointer; }
-        .start-btn { background: #4CAF50; color: white; border: none; border-radius: 5px; }
-        .stop-btn { background: #f44336; color: white; border: none; border-radius: 5px; }
-        .visual-scene { margin: 20px 0; padding: 20px; border: 2px solid #ddd; border-radius: 10px; }
-        .scene-item { padding: 10px; margin: 10px 0; background: #f9f9f9; border-left: 4px solid #4CAF50; }
-        .scene-time { color: #666; font-size: 0.9em; }
-        .scene-camera { color: #333; font-weight: bold; }
-        .scene-caption { margin-top: 5px; font-style: italic; }
-        .vlm-status { padding: 10px; margin: 10px 0; text-align: center; border-radius: 5px; }
-        .vlm-busy { background: #ffeb3b; }
-        .vlm-idle { background: #e8f5e8; }
+
+        .transcript-text, .vlm-text {
+            margin-top: 5px;
+            line-height: 1.4;
+        }
+
+        .camera-feed {
+            width: 100%;
+            max-height: 200px;
+            border: 2px solid #8b4513;
+            border-radius: 8px;
+            background: #000;
+            object-fit: cover;
+        }
+
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 15px;
+            font-size: 0.9rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(139, 69, 19, 0.3);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #8b4513;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #d4af37;
+        }
+
+        @media (max-width: 768px) {
+            .device-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>TEMPORAL LOBE</h1>
+    <div class="main-container">
+        <h1 style="text-align: center; font-family: 'Cinzel', serif; font-size: 2.5rem; margin-bottom: 30px; color: #d4af37; text-shadow: 3px 3px 6px rgba(0,0,0,0.8); letter-spacing: 3px;">
+            ⚙️ NEURAL PROCESSING INTERFACE ⚙️
+        </h1>
 
-        <!-- Stats -->
-        <div class="stats" id="stats-container">
-            <!-- Stats will be populated by JavaScript -->
+        <!-- Performance Statistics -->
+        <div class="section">
+            <div class="section-title">⚡ SYSTEM PERFORMANCE METRICS ⚡</div>
+            <div class="stats-grid" id="statsGrid">
+                <!-- Stats will be populated by JavaScript -->
+            </div>
         </div>
 
-        <!-- Audio Section -->
-        <div class="audio-section">
-            <h3>Auditory Nerves</h3>
-            <div class="audio-controls">
-                <div class="audio-device" id="audio-device-0">
-                    <h4>Microphone 0</h4>
-                    <div>
-                        <span class="speech-indicator speech-idle" id="speech-indicator-0"></span>
-                        <span id="speech-status-0">No Speech</span>
+        <!-- Audio Processing Section -->
+        <div class="section">
+            <div class="section-title">AUDITORY CORTEX CONTROL</div>
+            <div class="device-grid">
+                <div class="device-card" id="audio-0">
+                    <div class="device-header">
+                        <div class="device-title">Microphone 0</div>
+                        <div class="status-indicator status-inactive" id="audio-status-0"></div>
                     </div>
-                    <div class="audio-status" id="audio-connection-0">Disconnected</div>
-                    <button class="start-btn" onclick="startAudioDevice(0)">Start Audio</button>
-                    <button class="stop-btn" onclick="stopAudioDevice(0)">Stop Audio</button>
-                </div>
-                <div class="audio-device" id="audio-device-1">
-                    <h4>Microphone 1</h4>
-                    <div>
-                        <span class="speech-indicator speech-idle" id="speech-indicator-1"></span>
-                        <span id="speech-status-1">No Speech</span>
+                    <button class="steam-button" onclick="toggleAudio(0)" id="audio-btn-0">Activate</button>
+                    <div class="legend">
+                        <div class="legend-item">
+                            <div class="status-indicator status-active"></div>
+                            <span>Active</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="status-indicator status-speech"></div>
+                            <span>Speech Detected</span>
+                        </div>
                     </div>
-                    <div class="audio-status" id="audio-connection-1">Disconnected</div>
-                    <button class="start-btn" onclick="startAudioDevice(1)">Start Audio</button>
-                    <button class="stop-btn" onclick="stopAudioDevice(1)">Stop Audio</button>
+                </div>
+                
+                <div class="device-card" id="audio-1">
+                    <div class="device-header">
+                        <div class="device-title">Microphone 1</div>
+                        <div class="status-indicator status-inactive" id="audio-status-1"></div>
+                    </div>
+                    <button class="steam-button" onclick="toggleAudio(1)" id="audio-btn-1">Activate</button>
+                </div>
+            </div>
+            
+            <div class="transcript-container" id="transcriptContainer">
+                <h3 style="color: #d4af37; margin-bottom: 10px; font-family: 'Cinzel', serif;">Recent Transcriptions:</h3>
+                <div id="transcriptsList">
+                    <div class="transcript-item">
+                        <div class="timestamp">Waiting for audio activation...</div>
+                    </div>
                 </div>
             </div>
         </div>
 
-        
-        
-        <h3>Optic Nerves</h3>
-        <!-- Camera Controls -->
-        <div class="controls">
-            <button class="start-btn" onclick="startCamera(0)">Start Optic Nerve 0</button>
-            <button class="start-btn" onclick="startCamera(1)">Start Optic Nerve 1</button>
-            <button class="start-btn" onclick="startCamera(2)">Start Optic Nerve 2</button>
-            <button class="stop-btn" onclick="stopCamera(0)">Stop Optic Nerve 0</button>
-            <button class="stop-btn" onclick="stopCamera(1)">Stop Optic Nerve 1</button>
-            <button class="stop-btn" onclick="stopCamera(2)">Stop Optic Nerve 2</button>
-            <button class="stop-btn" onclick="stopAll()">Stop All</button>
-        </div>
-        
-        <!-- Camera Grid -->
-        <div class="camera-grid">
-            <div class="camera-box" id="camera-0">
-                <h3>Camera 0</h3>
-                <img src="/video_feed/0" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
-                <div id="status-0">Stopped</div>
+        <!-- Visual Processing Section -->
+        <div class="section">
+            <div class="section-title">VISUAL CORTEX CONTROL</div>
+            <div class="device-grid">
+                <div class="device-card" id="camera-0">
+                    <div class="device-header">
+                        <div class="device-title">Camera 0</div>
+                        <div class="status-indicator status-inactive" id="camera-status-0"></div>
+                    </div>
+                    <button class="steam-button" onclick="toggleCamera(0)" id="camera-btn-0">Activate</button>
+                    <img class="camera-feed" id="camera-feed-0" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMjIyIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNiIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkNhbWVyYSBPZmZsaW5lPC90ZXh0Pjwvc3ZnPg==" alt="Camera 0">
+                    <div class="legend">
+                        <div class="legend-item">
+                            <div class="status-indicator status-active"></div>
+                            <span>Active</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="status-indicator status-person"></div>
+                            <span>Person Detected</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="device-card" id="camera-1">
+                    <div class="device-header">
+                        <div class="device-title">Camera 1</div>
+                        <div class="status-indicator status-inactive" id="camera-status-1"></div>
+                    </div>
+                    <button class="steam-button" onclick="toggleCamera(1)" id="camera-btn-1">Activate</button>
+                    <img class="camera-feed" id="camera-feed-1" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMjIyIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNiIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkNhbWVyYSBPZmZsaW5lPC90ZXh0Pjwvc3ZnPg==" alt="Camera 1">
+                </div>
+                
+                <div class="device-card" id="camera-2">
+                    <div class="device-header">
+                        <div class="device-title">Camera 2</div>
+                        <div class="status-indicator status-inactive" id="camera-status-2"></div>
+                    </div>
+                    <button class="steam-button" onclick="toggleCamera(2)" id="camera-btn-2">Activate</button>
+                    <img class="camera-feed" id="camera-feed-2" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMjIyIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNiIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkNhbWVyYSBPZmZsaW5lPC90ZXh0Pjwvc3ZnPg==" alt="Camera 2">
+                </div>
             </div>
-            <div class="camera-box" id="camera-1">
-                <h3>Camera 1</h3>
-                <img src="/video_feed/1" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
-                <div id="status-1">Stopped</div>
-            </div>
-            <div class="camera-box" id="camera-2">
-                <h3>Camera 2</h3>
-                <img src="/video_feed/2" width="320" height="240" onerror="this.style.display='none'" onload="this.style.display='block'">
-                <div id="status-2">Stopped</div>
-            </div>
-        </div>
-        
-        <!-- Speech-to-Text Section -->
-        <div class="speech-to-text-section">
-            <h3>Speech-to-Text Transcriptions</h3>
-            <div id="transcription-display">
-                <div class="no-transcription">
-                    No speech transcriptions yet. Start an audio device and speak to see transcriptions appear here.
+            
+            <div class="vlm-container" id="vlmContainer">
+                <h3 style="color: #d4af37; margin-bottom: 10px; font-family: 'Cinzel', serif;">Recent Visual Analysis:</h3>
+                <div id="vlmList">
+                    <div class="vlm-item">
+                        <div class="timestamp">Waiting for visual activation...</div>
+                    </div>
                 </div>
             </div>
         </div>
-
-        
-
-        <!-- Visual Scene Analysis -->
-        <div class="visual-scene">
-            <h3>Visual Scene Analysis - VLM Output</h3>
-            <div id="vlm-status" class="vlm-status vlm-idle">VLM Status: Idle</div>
-            <div id="scene-analysis">
-                <p>No scene analysis data available. Start a camera and detect a person to begin analysis.</p>
-            </div>
-        </div>
-
-        <!-- Audio Scene Analysis -->
-        <div class="visual-scene">
-            <h3>Audio Scene Analysis</h3>
-            <div id="audio-scene-analysis">
-                <p>Not connected yet, will populate with audio description</p>
-            </div>
-        </div>
-        
     </div>
-    
+
     <script>
+        // Global state tracking
+        var deviceStates = {
+            audio: {0: false, 1: false},
+            camera: {0: false, 1: false, 2: false}
+        };
+
+        // XMLHttpRequest helper function
+        function makeRequest(method, url, callback) {
+            var xhr = new XMLHttpRequest();
+            xhr.open(method, url, true);
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === 4) {
+                    if (xhr.status === 200) {
+                        try {
+                            var data = JSON.parse(xhr.responseText);
+                            callback(null, data);
+                        } catch (e) {
+                            callback(e, null);
+                        }
+                    } else {
+                        callback(new Error('Request failed'), null);
+                    }
+                }
+            };
+            xhr.send();
+        }
+
         // Audio control functions
-        function startAudioDevice(index) {
-            fetch(`/start_audio/${index}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log(data.message);
-                    const deviceElement = document.getElementById(`audio-device-${index}`);
-                    deviceElement.classList.remove('disconnected');
-                    deviceElement.classList.add('connected');
-                    document.getElementById(`audio-connection-${index}`).textContent = 'Connected';
-                })
-                .catch(err => console.error('Audio start failed:', err));
+        function toggleAudio(deviceIndex) {
+            var isActive = deviceStates.audio[deviceIndex];
+            var endpoint = isActive ? '/stop_audio/' + deviceIndex : '/start_audio/' + deviceIndex;
+            
+            makeRequest('GET', endpoint, function(error, result) {
+                if (error) {
+                    console.error('Audio toggle error:', error);
+                    return;
+                }
+                
+                console.log('Audio response:', result); // Debug logging
+                
+                if (result.status === 'started' || result.status === 'already_running') {
+                    deviceStates.audio[deviceIndex] = true; // UPDATE STATE HERE
+                    updateAudioUI(deviceIndex, true);
+                } else if (result.status === 'stopped' || result.status === 'not_running') {
+                    deviceStates.audio[deviceIndex] = false; // UPDATE STATE HERE
+                    updateAudioUI(deviceIndex, false);
+                }
+            });
         }
-        
-        function stopAudioDevice(index) {
-            fetch(`/stop_audio/${index}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log(data.message);
-                    const deviceElement = document.getElementById(`audio-device-${index}`);
-                    deviceElement.classList.remove('connected');
-                    deviceElement.classList.add('disconnected');
-                    document.getElementById(`audio-connection-${index}`).textContent = 'Disconnected';
-                    // Reset speech indicator
-                    document.getElementById(`speech-indicator-${index}`).className = 'speech-indicator speech-idle';
-                    document.getElementById(`speech-status-${index}`).textContent = 'No Speech';
-                })
-                .catch(err => console.error('Audio stop failed:', err));
+
+        // Camera control functions
+        function toggleCamera(deviceIndex) {
+            var isActive = deviceStates.camera[deviceIndex];
+            var endpoint = isActive ? '/stop/' + deviceIndex : '/start/' + deviceIndex;
+            
+            makeRequest('GET', endpoint, function(error, result) {
+                if (error) {
+                    console.error('Camera toggle error:', error);
+                    return;
+                }
+                
+                console.log('Camera response:', result); // Debug logging
+                
+                if (result.status === 'started' || result.status === 'already_running') {
+                    deviceStates.camera[deviceIndex] = true; // UPDATE STATE HERE
+                    updateCameraUI(deviceIndex, true);
+                } else if (result.status === 'stopped' || result.status === 'not_running') {
+                    deviceStates.camera[deviceIndex] = false; // UPDATE STATE HERE
+                    updateCameraUI(deviceIndex, false);
+                }
+            });
         }
-        
-        function updateAudioStatus() {
-            fetch('/stats')
-                .then(response => response.json())
-                .then(data => {
-                    // Check for human speech 
-                    const speechDetected = data.audio_cortex && data.audio_cortex.speech_detected;
-                    
-                    const speechDeviceIndex = data.audio_cortex && 
-                                            data.audio_cortex.device_index !== undefined ? 
-                                            data.audio_cortex.device_index : -1;
-                    
-                    // Update speech detection indicators
-                    for (let i = 0; i < 2; i++) {
-                        const indicator = document.getElementById(`speech-indicator-${i}`);
-                        const status = document.getElementById(`speech-status-${i}`);
-                        
-                        // Only show speech detected for the specific device that detected it
-                        if (speechDetected && speechDeviceIndex === i) {
-                            indicator.className = 'speech-indicator speech-detected';
-                            status.textContent = 'Speech Detected';
-                        } else {
-                            indicator.className = 'speech-indicator speech-idle';
-                            status.textContent = 'No Speech';
-                        }
-                    }
-                })
-                .catch(err => console.error('Audio stats update failed:', err));
+
+        // UI update functions
+        function updateAudioUI(deviceIndex, isActive) {
+            var statusEl = document.getElementById('audio-status-' + deviceIndex);
+            var buttonEl = document.getElementById('audio-btn-' + deviceIndex);
+            
+            if (isActive) {
+                statusEl.className = 'status-indicator status-active';
+                buttonEl.textContent = 'Deactivate';
+                buttonEl.classList.add('active');
+            } else {
+                statusEl.className = 'status-indicator status-inactive';
+                buttonEl.textContent = 'Activate';
+                buttonEl.classList.remove('active');
+            }
         }
-        
-        function updateTranscriptions() {
-            fetch('/audio_scenes')
-                .then(response => response.json())
-                .then(data => {
-                    const container = document.getElementById('transcription-display');
-                    
-                    if (data.audio_scenes && data.audio_scenes.length > 0) {
-                        container.innerHTML = '';
-                        
-                        // Show most recent transcriptions first
-                        data.audio_scenes.slice().reverse().forEach(scene => {
-                            if (scene.transcription && scene.transcription.trim() !== '' && 
-                                !scene.transcription.includes('[Audio too short') && 
-                                !scene.transcription.includes('[Transcription failed]')) {
-                                
-                                const transcriptionDiv = document.createElement('div');
-                                transcriptionDiv.className = 'transcription-item';
-                                
-                                const duration = scene.duration ? scene.duration.toFixed(1) : '0.0';
-                                
-                                transcriptionDiv.innerHTML = `
-                                    <div class="transcription-header">
-                                        <div class="transcription-time">${scene.formatted_time}</div>
-                                        <div class="transcription-device">Microphone ${scene.device_index}</div>
-                                    </div>
-                                    <div class="transcription-text">"${scene.transcription}"</div>
-                                    <div class="transcription-duration">Duration: ${duration}s</div>
-                                `;
-                                container.appendChild(transcriptionDiv);
-                            }
-                        });
-                        
-                        // If no valid transcriptions, show placeholder
-                        if (container.children.length === 0) {
-                            container.innerHTML = '<div class="no-transcription">Waiting for speech to transcribe...</div>';
-                        }
-                    } else {
-                        container.innerHTML = '<div class="no-transcription">No speech transcriptions yet. Start an audio device and speak to see transcriptions appear here.</div>';
-                    }
-                })
-                .catch(err => {
-                    console.error('Transcription update failed:', err);
-                    document.getElementById('transcription-display').innerHTML = 
-                        '<div class="no-transcription">Error loading transcriptions.</div>';
-                });
+
+        function updateCameraUI(deviceIndex, isActive) {
+            var statusEl = document.getElementById('camera-status-' + deviceIndex);
+            var buttonEl = document.getElementById('camera-btn-' + deviceIndex);
+            var feedEl = document.getElementById('camera-feed-' + deviceIndex);
+            
+            if (isActive) {
+                statusEl.className = 'status-indicator status-active';
+                buttonEl.textContent = 'Deactivate';
+                buttonEl.classList.add('active');
+                feedEl.src = '/video_feed/' + deviceIndex;
+            } else {
+                statusEl.className = 'status-indicator status-inactive';
+                buttonEl.textContent = 'Activate';
+                buttonEl.classList.remove('active');
+                feedEl.src = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMjIyIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNiIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkNhbWVyYSBPZmZsaW5lPC90ZXh0Pjwvc3ZnPg==";
+            }
         }
-        
-        // Existing camera control functions
-        function startCamera(index) {
-            fetch(`/start/${index}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log(data.message);
-                    document.getElementById(`camera-${index}`).classList.add('active');
-                    document.getElementById(`status-${index}`).textContent = 'Running';
-                });
-        }
-        
-        function stopCamera(index) {
-            fetch(`/stop/${index}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log(data.message);
-                    document.getElementById(`camera-${index}`).classList.remove('active');
-                    document.getElementById(`status-${index}`).textContent = 'Stopped';
-                });
-        }
-        
-        function stopAll() {
-            fetch('/stop_all')
-                .then(response => response.json())
-                .then(data => {
-                    console.log(data.message);
-                    for (let i = 0; i < 3; i++) {
-                        document.getElementById(`camera-${i}`).classList.remove('active');
-                        document.getElementById(`status-${i}`).textContent = 'Stopped';
-                    }
-                    // Also stop audio devices
-                    for (let i = 0; i < 2; i++) {
-                        const deviceElement = document.getElementById(`audio-device-${i}`);
-                        deviceElement.classList.remove('connected');
-                        deviceElement.classList.add('disconnected');
-                        document.getElementById(`audio-connection-${i}`).textContent = 'Disconnected';
-                        document.getElementById(`speech-indicator-${i}`).className = 'speech-indicator speech-idle';
-                        document.getElementById(`speech-status-${i}`).textContent = 'No Speech';
-                    }
-                });
-        }
-        
+
+        // Data fetching and display functions
         function updateStats() {
-            fetch('/stats')
-                .then(response => response.json())
-                .then(data => {
-                    const container = document.getElementById('stats-container');
-                    container.innerHTML = '';
-                    
-                    Object.keys(data).forEach(key => {
-                        if (key !== 'timestamp') {
-                            const statBox = document.createElement('div');
-                            statBox.className = 'stat-box';
-                            const value = typeof data[key] === 'number' ? data[key].toFixed(1) : data[key];
-                            statBox.innerHTML = `<strong>${key.replace(/_/g, ' ').toUpperCase()}:</strong><br>${value}`;
-                            container.appendChild(statBox);
-                        }
-                        
-                    });
-                })
-                .catch(err => console.error('Stats update failed:', err));
+            makeRequest('GET', '/stats', function(error, stats) {
+                if (error) {
+                    console.error('Stats update error:', error);
+                    return;
+                }
+                
+                var statsGrid = document.getElementById('statsGrid');
+                statsGrid.innerHTML = '';
+                
+                // Key metrics to display
+                var metricsToShow = [
+                    { key: 'visual_cortex_fps', label: 'Visual Cortex FPS', format: function(val) { return val ? val.toFixed(1) : '0.0'; } },
+                    { key: 'auditory_cortex_fps', label: 'Auditory Cortex FPS', format: function(val) { return val ? val.toFixed(1) : '0.0'; } },
+                    { key: 'optic_nerve_queue_size', label: 'Optic Nerve Queue', format: function(val) { return val || '0'; } },
+                    { key: 'audio_nerve_queue_size', label: 'Audio Nerve Queue', format: function(val) { return val || '0'; } },
+                    { key: 'processed_queue_size', label: 'Processed Queue', format: function(val) { return val || '0'; } },
+                    { key: 'VLM_availible', label: 'VLM Status', format: function(val) { return val ? 'Ready' : 'Busy'; } }
+                ];
+                
+                for (var i = 0; i < metricsToShow.length; i++) {
+                    var metric = metricsToShow[i];
+                    var card = document.createElement('div');
+                    card.className = 'stat-card';
+                    card.innerHTML = 
+                        '<div class="stat-label">' + metric.label + '</div>' +
+                        '<div class="stat-value">' + metric.format(stats[metric.key]) + '</div>';
+                    statsGrid.appendChild(card);
+                }
+
+                // Update device status based on stats
+                updateDeviceStates(stats);
+            });
         }
-        
-        function updateVisualScenes() {
-            fetch('/visual_scenes')
-                .then(response => response.json())
-                .then(data => {
-                    // Update VLM status
-                    const statusDiv = document.getElementById('vlm-status');
-                    if (!data.VLM_availible) {
-                        statusDiv.textContent = 'VLM Status: Analyzing...';
-                        statusDiv.className = 'vlm-status vlm-busy';
-                    } else {
-                        statusDiv.textContent = 'VLM Status: Idle';
-                        statusDiv.className = 'vlm-status vlm-idle';
+
+        function updateTranscripts() {
+            makeRequest('GET', '/audio_scenes', function(error, data) {
+                if (error) {
+                    console.error('Transcripts update error:', error);
+                    return;
+                }
+                
+                var transcriptsList = document.getElementById('transcriptsList');
+                
+                if (data.audio_scenes && data.audio_scenes.length > 0) {
+                    var html = '';
+                    var scenes = data.audio_scenes.slice(-3).reverse();
+                    for (var i = 0; i < scenes.length; i++) {
+                        var scene = scenes[i];
+                        html += '<div class="transcript-item">' +
+                               '<div class="timestamp">' + scene.formatted_time + ' - Device ' + scene.device_index + '</div>' +
+                               '<div class="transcript-text">' + (scene.transcription || 'Processing...') + '</div>' +
+                               '</div>';
                     }
-                    
-                    // Update scene analysis
-                    const container = document.getElementById('scene-analysis');
-                    if (data.scenes && data.scenes.length > 0) {
-                        container.innerHTML = '';
-                        // Show most recent scenes first
-                        data.scenes.slice().reverse().forEach(scene => {
-                            const sceneDiv = document.createElement('div');
-                            sceneDiv.className = 'scene-item';
-                            sceneDiv.innerHTML = `
-                                <div class="scene-time">${scene.formatted_time}</div>
-                                <div class="scene-camera">Camera ${scene.camera_index}</div>
-                                <div class="scene-caption">"${scene.caption}"</div>
-                            `;
-                            container.appendChild(sceneDiv);
-                        });
-                    } else {
-                        container.innerHTML = '<p>No scene analysis data available. Start a camera and detect a person to begin analysis.</p>';
-                    }
-                })
-                .catch(err => console.error('Visual scenes update failed:', err));
+                    transcriptsList.innerHTML = html;
+                }
+            });
         }
-        
-        function updateAudioScenes() {
-            fetch('/audio_scenes')
-                .then(response => response.json())
-                .then(data => {
-                    const container = document.getElementById('audio-scene-analysis');
-                    if (data.audio_scenes && data.audio_scenes.length > 0) {
-                        container.innerHTML = '';
-                        data.audio_scenes.slice().reverse().forEach(scene => {
-                            const sceneDiv = document.createElement('div');
-                            sceneDiv.className = 'scene-item';
-                            sceneDiv.innerHTML = `
-                                <div class="scene-time">${scene.formatted_time}</div>
-                                <div class="scene-camera">Microphone ${scene.device_index}</div>
-                            `;
-                            container.appendChild(sceneDiv);
-                        });
-                    } else {
-                        container.innerHTML = '<p>Not connected yet, will populate with audio description</p>';
+
+        function updateVLM() {
+            makeRequest('GET', '/visual_scenes', function(error, data) {
+                if (error) {
+                    console.error('VLM update error:', error);
+                    return;
+                }
+                
+                var vlmList = document.getElementById('vlmList');
+                
+                if (data.scenes && data.scenes.length > 0) {
+                    var html = '';
+                    var scenes = data.scenes.slice(-3).reverse();
+                    for (var i = 0; i < scenes.length; i++) {
+                        var scene = scenes[i];
+                        html += '<div class="vlm-item">' +
+                               '<div class="timestamp">' + scene.formatted_time + ' - Camera ' + scene.camera_index + '</div>' +
+                               '<div class="vlm-text">' + (scene.caption || 'Processing...') + '</div>' +
+                               '</div>';
                     }
-                })
-                .catch(err => console.error('Audio scenes update failed:', err));
+                    vlmList.innerHTML = html;
+                }
+            });
         }
-        
-        // Update intervals
-        setInterval(updateStats, 1000);
-        setInterval(updateVisualScenes, 2000);
-        setInterval(updateAudioStatus, 500);  // Update audio status more frequently for real-time speech detection
-        setInterval(updateTranscriptions, 1000);  // Update transcriptions every second
-        setInterval(updateAudioScenes, 500);  // Update audio scenes
-        
-        // Initial updates
-        updateStats();
-        updateVisualScenes();
-        updateAudioStatus();
-        updateTranscriptions();
-        updateAudioScenes();
+
+        function updateDeviceStates(stats) {
+            // Update audio device states based on speech detection
+            if (stats.audio_cortex) {
+                var speechDetected = stats.audio_cortex.speech_detected;
+                var deviceIndex = stats.audio_cortex.device_index;
+                
+                if (deviceIndex !== null && deviceIndex !== false) {
+                    var statusEl = document.getElementById('audio-status-' + deviceIndex);
+                    if (statusEl && deviceStates.audio[deviceIndex]) {
+                        statusEl.className = speechDetected ? 
+                            'status-indicator status-speech' : 
+                            'status-indicator status-active';
+                    }
+                }
+            }
+            
+            // Update camera device states based on person detection
+            if (stats.visual_cortex) {
+                var personDetected = stats.visual_cortex.person_detected;
+                var deviceIndex = stats.visual_cortex.camera_index;
+                
+                if (deviceIndex !== null && deviceIndex !== false) {
+                    var statusEl = document.getElementById('camera-status-' + deviceIndex);
+                    if (statusEl && deviceStates.camera[deviceIndex]) {
+                        statusEl.className = personDetected ? 
+                            'status-indicator status-person' : 
+                            'status-indicator status-active';
+                    }
+                }
+            }
+        }
+
+        // Initialize and start periodic updates
+        function startPeriodicUpdates() {
+            updateStats();
+            updateTranscripts();
+            updateVLM();
+            
+            // Update every 100ms
+            setInterval(function() {
+                updateStats();
+                updateTranscripts();
+                updateVLM();
+            }, 100);
+        }
+
+        // Start everything when page loads
+        document.addEventListener('DOMContentLoaded', startPeriodicUpdates);
     </script>
 </body>
 </html>
@@ -1570,36 +1736,54 @@ def index():
 @app.route('/stats')
 def stats():
     """API endpoint for performance statistics"""
-    global AUDIO_SCENE
+    global AUDIO_SCENE, TEMPORAL_LOBE_STATE
     current_stats = dict(stats_dict)
     current_stats['timestamp'] = datetime.now().isoformat()
     current_stats['optic_nerve_queue_size'] = optic_nerve_queue.qsize()
 
-    #Visual queue stats
+    # Visual queue stats
     current_stats['processed_queue_size'] = visual_cortex_queue.qsize()
     current_stats['visual_cortex_internal_queue_vlm_size'] = visual_cortex_internal_queue_vlm.qsize()
     current_stats['active_optic_nerves'] = list(optic_nerve_processes.keys())
     
-    #Audio queue stats
+    # Audio queue stats
     current_stats['audio_nerve_queue_size'] = audio_nerve_queue.qsize()
     current_stats['audio_cortex_queue_size'] = audio_cortex_queue.qsize()
     current_stats['active_auditory_nerves'] = list(auditory_nerve_processes.keys())
 
-    #Object/Person awareness
-    current_stats['audio_cortex'] = {}
-
-    #We want to make sure we remove the raw data, only take fields that UI needs
+    temporal_lobe_state()  # Update state
+    current_data = TEMPORAL_LOBE_STATE.get('current_data')
+    # Audio cortex data
     try:
+        if current_data and current_data.get('audio'):
+            current_stats['audio_cortex'] = {
+                'device_index': current_data['audio_scenes']['audio']['device_index'],
+                'speech_detected': current_data['audio_scenes']['audio']['speech_detected']
+            }
+    except:
         current_stats['audio_cortex'] = {
-                                    'device_index': AUDIO_SCENE['device_index'],
-                                    'speech_detected': AUDIO_SCENE['speech_detected']}
-    except queue.Empty:
-        print("The audio cortex queue is empty. Waiting for new data...")
-        current_stats['audio_cortex'] = {
-                                    'device_index': False,
-                                    'speech_detected': False}
+            'device_index': False,
+            'speech_detected': False
+        }
 
-    
+    #Visual cortex data for person detection
+    try:
+        
+        if current_data and current_data.get('visual'):
+            current_stats['visual_cortex'] = {
+                'camera_index': current_data['visual'].get('camera_index'),
+                'person_detected': current_data['visual'].get('person_detected', False)
+            }
+        else:
+            current_stats['visual_cortex'] = {
+                'camera_index': None,
+                'person_detected': False
+            }
+    except:
+        current_stats['visual_cortex'] = {
+            'camera_index': None,
+            'person_detected': False
+        }
 
     return jsonify(current_stats)
 
@@ -1630,6 +1814,11 @@ def stop_all():
         process.join(timeout=2)
         if process.is_alive():
             process.kill()
+
+    """temporal_lobe_updater_thread.terminate()
+    temporal_lobe_updater_thread.join(timeout=2)
+    if temporal_lobe_updater_thread.is_alive():
+            temporal_lobe_updater_thread.kill()"""
     
     visual_cortex_processes.clear()
     auditory_cortex_processes.clear()
@@ -1864,8 +2053,9 @@ if __name__ == '__main__':
     
     tl.start()
     temporal_lobe_processes['main'] = tl
-    temporal_lobe_updater_thread = threading.Thread(target=temporal_lobe_state_updater, daemon=True)
-    temporal_lobe_updater_thread.start()
+
+    """temporal_lobe_updater_thread = threading.Thread(target=temporal_lobe_state_updater, daemon=True)
+    temporal_lobe_updater_thread.start()"""
 
      
     stats_dict = manager.dict()
