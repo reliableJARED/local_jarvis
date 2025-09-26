@@ -2,7 +2,10 @@ import sys
 from typing import Optional, Generator, Dict, List, Any, Union, Tuple, TYPE_CHECKING
 from types import TracebackType
 
+"""
+MODEL DOCS: https://docs.moondream.ai/
 
+"""
 #ONLY for type hints, not actual imports - IDE friendly will set this to true, not at runtime
 if TYPE_CHECKING:
     import numpy as np
@@ -178,7 +181,13 @@ class MoondreamWrapper:
         length: str = "normal", 
         stream: bool = False
     ) -> str:
-        """Generate image caption"""
+        """Generate image caption
+        https://docs.moondream.ai/skills/caption
+        response = {
+            "request_id": "2025-03-25_caption_2025-03-25-21:00:39-715d03",
+            "caption": "A detailed caption describing the image..."
+            }
+        """
         if not self.model:
             raise RuntimeError("Model not loaded")
         
@@ -186,7 +195,13 @@ class MoondreamWrapper:
         return result["caption"]
     
     def ask_question(self, image: Union["Image.Image", "np.ndarray", Any], question: str) -> str:
-        """Perform visual question answering"""
+        """Perform visual question answering
+        https://docs.moondream.ai/skills/query
+        response = {
+            "request_id": "2025-03-25_query_2025-03-25-21:00:39-715d03",
+            "answer": "Detailed text answer to your question..."
+            }
+        """
         if not self.model:
             raise RuntimeError("Model not loaded")
         
@@ -194,18 +209,44 @@ class MoondreamWrapper:
         return result["answer"]
     
     def detect_objects(self, image: Union["Image.Image", "np.ndarray", Any], object_type: str) -> List[Any]:
-        """Detect specific objects in image"""
+        """Detect specific objects in image
+        https://docs.moondream.ai/skills/detect
+        response = {
+            "request_id": "2025-03-25_detect_2025-03-25-21:00:39-715d03",
+            "objects": [
+                {
+                "x_min": 0.2,
+                "y_min": 0.3,
+                "x_max": 0.6,
+                "y_max": 0.8
+                }
+            ]
+            }
+        """
         if not self.model:
             raise RuntimeError("Model not loaded")
-        
+        # Locate objects (e.g., "person", "car", "face", "tooth bruch", etc.) any object, this is not a classification list
+        #result = model.detect(image, "face")
         result: Dict[str, Any] = self.model.detect(image, object_type)
         return result["objects"]
     
     def point_to_objects(self, image: Union["Image.Image", "np.ndarray", Any], object_description: str) -> List[Tuple[int, int]]:
-        """Get point coordinates for objects in image"""
+        """Get point coordinates for objects in image
+        https://docs.moondream.ai/skills/point
+        response = {
+        "request_id": "2025-03-25_point_2025-03-25-21:00:39-715d03",
+        "points": [
+            {
+            "x": 0.65,
+            "y": 0.42
+            }
+        ]
+        }
+        """
         if not self.model:
             raise RuntimeError("Model not loaded")
-        
+        # Locate objects (e.g., "person", "car", "face", "tooth bruch", etc.) any object, this is not a classification list
+        #result = model.point(image, "face")
         result: Dict[str, Any] = self.model.point(image, object_description)
         return result["points"]
     
