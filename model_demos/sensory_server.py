@@ -119,29 +119,32 @@ def optic_nerve_connection(camera_index, internal_nerve_queue, external_stats_qu
         cap.release()
         logging.info(f"Optic nerve process for camera {camera_index} stopped")
 
-# Fix 1: Update the visual_cortex_core to properly handle frame data structure
+
 def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_queue, external_img_queue, internal_vlm_queue, vlm):
     """Worker process for processing image frames from all cameras (visual cortex function)"""
-    print("Started visual cortex process")
-    frame_count = 0
-    start_time = time.time()
 
-    # Global VLM state for this process
-    VLM_availible_local = True
-    vlm_process = None
-
+    logging.info("Started visual cortex process")
+    
     # Visual Cortex Processing Core CNN (yolo)
     from yolo_ import YOLOhf
     IMG_DETECTION_CNN = YOLOhf()
 
     try:
+        #counters and timer used in loop
+        frame_count = 0
+        start_time = time.time()
+
+        #local VLM states for this process
+        VLM_availible_local = True
+        vlm_process = None
+
         while True:
             try:
                 # Get the most recent frame by draining the queue
                 frame_data = None
                 frames_discarded = 0
                 
-                # Keep getting frames until queue is empty, keeping only the last one
+                # Keep getting frames until queue is empty, keeping only the last one (LIFO)
                 while True:
                     try:
                         frame_data = optic_nerve_queue.get_nowait()
@@ -159,14 +162,14 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                     capture_timestamp = frame_data['capture_timestamp']
                     raw_frame = frame_data['frame']
                     
-                    # Process the frame
+                    # Process the frame (blocking)
                     processed_frame, person_detected = visual_cortex_process_img(raw_frame,IMG_DETECTION_CNN)
                     
-                    # Push processed frame out for viewing - ADD CAMERA INDEX
+                    # Push processed frame out for viewing 
                     try:
                         external_img_queue.put_nowait({
                             'frame': processed_frame,
-                            'camera_index': device_index,  # ADD THIS LINE
+                            'camera_index': device_index,  
                             'capture_timestamp': capture_timestamp
                         })
                     except queue.Full:
@@ -181,7 +184,7 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                         except queue.Empty:
                             pass
 
-                    # VLM processing logic (unchanged)
+                    # VLM processing logic
                     if person_detected and VLM_availible_local:
                         logging.debug(f"Starting VLM analysis - person detected and VLM not busy")
                         VLM_availible_local = False
@@ -309,6 +312,16 @@ def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_dete
     from moondream_ import MoondreamWrapper
     IMG_PROCESSING_VLM = MoondreamWrapper(local_files_only=True)
 
+    """
+    The VLM has the following methods. Currently only the caption_image() function is used.
+    
+    IMG_PROCESSING_VLM.caption_image()
+    IMG_PROCESSING_VLM.ask_question()
+    IMG_PROCESSING_VLM.detect_objects()
+    IMG_PROCESSING_VLM.point_to_objects()
+    IMG_PROCESSING_VLM.analyze_image_complete()
+    """
+
 
     def person_recognition(frame, result_container):
         """
@@ -420,6 +433,7 @@ def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_dete
     
 class VisualCortex():
     def __init__(self,cortex=visual_cortex_core,vlm=visual_cortex_worker_vlm,nerve=optic_nerve_connection,device_index=0,mpm=False):
+        logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,vlm)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: VisualCortex(mpm= multiprocessing.Manager()), to initiate the VisualCortex")
         #processes
@@ -435,6 +449,8 @@ class VisualCortex():
         self.external_img_queue = mpm.Queue(maxsize=20)
         #holds the output of the
         self.internal_vlm_queue = mpm.Queue(maxsize=1)#only hold a single result, this is used to determine if it's ready or not
+        #used to signal on/off VLM, Person Detection, Face Detection
+        self.internal_cortex_process_control_queue = mpm.Queue(maxsize=1)#only hold a single dict of what the cortex should be running
         #stat tracker
         self.external_stats_queue = mpm.Queue(maxsize=5)
         #nerve control function
@@ -444,10 +460,25 @@ class VisualCortex():
         # Start visual cortex
         visual_cortex_process = mp.Process(
             target=cortex,
-            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_vlm_queue, vlm)
+            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_vlm_queue, self.internal_cortex_process_control_queue,vlm)
         )
         visual_cortex_process.start()
         self.visual_processes['core'] = visual_cortex_process
+
+        try:
+            self.internal_cortex_process_control_queue.put_nowait()
+        except:
+            logging.error("Unable to send control message to visual cortex, will try one more time")
+            try:
+                self.internal_cortex_process_control_queue.put(timeout=1)#block for 1 second
+            except:
+                logging.error("Still Unable to send control message to visual cortex, Visual Cortex may not function correctly")
+
+    def cortex_control_msg(self,vlm=True,person_detection=True,person_recognition=True):
+        #Booleans to turn on or off certain visual cortex processes
+        return {'vlm':True,
+               'person_detection':True,
+               'person_recognition':True}
 
     def generate_img_frames(self, camera_index=None):
         """Generator function for video streaming from specific camera to web"""
@@ -524,7 +555,7 @@ class VisualCortex():
                             b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
             # Small delay to prevent excessive CPU usage
-            time.sleep(0.03)  # ~30 FPS max
+            time.sleep(1/self.fps_capture_target)  # ~30 FPS max if self.fps_capture_target=30, 0.033ms sleep
                 
     def start_nerve(self,device_index=0):
         # Start optic nerve process for this camera
@@ -1177,6 +1208,7 @@ class AuditoryCortex():
     with sound input device 0
     """
     def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_stt,nerve=auditory_nerve_connection,device_index=0,mpm=False):
+        logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,stt)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
         #processes
@@ -1360,7 +1392,6 @@ class TemporalLobe:
         
         logging.info(f"TemporalLobe initialized with {buffer_duration}s buffer, {update_interval}s updates")
 
-
     def _create_empty_unified_state(self):
         """Create an empty unified state with default values"""
         return {
@@ -1483,7 +1514,7 @@ class TemporalLobe:
                 except queue.Empty:
                     pass
             
-            # NEW: Collect visual stats
+            # Collect visual stats
             if self.visual_cortex:
                 try:
                     visual_stats = self.visual_cortex.external_stats_queue.get_nowait()
@@ -1493,7 +1524,7 @@ class TemporalLobe:
                 except queue.Empty:
                     pass
             
-            # NEW: Collect audio stats  
+            # Collect audio stats  
             if self.auditory_cortex:
                 try:
                     audio_stats = self.auditory_cortex.external_stats_queue.get_nowait()
@@ -1585,6 +1616,7 @@ class TemporalLobe:
         self.stats['last_update_time'] = time.time()
         self.last_unified_state = unified_state
         
+        print(f"\nUnified State:\n{unified_state}\n\n")
         return unified_state
     
     def start_collection(self):
@@ -2608,10 +2640,6 @@ def signal_handler(sig, frame):
 
 if __name__ == '__main__':
     import signal
-    import sys
-    import time
-    import logging
-    import multiprocessing as mp
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -2639,6 +2667,26 @@ if __name__ == '__main__':
 
     # Get unified state (call this every second or as needed)
     unified_state = temporal_lobe.get_unified_state()
+
+    unified_state = print({'timestamp': 1758855474.7669709, 
+                        'formatted_time': '22:57:54', 
+                        'person_detected': True, 
+                        'person_match': (False,), 
+                        'person_match_probability': 0.0, 
+                        'caption': ' The image shows a man with a beard and short hair, wearing a black hoodie over a white t-shirt. He is looking upwards and slightly to his left. The background features a cream-colored wall with vertical lines and a dark brown or black ceiling or trim.', 
+                        'vlm_timestamp': 1758855473.9019487, 
+                        'visual_camera_index': 0, 
+                        'speech_detected': True, 
+                        'transcription': "Is that the unified state format? It's hard for me to tell. If I keep  talking maybe I'll be able to see a transcript I guess I will I'm not", 
+                        'final_transcript': False, 
+                        'voice_match': False, 
+                        'voice_probability': 0.0, 
+                        'audio_device_index': 0, 
+                        'transcription_timestamp': 1758855474.7669709, 
+                        'visual_frames_in_update': 1, 
+                        'audio_frames_in_update': 31, 
+                        'buffer_visual_frames': 1, 
+                        'buffer_audio_frames': 31})
     """
 
 
@@ -2652,21 +2700,21 @@ if __name__ == '__main__':
     
     try:
         print("\n" + "="*80)
-        print("🧠 TEMPORAL LOBE CONTROL SYSTEM STARTING 🧠")
+        print(" TEMPORAL LOBE CONTROL SYSTEM STARTING ")
         print("="*80)
         print("Flask server with multi-camera OpenCV streaming and audio processing...")
-        print("🌐 Visit http://localhost:5000 to view the interface")
-        print("\n📡 API Endpoints:")
-        print("  🎥 Visual System:")
+        print("Visit http://localhost:5000 to view the interface")
+        print("\n API Endpoints:")
+        print("   Visual System:")
         print("    GET /start/<camera_index>       - Start specific optic nerve")
         print("    GET /stop/<camera_index>        - Stop specific optic nerve")
         print("    GET /video_feed/<camera_index>  - Stream from specific camera")
         print("    GET /recent_captions/<camera_index> - Get recent captions")
-        print("  🎤 Audio System:")
+        print("Audio System:")
         print("    GET /start_audio/<device_index> - Start specific auditory nerve")
         print("    GET /stop_audio/<device_index>  - Stop specific auditory nerve")
         print("    GET /recent_transcripts         - Get recent transcriptions")
-        print("  📊 System Status:")
+        print("   System Status:")
         print("    GET /stats                      - Get performance statistics")
         print("    GET /unified_state              - Get current unified state")
         print("    GET /stop_all                   - Stop all systems")
@@ -2675,11 +2723,11 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
         
     except KeyboardInterrupt:
-        print("\n🛑 Keyboard interrupt received...")
+        print("\n🛑Keyboard interrupt received...")
     except Exception as e:
-        print(f"\n❌ Server error: {e}")
+        print(f"\n❌Server error: {e}")
     finally:
-        print("\n🔧 Performing cleanup...")
+        print("\nPerforming cleanup...")
         success = temporal_lobe.shutdown_all()
-        print(f"✅ Cleanup {'completed successfully' if success else 'completed with some failures'}")
-        print("👋 Temporal Lobe Control System shutdown complete")
+        print(f"Cleanup {'completed successfully' if success else 'completed with some failures'}")
+        print("Temporal Lobe Control System shutdown complete")
