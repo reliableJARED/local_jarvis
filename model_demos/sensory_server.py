@@ -119,8 +119,7 @@ def optic_nerve_connection(camera_index, internal_nerve_queue, external_stats_qu
         cap.release()
         logging.info(f"Optic nerve process for camera {camera_index} stopped")
 
-
-def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_queue, external_img_queue, internal_vlm_queue, vlm):
+def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_queue, external_img_queue, internal_vlm_queue, internal_cortex_process_control_queue,control_msg_struct,vlm):
     """Worker process for processing image frames from all cameras (visual cortex function)"""
 
     logging.info("Started visual cortex process")
@@ -138,11 +137,30 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
         VLM_availible_local = True
         vlm_process = None
 
+        #tool instructions
+        use_ = control_msg_struct
+        """use_person_detect = control_msg_struct['person_detection']
+        use_person_recognize = control_msg_struct['person_recognition']
+        use_vlm_caption = control_msg_struct['vlm']['caption']
+        use_vlm_query = control_msg_struct['vlm']['query']
+        use_vlm_point = control_msg_struct['vlm']['point']
+        use_vlm_detect = control_msg_struct['vlm']['detect']"""
+
+
+
         while True:
             try:
-                # Get the most recent frame by draining the queue
+                
                 frame_data = None
                 frames_discarded = 0
+                #get control instructions
+                # Keep getting frames until queue is empty, keeping only the last one (LIFO)
+                while True:
+                    try:
+                        use_ = internal_cortex_process_control_queue.get_nowait()
+                        logging.debug(f"visual_cortex_core received new operation instructions: {use_}")
+                    except queue.Empty:
+                        break
                 
                 # Keep getting frames until queue is empty, keeping only the last one (LIFO)
                 while True:
@@ -162,8 +180,12 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                     capture_timestamp = frame_data['capture_timestamp']
                     raw_frame = frame_data['frame']
                     
-                    # Process the frame (blocking)
-                    processed_frame, person_detected = visual_cortex_process_img(raw_frame,IMG_DETECTION_CNN)
+                    
+                    processed_frame=raw_frame
+                    person_detected = False
+                    if use_['person_detection']:
+                        # Process the frame (blocking)
+                        processed_frame, person_detected = visual_cortex_process_img(raw_frame,IMG_DETECTION_CNN)
                     
                     # Push processed frame out for viewing 
                     try:
@@ -185,13 +207,15 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                             pass
 
                     # VLM processing logic
-                    if person_detected and VLM_availible_local:
-                        logging.debug(f"Starting VLM analysis - person detected and VLM not busy")
+                    #TODO: Integrate instruction use in the VLM
+                    if (use_['vlm']['caption'] or use_['vlm']['detect'] != '' or use_['vlm']['point'] != '' or use_['vlm']['query']  != '') and VLM_availible_local:
+                        logging.debug(f"Starting VLM analysis - VLM not busy")
                         VLM_availible_local = False
                         try:
+                            #flag that the VLM is in use
                             external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
                         except queue.Full:
-                            # Drop oldest and try again
+                            # Drop oldest and try again, critical we get the not in use message posted
                             try:
                                 _ = external_stats_queue.get_nowait()
                                 external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
@@ -200,21 +224,25 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
 
                         vlm_process = mp.Process(
                             target=vlm,
-                            args=(raw_frame, device_index, capture_timestamp, person_detected, internal_vlm_queue),
+                            args=(raw_frame, device_index, capture_timestamp, person_detected, internal_vlm_queue,use_),
                             daemon=True)
                         vlm_process.start()
 
                     # Create processed frame data
                     processed_data = {
-                        'capture_timestamp': capture_timestamp,
-                        'person_detected': person_detected,
-                        'person_match': False,
-                        'person_match_probability': 0.0,
-                        'camera_index': device_index,
-                        'caption': "",
-                        'vlm_timestamp': None,
-                        'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S')
-                    }
+                            'capture_timestamp':capture_timestamp,
+                            'person_detected':person_detected,
+                            'person_match': False,
+                            'person_match_probability': 0.0,
+                            'camera_index': device_index,
+                            'caption': "",
+                            'query': "",
+                            'obj_detect': [],
+                            'points': [],
+                            'vlm_timestamp': capture_timestamp,
+                            'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S')
+                        }
+                    
 
                     # Check for VLM results
                     try:
@@ -306,15 +334,23 @@ def visual_cortex_process_img(frame, IMG_DETECTION_CNN):
 
     return frame, person_detected
 
-def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_detected,visual_cortex_internal_queue_vlm):
+def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_detected,visual_cortex_internal_queue_vlm,instructions):
     """Thread function to run VLM (Moondream) analysis without blocking main processing"""
     # Import and initialize VLM Moondream (done in thread to avoid blocking memory if it stays loaded)
     from moondream_ import MoondreamWrapper
     IMG_PROCESSING_VLM = MoondreamWrapper(local_files_only=True)
 
     """
-    The VLM has the following methods. Currently only the caption_image() function is used.
-    
+    #TODO: Integrate the use of 'instructions' arg
+    instructions = {'vlm': {'caption': True, 
+                        'detect': '', 
+                        'point': '', 
+                        'query': ''},
+                'person_detection': True,
+                'person_recognition': True}
+
+    The VLM has the following skills/methods.
+
     IMG_PROCESSING_VLM.caption_image()
     IMG_PROCESSING_VLM.ask_question()
     IMG_PROCESSING_VLM.detect_objects()
@@ -361,6 +397,9 @@ def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_dete
                             'person_match_probability': 0.0,
                             'camera_index': camera_index,
                             'caption': "",
+                            'query': "",
+                            'obj_detect': [],
+                            'points': [],
                             'vlm_timestamp': capture_timestamp,
                             'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S')
                         }
@@ -384,30 +423,42 @@ def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_dete
         
         # Convert to PIL Image
         pil_frame = Image.fromarray(frame_rgb)
+
         #run person recognition
-        # Store result in a shared container
-        recognition_result_container = [False, 0.0]  # [match_result, probability]
-        person_recognition_thread = threading.Thread(
-                            target=person_recognition,
-                            args=(frame, recognition_result_container),
-                            name="person_recognition_worker"
-                        )
-        person_recognition_thread.start()
+        person_recognition_thread = False
+        person_recognition_result_container = [False, 0.0]  # [match_result, probability]
+
+        if instructions['person_recognition']:
+            # Store result in a shared container
+            person_recognition_thread = threading.Thread(
+                                target=person_recognition,
+                                args=(frame, person_recognition_result_container),
+                                name="person_recognition_worker"
+                            )
+            person_recognition_thread.start()
 
         # Generate caption
-        caption = IMG_PROCESSING_VLM.caption_image(pil_frame, length="normal")
+        caption = ""
+        if instructions['vlm']['caption']:
+            caption = IMG_PROCESSING_VLM.caption_image(pil_frame, length="normal")
 
-        # Get (blocking) voice recognition results
-        person_recognition_thread.join()
-                        
+        ###
+        #TODO: Implement Points, Detection, Query - note when doing multi will want to use
+        #IMG_PROCESSING_VLM.encode_image(image) first
+        ###
+
+        # Get (blocking) facial recognition results from our thread
+        if person_recognition_thread:
+            person_recognition_thread.join()       
+        
         # Set recognition results from the container
-        person_match_result = recognition_result_container[0]
-        match_probability = recognition_result_container[1]
+        person_match_result = person_recognition_result_container[0]
+        match_probability = person_recognition_result_container[1]
         
         vlm_timestamp = time.time()
 
         # Add to visual scene analysis data
-        visual_scene_data['caption']=caption
+        visual_scene_data['caption'] = caption
         visual_scene_data['vlm_timestamp']=vlm_timestamp
         visual_scene_data['formatted_time']=datetime.fromtimestamp(vlm_timestamp).strftime('%H:%M:%S')
         visual_scene_data['person_match'] = person_match_result,
@@ -456,14 +507,19 @@ class VisualCortex():
         #nerve control function
         self.nerve = nerve
         self.fps_capture_target = 30
+        #get a copy of default cortex control message (setting)
+        ctrl_msg_struct = self._cortex_control_msg()
 
         # Start visual cortex
         visual_cortex_process = mp.Process(
             target=cortex,
-            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_vlm_queue, self.internal_cortex_process_control_queue,vlm)
+            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_vlm_queue, self.internal_cortex_process_control_queue,ctrl_msg_struct,vlm)
         )
         visual_cortex_process.start()
         self.visual_processes['core'] = visual_cortex_process
+
+        #set the initial visual cortex operational instructions
+        _ = self.send_cortex_instructions(ctrl_msg_struct)
 
         try:
             self.internal_cortex_process_control_queue.put_nowait()
@@ -474,11 +530,71 @@ class VisualCortex():
             except:
                 logging.error("Still Unable to send control message to visual cortex, Visual Cortex may not function correctly")
 
-    def cortex_control_msg(self,vlm=True,person_detection=True,person_recognition=True):
-        #Booleans to turn on or off certain visual cortex processes
-        return {'vlm':True,
-               'person_detection':True,
-               'person_recognition':True}
+    def send_cortex_instructions(self, vlm={}, person_detection=True, person_recognition=True):
+        """
+        Send cortex instructions, validate instructions. These instructions are used to set what the visual cortex is doing
+        """
+        # Quick type checks
+        if not isinstance(vlm, dict):
+            logging.error(f"vlm must be dict, got {type(vlm).__name__}")
+            return False
+        
+        if not isinstance(person_detection, bool):
+            logging.error(f"person_detection must be bool, got {type(person_detection).__name__}")
+            return False
+            
+        if not isinstance(person_recognition, bool):
+            logging.error(f"person_recognition must be bool, got {type(person_recognition).__name__}")
+            return False
+        
+        # Check vlm contents
+        valid_keys = {'caption', 'detect', 'point', 'query'}
+        for key, value in vlm.items():
+            if key not in valid_keys:
+                logging.error(f"Invalid vlm key: {key}")
+                return False
+            
+            if key == 'caption' and not isinstance(value, bool):
+                logging.error(f"vlm['caption'] must be bool, got {type(value).__name__}")
+                return False
+                
+            if key in {'detect', 'point', 'query'} and not isinstance(value, str):
+                logging.error(f"vlm['{key}'] must be str, got {type(value).__name__}")
+                return False
+        
+        # Create message payload
+        msg = {
+            'vlm': vlm,
+            'person_detection': person_detection,
+            'person_recognition': person_recognition
+        }
+        
+        # Send instructions with timeout handling
+        logging.info("Sending cortex instructions")
+        try:
+            # Try immediate send first
+            self.internal_cortex_process_control_queue.put_nowait(msg)
+            logging.info("Cortex instructions sent successfully")
+            return True
+        except queue.Full:
+            logging.warning("Queue full, attempting with timeout...")
+            try:
+                # Fallback with timeout
+                self.internal_cortex_process_control_queue.put(msg, timeout=1)
+                logging.info("Cortex instructions sent successfully (with timeout)")
+                return True
+            except queue.Full:
+                logging.error("Failed to send cortex instructions - queue remains full after timeout")
+                return False
+
+    def _cortex_control_msg(self):
+        """Define the default structure for cortex control messages. Controls what processes it runs on image analysis"""
+        return {'vlm': {'caption': True, 
+                        'detect': '', 
+                        'point': '', 
+                        'query': ''},
+                'person_detection': True,
+                'person_recognition': True}
 
     def generate_img_frames(self, camera_index=None):
         """Generator function for video streaming from specific camera to web"""
@@ -1616,7 +1732,7 @@ class TemporalLobe:
         self.stats['last_update_time'] = time.time()
         self.last_unified_state = unified_state
         
-        print(f"\nUnified State:\n{unified_state}\n\n")
+        
         return unified_state
     
     def start_collection(self):
@@ -2640,6 +2756,7 @@ def signal_handler(sig, frame):
 
 if __name__ == '__main__':
     import signal
+    import socket
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -2720,6 +2837,10 @@ if __name__ == '__main__':
         print("    GET /stop_all                   - Stop all systems")
         print("="*80)
         
+        hostname = socket.gethostname()
+        ip_address = socket.gethostbyname(hostname)
+        print(f"Flask server running on IP: {ip_address}")
+
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
         
     except KeyboardInterrupt:
