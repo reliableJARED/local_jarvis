@@ -791,9 +791,6 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                     except queue.Empty:
                         logging.debug("No data in internal_transcription_queue")
                         
-
-                    print(f"\nCortex Output:\n{cortex_output}\n\n")
-                    
                     # Put processed audio in output queue
                     try:
                         external_cortex_queue.put_nowait(cortex_output)#-This data will be lost if queue is full
@@ -1336,17 +1333,33 @@ class TemporalLobe:
         self.running = False
         self.collection_thread = None
         
-        # Statistics
+        # Statistics - Updated to include all FPS stats
         self.stats = {
+            # TemporalLobe processing stats
             'visual_frames_processed': 0,
             'audio_frames_processed': 0,
             'unified_updates_created': 0,
             'last_update_time': None,
             'audio_realtime_frames_relayed': 0,
-            'visual_realtime_frames_relayed': 0
+            'visual_realtime_frames_relayed': 0,
+            
+            # Visual system FPS stats (from external_stats_queue)
+            'visual_cortex_fps': 0.0,
+            'last_visual_cortex': None,
+            'VLM_availible': True,  # VLM availability status
+            
+            # Audio system FPS stats (from external_stats_queue)  
+            'auditory_cortex_fps': 0.0,
+            'last_auditory_cortex': None,
+            
+            # Per-device nerve FPS stats (dynamic based on active devices)
+            # Format: 'optic_nerve_fps_0': fps_value, 'last_optic_nerve_0': timestamp
+            # Format: 'auditory_nerve_fps_0': fps_value, 'last_auditory_nerve_0': timestamp
+            # Format: 'stream_fps_0': fps_value (for video streaming)
         }
         
         logging.info(f"TemporalLobe initialized with {buffer_duration}s buffer, {update_interval}s updates")
+
 
     def _create_empty_unified_state(self):
         """Create an empty unified state with default values"""
@@ -1398,7 +1411,7 @@ class TemporalLobe:
         }
         
         return key in defaults and value == defaults[key]
-
+    
     def _collect_frames(self):
         """Background thread to continuously collect frames from both cortexes and relay to real-time queues"""
         logging.info("TemporalLobe frame collection started")
@@ -1467,6 +1480,26 @@ class TemporalLobe:
                                 except queue.Full:
                                     logging.debug("Audio realtime queue full - frame dropped")
                                     
+                except queue.Empty:
+                    pass
+            
+            # NEW: Collect visual stats
+            if self.visual_cortex:
+                try:
+                    visual_stats = self.visual_cortex.external_stats_queue.get_nowait()
+                    # Update our stats dictionary with visual system stats
+                    self.stats.update(visual_stats)
+                    logging.debug(f"Updated visual stats: {visual_stats}")
+                except queue.Empty:
+                    pass
+            
+            # NEW: Collect audio stats  
+            if self.auditory_cortex:
+                try:
+                    audio_stats = self.auditory_cortex.external_stats_queue.get_nowait()
+                    # Update our stats dictionary with audio system stats
+                    self.stats.update(audio_stats)
+                    logging.debug(f"Updated audio stats: {audio_stats}")
                 except queue.Empty:
                     pass
             
@@ -1553,7 +1586,7 @@ class TemporalLobe:
         self.last_unified_state = unified_state
         
         return unified_state
-
+    
     def start_collection(self):
         """Start background frame collection"""
         if self.running:
@@ -1661,14 +1694,14 @@ class TemporalLobe:
         return not had_failure
 
     def get_stats(self):
-        """Get processing statistics"""
+        """Get comprehensive processing statistics including all FPS data"""
         return {
             **self.stats,
             'buffer_visual_size': len(self.visual_buffer),
             'buffer_audio_size': len(self.audio_buffer),
             'collection_running': self.running
         }
-
+    
     def get_last_unified_state(self):
         """Get the last created unified state without creating a new one"""
         return self.last_unified_state
@@ -1742,6 +1775,11 @@ def index():
             border-radius: 8px;
             padding: 15px;
             text-align: center;
+        }
+        
+        .stat-item.error {
+            background: rgba(139, 0, 0, 0.3);
+            border-color: #ff6b6b;
         }
         
         .stat-label {
@@ -2165,35 +2203,89 @@ def index():
             }
         }
         
-        // Update stats display
+        // Update stats display dynamically from all stats keys
         function updateStats(stats) {
             const statsGrid = document.getElementById('stats-grid');
-            statsGrid.innerHTML = `
+            
+            // Helper function to format display names from keys
+            const formatDisplayName = (key) => {
+                return key
+                    .replace(/_/g, ' ')  // Replace underscores with spaces
+                    .split(' ')
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1))  // Capitalize each word
+                    .join(' ');
+            };
+            
+            // Helper function to format values
+            const formatValue = (key, value) => {
+                if (value === undefined || value === null) return 'N/A';
+                
+                // Format FPS values
+                if (key.includes('fps')) {
+                    return typeof value === 'number' ? value.toFixed(1) : value.toString();
+                }
+                
+                // Format boolean values
+                if (typeof value === 'boolean') {
+                    if (key.includes('running')) return value ? 'ACTIVE' : 'STOPPED';
+                    if (key.includes('availible') || key.includes('available')) return value ? 'YES' : 'BUSY';
+                    return value ? 'TRUE' : 'FALSE';
+                }
+                
+                // Format timestamps (values that look like Unix timestamps)
+                if (key.includes('last_') && typeof value === 'number' && value > 1000000000) {
+                    const ageSeconds = Date.now() / 1000 - value;
+                    return `${ageSeconds.toFixed(1)}s ago`;
+                }
+                
+                // Default formatting
+                return value.toString();
+            };
+            
+            // Sort keys for better organization
+            const sortedKeys = Object.keys(stats).sort((a, b) => {
+                // Priority order for better visual organization
+                const priority = {
+                    'visual_frames_processed': 1,
+                    'audio_frames_processed': 2,
+                    'unified_updates_created': 3,
+                    'buffer_visual_size': 4,
+                    'buffer_audio_size': 5,
+                    'collection_running': 6,
+                    'visual_cortex_fps': 7,
+                    'auditory_cortex_fps': 8,
+                    'VLM_availible': 9
+                };
+                
+                const priorityA = priority[a] || 100;
+                const priorityB = priority[b] || 100;
+                
+                if (priorityA !== priorityB) {
+                    return priorityA - priorityB;
+                }
+                
+                // Secondary sort: FPS stats together, then alphabetical
+                if (a.includes('fps') && !b.includes('fps')) return -1;
+                if (!a.includes('fps') && b.includes('fps')) return 1;
+                
+                return a.localeCompare(b);
+            });
+            
+            // Build HTML for all stats
+            let html = '';
+            sortedKeys.forEach(key => {
+                const displayName = formatDisplayName(key);
+                const displayValue = formatValue(key, stats[key]);
+                
+                html += `
                 <div class="stat-item">
-                    <div class="stat-label">Visual Frames</div>
-                    <div class="stat-value">${stats.visual_frames_processed || 0}</div>
+                    <div class="stat-label">${displayName}</div>
+                    <div class="stat-value">${displayValue}</div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-label">Audio Frames</div>
-                    <div class="stat-value">${stats.audio_frames_processed || 0}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">Unified Updates</div>
-                    <div class="stat-value">${stats.unified_updates_created || 0}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">Visual Buffer</div>
-                    <div class="stat-value">${stats.buffer_visual_size || 0}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">Audio Buffer</div>
-                    <div class="stat-value">${stats.buffer_audio_size || 0}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">Collection</div>
-                    <div class="stat-value">${stats.collection_running ? 'ACTIVE' : 'STOPPED'}</div>
-                </div>
-            `;
+                `;
+            });
+            
+            statsGrid.innerHTML = html;
         }
 
         // Store transcripts persistently
@@ -2277,6 +2369,8 @@ def index():
                 if (statsResponse.ok) {
                     const stats = await statsResponse.json();
                     updateStats(stats);
+                } else {
+                    console.error('Failed to fetch stats:', statsResponse.status);
                 }
                 
                 // Get unified state
@@ -2284,6 +2378,8 @@ def index():
                 if (unifiedResponse.ok) {
                     const unified = await unifiedResponse.json();
                     updateStatusFromUnified(unified);
+                } else {
+                    console.error('Failed to fetch unified state:', unifiedResponse.status);
                 }
                 
                 // Get recent transcripts
@@ -2291,6 +2387,8 @@ def index():
                 if (transcriptsResponse.ok) {
                     const transcripts = await transcriptsResponse.json();
                     updateTranscripts(transcripts.transcripts || []);
+                } else {
+                    console.error('Failed to fetch transcripts:', transcriptsResponse.status);
                 }
                 
                 // Get recent captions for each camera and store persistently
@@ -2318,6 +2416,8 @@ def index():
                                 }
                             }
                         });
+                    } else {
+                        console.error(`Failed to fetch captions for camera ${i}:`, captionsResponse.status);
                     }
                 }
                 
@@ -2327,6 +2427,17 @@ def index():
                 
             } catch (error) {
                 console.error('Data update error:', error);
+                
+                // Show error in stats grid if completely failed
+                const statsGrid = document.getElementById('stats-grid');
+                if (statsGrid) {
+                    statsGrid.innerHTML = `
+                        <div class="stat-item error">
+                            <div class="stat-label">Error</div>
+                            <div class="stat-value">Failed to load stats</div>
+                        </div>
+                    `;
+                }
             }
         }
         
