@@ -1972,18 +1972,36 @@ def index():
         
         .mic-unit {
             text-align: center;
-            background: rgba(42, 24, 16, 0.8);
-            border: 2px solid #654321;
+            background: linear-gradient(145deg, #b87333 0%, #cd853f 20%, #daa520 40%, #cd853f 70%, #8b4513 100%);
+            border: 3px solid #654321;
             border-radius: 12px;
             padding: 20px;
             min-width: 200px;
+            box-shadow: 
+                inset 0 2px 4px rgba(255, 255, 255, 0.2),
+                inset 0 -2px 4px rgba(0, 0, 0, 0.3),
+                0 4px 8px rgba(0, 0, 0, 0.4);
+            position: relative;
+        }
+        
+        .mic-unit::before {
+            content: '';
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            right: 5px;
+            height: 30%;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.1) 50%, transparent 100%);
+            border-radius: 8px 8px 0 0;
+            pointer-events: none;
         }
         
         .mic-label {
             font-size: 1.2em;
             font-weight: 700;
             margin-bottom: 15px;
-            color: #ffd700;
+            color: #2f1b14;
+            text-shadow: 1px 1px 2px rgba(255, 255, 255, 0.3);
         }
         
         .control-button {
@@ -2045,6 +2063,7 @@ def index():
             padding: 15px;
             max-height: 150px;
             overflow-y: auto;
+            font-family: 'Arial', sans-serif;
         }
         
         .transcript-item {
@@ -2052,8 +2071,11 @@ def index():
             border-left: 3px solid #d4af37;
             padding: 8px 12px;
             margin: 5px 0;
-            font-size: 0.9em;
+            font-size: 1.1em;
             border-radius: 4px;
+            font-family: 'Arial', sans-serif;
+            color: #f0f0f0;
+            line-height: 1.5;
         }
         
         /* Video Section */
@@ -2077,18 +2099,36 @@ def index():
         
         .camera-unit {
             text-align: center;
-            background: rgba(42, 24, 16, 0.8);
-            border: 2px solid #654321;
+            background: linear-gradient(145deg, #b87333 0%, #cd853f 20%, #daa520 40%, #cd853f 70%, #8b4513 100%);
+            border: 3px solid #654321;
             border-radius: 12px;
             padding: 20px;
             min-width: 300px;
+            box-shadow: 
+                inset 0 2px 4px rgba(255, 255, 255, 0.2),
+                inset 0 -2px 4px rgba(0, 0, 0, 0.3),
+                0 4px 8px rgba(0, 0, 0, 0.4);
+            position: relative;
+        }
+        
+        .camera-unit::before {
+            content: '';
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            right: 5px;
+            height: 30%;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.1) 50%, transparent 100%);
+            border-radius: 8px 8px 0 0;
+            pointer-events: none;
         }
         
         .camera-label {
             font-size: 1.2em;
             font-weight: 700;
             margin-bottom: 15px;
-            color: #ffd700;
+            color: #2f1b14;
+            text-shadow: 1px 1px 2px rgba(255, 255, 255, 0.3);
         }
         
         .video-feed {
@@ -2098,7 +2138,23 @@ def index():
             border-radius: 8px;
             background: #000;
             margin: 15px auto;
-            display: block;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ff4444;
+            font-family: 'Orbitron', monospace;
+            font-size: 1.2em;
+            font-weight: 700;
+            text-shadow: 0 0 10px #ff4444;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .video-feed.has-video {
+            color: transparent;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
         }
         
         /* Full-width captions section */
@@ -2121,6 +2177,7 @@ def index():
         .captions-container {
             max-height: 200px;
             overflow-y: auto;
+            font-family: 'Arial', sans-serif;
         }
         
         .caption-item {
@@ -2128,21 +2185,24 @@ def index():
             border-left: 3px solid #d4af37;
             padding: 12px 15px;
             margin: 8px 0;
-            font-size: 0.95em;
+            font-size: 1.1em;
             border-radius: 4px;
-            line-height: 1.4;
+            line-height: 1.6;
             word-wrap: break-word;
+            font-family: 'Arial', sans-serif;
         }
         
         .caption-item .camera-label {
-            font-size: 0.8em;
+            font-size: 0.9em;
             color: #b8860b;
             margin-bottom: 5px;
             font-weight: 700;
+            font-family: 'Orbitron', monospace;
         }
         
         .caption-text {
-            color: #e6e6e6;
+            color: #f0f0f0;
+            font-weight: 500;
         }
         
         @keyframes pulse {
@@ -2221,7 +2281,7 @@ def index():
             <div class="camera-controls">
                 <div class="camera-unit">
                     <div class="camera-label">Camera 0</div>
-                    <img class="video-feed" id="video-0" src="" alt="Camera 0 Feed">
+                    <div class="video-feed" id="video-0">No Signal</div>
                     <button class="control-button" id="cam-0-btn" onclick="toggleCamera(0)">ACTIVATE</button>
                     <div class="status-lights">
                         <div class="status-light inactive" id="cam-0-active" title="Camera Active"></div>
@@ -2230,7 +2290,7 @@ def index():
                 </div>
                 <div class="camera-unit">
                     <div class="camera-label">Camera 1</div>
-                    <img class="video-feed" id="video-1" src="" alt="Camera 1 Feed">
+                    <div class="video-feed" id="video-1">No Signal</div>
                     <button class="control-button" id="cam-1-btn" onclick="toggleCamera(1)">ACTIVATE</button>
                     <div class="status-lights">
                         <div class="status-light inactive" id="cam-1-active" title="Camera Active"></div>
@@ -2239,7 +2299,7 @@ def index():
                 </div>
                 <div class="camera-unit">
                     <div class="camera-label">Camera 2</div>
-                    <img class="video-feed" id="video-2" src="" alt="Camera 2 Feed">
+                    <div class="video-feed" id="video-2">No Signal</div>
                     <button class="control-button" id="cam-2-btn" onclick="toggleCamera(2)">ACTIVATE</button>
                     <div class="status-lights">
                         <div class="status-light inactive" id="cam-2-active" title="Camera Active"></div>
@@ -2337,13 +2397,22 @@ def index():
                 btn.classList.add('active');
                 activeLight.classList.remove('inactive');
                 activeLight.classList.add('active-yellow');
-                video.src = `/video_feed/${index}`;
+                
+                // Set video feed as background image and hide "No Signal" text
+                video.style.backgroundImage = `url(/video_feed/${index})`;
+                video.classList.add('has-video');
+                video.textContent = '';
             } else {
                 btn.textContent = 'ACTIVATE';
                 btn.classList.remove('active');
                 activeLight.classList.remove('active-yellow');
                 activeLight.classList.add('inactive');
-                video.src = '';
+                
+                // Remove video feed and show "No Signal" text
+                video.style.backgroundImage = '';
+                video.classList.remove('has-video');
+                video.textContent = 'No Signal';
+                
                 // Also clear person detection
                 const personLight = document.getElementById(`cam-${index}-person`);
                 personLight.classList.remove('speech-orange');
