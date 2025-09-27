@@ -92,7 +92,7 @@ def optic_nerve_connection(camera_index, internal_nerve_queue, external_stats_qu
         cap.release()
         logging.info(f"Optic nerve process for camera {camera_index} stopped")
 
-def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_queue, external_img_queue, internal_from_vlm_queue, internal_to_vlm_queue,internal_cortex_process_control_queue,control_msg_struct,vlm):
+def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_queue, external_img_queue, internal_from_vlm_queue, internal_to_vlm_queue,internal_cortex_process_control_queue,control_msg_struct,vlm,gpu_to_use):
     """Worker process for processing image frames from all cameras (visual cortex function)"""
 
     logging.info("Started visual cortex process")
@@ -106,21 +106,23 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
         frame_count = 0
         start_time = time.time()
 
-        #local VLM states for this process
-        VLM_availible_local = True
-        vlm_process = None
-
         #tool instructions
         use_ = control_msg_struct
-        """use_person_detect = control_msg_struct['person_detection']
+        """schema:
+        use_person_detect = control_msg_struct['person_detection']
         use_person_recognize = control_msg_struct['person_recognition']
         use_vlm_caption = control_msg_struct['vlm']['caption']
         use_vlm_query = control_msg_struct['vlm']['query']
         use_vlm_point = control_msg_struct['vlm']['point']
         use_vlm_detect = control_msg_struct['vlm']['detect']"""
         limitedGPUenv = False
+        #local VLM states for this process
+        VLM_availible_local = True
+        vlm_process = None
+
         if not limitedGPUenv:
-            vlm_gpu = str(1)
+            logging.debug("starting a long running VLM process")
+            vlm_gpu = str(gpu_to_use)
             vlm_process = mp.Process(target=vlm, args=(limitedGPUenv,internal_to_vlm_queue, internal_from_vlm_queue,vlm_gpu),daemon=True)
             vlm_process.start()
 
@@ -235,9 +237,10 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                         vlm_data = internal_from_vlm_queue.get_nowait()
                         processed_data.update(vlm_data)  # Merge VLM results
                         VLM_availible_local = True
+
                         if vlm_process:
                             if limitedGPUenv:
-                                #kill the vlm in limited gpu env so we can give back memory
+                                #end the vlm in limited gpu env so we can give back GPU memory
                                 vlm_process.join()
                         try:
                             external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
@@ -460,7 +463,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
             
                 
             try:
-                logging.debug(f"Starting VLM (moondream) analysis for camera {camera_index}")
+                logging.debug(f"Starting VLM analysis for camera {camera_index}")
                 
                 # Convert to PIL Image
                 pil_frame = Image.fromarray(frame_rgb)
@@ -481,7 +484,6 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
                 # Generate caption
                 caption = ""
                 if instructions['vlm']['caption']:
-                    
                     caption = IMG_PROCESSING_VLM.caption_image(pil_frame, length="normal")
 
                 ###
@@ -489,7 +491,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
                 #IMG_PROCESSING_VLM.encode_image(image) first
                 ###
 
-                # Get (blocking) facial recognition results from our thread
+                # If we are using person recognition, get (blocking) facial recognition results from our thread
                 if person_recognition_thread:
                     person_recognition_thread.join()       
                 
@@ -518,6 +520,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
                         except:
                             logging.debug(f"Failed to add VLM analysis to queue")
 
+                #flags to control if we keep looping or if this thread is one and done
                 single_run = limitedGPUenv
                 got_a_frame = False
             except Exception as e:
@@ -529,7 +532,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
 
     
 class VisualCortex():
-    def __init__(self,cortex=visual_cortex_core,vlm=visual_cortex_worker_vlm,nerve=optic_nerve_connection,device_index=0,mpm=False):
+    def __init__(self,cortex=visual_cortex_core,vlm=visual_cortex_worker_vlm,nerve=optic_nerve_connection,device_index=0,mpm=False,gpu_to_use=0):
         logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,vlm)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: VisualCortex(mpm= multiprocessing.Manager()), to initiate the VisualCortex")
@@ -556,11 +559,12 @@ class VisualCortex():
         self.fps_capture_target = 30
         #get a copy of default cortex control message (setting)
         ctrl_msg_struct = self._cortex_control_msg()
-
+        #set the GPU to use for the VLM model
+        gpu_to_use = gpu_to_use
         # Start visual cortex
         visual_cortex_process = mp.Process(
             target=cortex,
-            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_from_vlm_queue, self.internal_to_vlm_queue,self.internal_cortex_process_control_queue,ctrl_msg_struct,vlm)
+            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_from_vlm_queue, self.internal_to_vlm_queue,self.internal_cortex_process_control_queue,ctrl_msg_struct,vlm,gpu_to_use)
         )
         visual_cortex_process.start()
         self.visual_processes['core'] = visual_cortex_process
@@ -2880,8 +2884,10 @@ if __name__ == '__main__':
     # Global multiprocessing queues and managers MUST go here because of issues with Windows
     manager = mp.Manager()
     
-    # Visual Cortex
-    vc = VisualCortex(mpm=manager)
+    # Visual Cortex - HARD CODE WARNING - GPU 1
+    gpu_to_use=1
+    logging.debug(f"Setting up Visual Cortex VLM on GPU {gpu_to_use}")
+    vc = VisualCortex(mpm=manager,gpu_to_use=gpu_to_use)
     
     #Audio Cortex
     ac = AuditoryCortex(mpm=manager)
