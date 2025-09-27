@@ -23,33 +23,6 @@ log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 
-# Configuration
-QUEUE_SIZE = 5   # Maximum number of frames in queue
-FPS_TARGET = 30   # Target FPS for camera capture, Moondream alone will make 1fps a stretch
-
-# ===== GLOBAL PROCESS TRACKING  =====
-# Visual process tracking
-optic_nerve_processes = {}
-visual_cortex_processes = {}
-# Audio process tracking
-auditory_nerve_processes = {}
-auditory_cortex_processes = {}
-#Temporal Lobe
-temporal_lobe_processes = {}
-#=====================================
-
-
-#Audio Analyis reference
-AUDIO_SCENE = {'device_index': None,
-                    'audio_data': None,
-                    'speech_detected': None,
-                    'final_transcript':False,
-                    'transcription': None, 
-                    'capture_timestamp': None,
-                    'formatted_time':None,
-                    'auditory_cortex_timestamp': None,
-                    'sample_rate':None,
-                    'duration': None}
 
 """
 VISUAL
@@ -119,7 +92,7 @@ def optic_nerve_connection(camera_index, internal_nerve_queue, external_stats_qu
         cap.release()
         logging.info(f"Optic nerve process for camera {camera_index} stopped")
 
-def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_queue, external_img_queue, internal_vlm_queue, internal_cortex_process_control_queue,control_msg_struct,vlm):
+def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_queue, external_img_queue, internal_from_vlm_queue, internal_to_vlm_queue,internal_cortex_process_control_queue,control_msg_struct,vlm):
     """Worker process for processing image frames from all cameras (visual cortex function)"""
 
     logging.info("Started visual cortex process")
@@ -145,6 +118,11 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
         use_vlm_query = control_msg_struct['vlm']['query']
         use_vlm_point = control_msg_struct['vlm']['point']
         use_vlm_detect = control_msg_struct['vlm']['detect']"""
+        limitedGPUenv = False
+        if not limitedGPUenv:
+            vlm_gpu = str(1)
+            vlm_process = mp.Process(target=vlm, args=(limitedGPUenv,internal_to_vlm_queue, internal_from_vlm_queue,vlm_gpu),daemon=True)
+            vlm_process.start()
 
 
 
@@ -221,12 +199,20 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                                 external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
                             except queue.Empty:
                                 pass
-
-                        vlm_process = mp.Process(
-                            target=vlm,
-                            args=(raw_frame, device_index, capture_timestamp, person_detected, internal_vlm_queue,use_),
-                            daemon=True)
-                        vlm_process.start()
+                        #If we are in a limited GPU situation, we load, use, and destroy the VLM. Else we are are using the one loaded in mem
+                        if limitedGPUenv:
+                            vlm_gpu = str(0)#default, assume there is only 1 gpu in a situation like this
+                            vlm_process = mp.Process(
+                                target=vlm,
+                                args=(limitedGPUenv,internal_to_vlm_queue, internal_from_vlm_queue,vlm_gpu),
+                                daemon=True)
+                            vlm_process.start()
+                        
+                        try:
+                            #put the frame in queue for the VLM
+                            internal_to_vlm_queue.put_nowait({'frame':raw_frame,'device_index':device_index,'capture_timestamp':capture_timestamp, 'person_detected':person_detected,'instructions':use_})
+                        except queue.Full:
+                            logging.error("Unable to put frame in the VLM queue for analysis - Queue FULL")
 
                     # Create processed frame data
                     processed_data = {
@@ -246,11 +232,13 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
 
                     # Check for VLM results
                     try:
-                        vlm_data = internal_vlm_queue.get_nowait()
+                        vlm_data = internal_from_vlm_queue.get_nowait()
                         processed_data.update(vlm_data)  # Merge VLM results
                         VLM_availible_local = True
                         if vlm_process:
-                            vlm_process.join()
+                            if limitedGPUenv:
+                                #kill the vlm in limited gpu env so we can give back memory
+                                vlm_process.join()
                         try:
                             external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
                         except queue.Full:
@@ -334,9 +322,17 @@ def visual_cortex_process_img(frame, IMG_DETECTION_CNN):
 
     return frame, person_detected
 
-def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_detected,visual_cortex_internal_queue_vlm,instructions):
+def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_internal_queue_vlm,gpu_device):
     """Thread function to run VLM (Moondream) analysis without blocking main processing"""
     # Import and initialize VLM Moondream (done in thread to avoid blocking memory if it stays loaded)
+    import os
+    import logging
+    #Set which GPU we run the VLM on
+    os.environ['CUDA_VISIBLE_DEVICES'] = gpu_device
+
+    log = logging.getLogger('pyvips')
+    log.setLevel(logging.ERROR)
+
     from moondream_ import MoondreamWrapper
     IMG_PROCESSING_VLM = MoondreamWrapper(local_files_only=True)
 
@@ -357,8 +353,7 @@ def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_dete
     IMG_PROCESSING_VLM.point_to_objects()
     IMG_PROCESSING_VLM.analyze_image_complete()
     """
-
-
+    
     def person_recognition(frame, result_container):
         """
         Placeholder function for facial recognition.
@@ -384,102 +379,153 @@ def visual_cortex_worker_vlm(frame, camera_index, capture_timestamp, person_dete
             gc.collect()  # force garbage collection
 
     
-    # Convert frame to RGB for Moondream
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    # Wait for sufficient GPU memory (gpu_min_gb threshold)
-    gpu_min_gb = 3000
-    max_wait_time = 30  # Maximum wait time in seconds
-    wait_start = time.time()
-    visual_scene_data = {
-                            'capture_timestamp':capture_timestamp,
-                            'person_detected':person_detected,
-                            'person_match': False,
-                            'person_match_probability': 0.0,
-                            'camera_index': camera_index,
-                            'caption': "",
-                            'query': "",
-                            'obj_detect': [],
-                            'points': [],
-                            'vlm_timestamp': capture_timestamp,
-                            'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S')
-                        }
-    while torch.cuda.is_available():
-        available_memory = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**2
-        if available_memory >= gpu_min_gb:  # min GPU MB threshold becore starting
-            break
-        if time.time() - wait_start > max_wait_time:
-            logging.error(f"Timeout waiting for GPU memory, aborting VLM analysis")
+
+    
+
+    single_run = False
+    got_a_frame = False
+    while not single_run:
+        frame = False
+        camera_index = False
+        capture_timestamp = False
+        person_detected = False
+        instructions = False
+        while True:
             try:
-                visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
-            except:
-                logging.error(f"Error reporting aborted VLM analysis to visual_cortex_internal_queue_vlm")
-            return
-        time.sleep(0.1)  # Check every 100ms
-        
-    try:
-        logging.debug(f"Starting VLM (moondream) analysis for camera {camera_index}")
-        if torch.cuda.is_available():
-            logging.debug(f"GPU memory available: {available_memory:.1f}MB")
-        
-        # Convert to PIL Image
-        pil_frame = Image.fromarray(frame_rgb)
+                #{'frame':raw_frame,'device_index':device_index,'capture_timestamp':capture_timestamp, 'person_detected':person_detected,'instructions':use_}
+                data = internal_to_vlm_queue.get(timeout=5)#wait for 5 seconds.
+                frame = data['frame']
+                camera_index = data['device_index']
+                capture_timestamp = data['capture_timestamp']
+                person_detected = data['person_detected']
+                instructions = data['instructions']
+                got_a_frame = True
 
-        #run person recognition
-        person_recognition_thread = False
-        person_recognition_result_container = [False, 0.0]  # [match_result, probability]
+            except queue.Empty:
+                #if we didn't get a frame, flag as false
+                if not got_a_frame:
+                    got_a_frame = False
+                break
 
-        if instructions['person_recognition']:
-            # Store result in a shared container
-            person_recognition_thread = threading.Thread(
-                                target=person_recognition,
-                                args=(frame, person_recognition_result_container),
-                                name="person_recognition_worker"
-                            )
-            person_recognition_thread.start()
+        if got_a_frame:
 
-        # Generate caption
-        caption = ""
-        if instructions['vlm']['caption']:
-            caption = IMG_PROCESSING_VLM.caption_image(pil_frame, length="normal")
+            # Convert frame to RGB for Moondream
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Wait for sufficient GPU memory (gpu_min_gb threshold)
+            gpu_min_gb = 3000
+            max_wait_time = 30  # Maximum wait time in seconds
+            wait_start = time.time()
 
-        ###
-        #TODO: Implement Points, Detection, Query - note when doing multi will want to use
-        #IMG_PROCESSING_VLM.encode_image(image) first
-        ###
+            #Mem allocation checker if this is not being used in a persistant thread on a different gpu
+            # Inside the frame processing loop, fix the memory check:
+            if limitedGPUenv:
+                print("Checking GPU memory availability...")
+                while torch.cuda.is_available():
+                    try:
+                        available_memory = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**2
+                        print(f"Available GPU memory: {available_memory:.1f}MB (need {gpu_min_gb}MB)")
+                        
+                        if available_memory >= gpu_min_gb:
+                            print("Sufficient GPU memory available")
+                            break
+                            
+                        if time.time() - wait_start > max_wait_time:
+                            print(f"Timeout waiting for GPU memory after {max_wait_time}s")
+                            # Send error response back
+                            visual_scene_data['caption'] = "ERROR: GPU memory timeout"
+                            try:
+                                visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
+                            except:
+                                pass
+                            return
+                            
+                        time.sleep(0.1)
+                    except Exception as e:
+                        print(f"Error checking GPU memory: {e}")
+                        break
+            
+            visual_scene_data = {
+                                    'capture_timestamp':capture_timestamp,
+                                    'person_detected':person_detected,
+                                    'person_match': False,
+                                    'person_match_probability': 0.0,
+                                    'camera_index': camera_index,
+                                    'caption': "",
+                                    'query': "",
+                                    'obj_detect': [],
+                                    'points': [],
+                                    'vlm_timestamp': capture_timestamp,
+                                    'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S')
+                                }
+            
+                
+            try:
+                logging.debug(f"Starting VLM (moondream) analysis for camera {camera_index}")
+                
+                # Convert to PIL Image
+                pil_frame = Image.fromarray(frame_rgb)
 
-        # Get (blocking) facial recognition results from our thread
-        if person_recognition_thread:
-            person_recognition_thread.join()       
-        
-        # Set recognition results from the container
-        person_match_result = person_recognition_result_container[0]
-        match_probability = person_recognition_result_container[1]
-        
-        vlm_timestamp = time.time()
+                #run person recognition
+                person_recognition_thread = False
+                person_recognition_result_container = [False, 0.0]  # [match_result, probability]
 
-        # Add to visual scene analysis data
-        visual_scene_data['caption'] = caption
-        visual_scene_data['vlm_timestamp']=vlm_timestamp
-        visual_scene_data['formatted_time']=datetime.fromtimestamp(vlm_timestamp).strftime('%H:%M:%S')
-        visual_scene_data['person_match'] = person_match_result,
-        visual_scene_data['person_match_probability'] = match_probability
+                if instructions['person_recognition']:
+                    # Store result in a shared container
+                    person_recognition_thread = threading.Thread(
+                                        target=person_recognition,
+                                        args=(frame, person_recognition_result_container),
+                                        name="person_recognition_worker"
+                                    )
+                    person_recognition_thread.start()
 
-        try:
-            visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
-            logging.debug(f"Added VLM analysis to queue: {caption}")
-        except:
-                # Queue full, remove oldest and add new. Here it is important to put our analysis so system knows it can use VLM again
+                # Generate caption
+                caption = ""
+                if instructions['vlm']['caption']:
+                    
+                    caption = IMG_PROCESSING_VLM.caption_image(pil_frame, length="normal")
+
+                ###
+                #TODO: Implement Points, Detection, Query - note when doing multi will want to use
+                #IMG_PROCESSING_VLM.encode_image(image) first
+                ###
+
+                # Get (blocking) facial recognition results from our thread
+                if person_recognition_thread:
+                    person_recognition_thread.join()       
+                
+                # Set recognition results from the container
+                person_match_result = person_recognition_result_container[0]
+                match_probability = person_recognition_result_container[1]
+                
+                vlm_timestamp = time.time()
+
+                # Add to visual scene analysis data
+                visual_scene_data['caption'] = caption
+                visual_scene_data['vlm_timestamp']=vlm_timestamp
+                visual_scene_data['formatted_time']=datetime.fromtimestamp(vlm_timestamp).strftime('%H:%M:%S')
+                visual_scene_data['person_match'] = person_match_result,
+                visual_scene_data['person_match_probability'] = match_probability
+                
                 try:
-                    visual_cortex_internal_queue_vlm.get_nowait()
                     visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
-                    logging.debug(f"Queue full, replaced oldest analysis")
+                    logging.debug(f"Added VLM analysis to queue: {caption}")
                 except:
-                    logging.debug(f"Failed to add VLM analysis to queue")
+                        # Queue full, remove oldest and add new. Here it is important to put our analysis so system knows it can use VLM again
+                        try:
+                            visual_cortex_internal_queue_vlm.get_nowait()
+                            visual_cortex_internal_queue_vlm.put_nowait(visual_scene_data)
+                            logging.debug(f"Queue full, replaced oldest analysis")
+                        except:
+                            logging.debug(f"Failed to add VLM analysis to queue")
 
-    except Exception as e:
-        logging.error(f"VLM analysis error: {e}")
-        import traceback
-        traceback.print_exc()
+                single_run = limitedGPUenv
+                got_a_frame = False
+            except Exception as e:
+                single_run = limitedGPUenv
+                got_a_frame = False
+                logging.error(f"VLM analysis error: {e}")
+                import traceback
+                traceback.print_exc()
 
     
 class VisualCortex():
@@ -498,8 +544,9 @@ class VisualCortex():
         self.internal_nerve_queue = mpm.Queue(maxsize=20)
         #images shown by generate_image_frame
         self.external_img_queue = mpm.Queue(maxsize=20)
-        #holds the output of the
-        self.internal_vlm_queue = mpm.Queue(maxsize=1)#only hold a single result, this is used to determine if it's ready or not
+        #holds the output of the vlm
+        self.internal_from_vlm_queue = mpm.Queue(maxsize=1)#only hold a single result, this is used to determine if it's ready or not
+        self.internal_to_vlm_queue = mpm.Queue(maxsize=1)#only hold a single result, this is used to determine if it's ready or not
         #used to signal on/off VLM, Person Detection, Face Detection
         self.internal_cortex_process_control_queue = mpm.Queue(maxsize=1)#only hold a single dict of what the cortex should be running
         #stat tracker
@@ -513,7 +560,7 @@ class VisualCortex():
         # Start visual cortex
         visual_cortex_process = mp.Process(
             target=cortex,
-            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_vlm_queue, self.internal_cortex_process_control_queue,ctrl_msg_struct,vlm)
+            args=(self.internal_nerve_queue, self.external_cortex_queue, self.external_stats_queue,self.external_img_queue, self.internal_from_vlm_queue, self.internal_to_vlm_queue,self.internal_cortex_process_control_queue,ctrl_msg_struct,vlm)
         )
         visual_cortex_process.start()
         self.visual_processes['core'] = visual_cortex_process
