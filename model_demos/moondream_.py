@@ -292,7 +292,7 @@ if __name__ == "__main__":
             # Ask questions
             questions: List[str] = [
                 "Do you see a person in the image?",
-                "What is the main subject of this image?",
+                "What does all the text in the image say?",
                 "Is there a person looking directly at the camera, answer True or False only."
             ]
             
@@ -303,10 +303,10 @@ if __name__ == "__main__":
             
             # Detect objects
             faces: List[Any] = moondream.detect_objects(image, "face")
-            people: List[Any] = moondream.detect_objects(image, "person")
+            people: List[Any] = moondream.detect_objects(image, "dogs")
             
             print(f"Found {len(faces)} face(s)")
-            print(f"Found {len(people)} person(s)")
+            print(f"Found {len(people)} dogs(s)")
             
             # Complete analysis
             results: Dict[str, Any] = moondream.analyze_image_complete(image)

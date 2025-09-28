@@ -64,12 +64,21 @@ def optic_nerve_connection(camera_index, internal_nerve_queue, external_stats_qu
                 'capture_timestamp': timestamp
             }
             
-            # Non-blocking queue put - drop frame if queue is full
+            # Non-blocking queue put - replace frame if queue is full
             try:
                 internal_nerve_queue.put_nowait(frame_data)
-            except:
-                # Queue is full, skip this frame
-                pass
+            except queue.Full:
+                #allow time to avoid race condition for visual cortex to grab frame if it was just in waiting loop
+                time.sleep(0.1)
+                # then take old frame out, put new one in
+                try:
+                    _ = internal_nerve_queue.get_nowait()
+                    internal_nerve_queue.put_nowait(frame_data)
+                except queue.Empty:
+                    #the cortex got the last frame before sleep finished, DO NOT put a new frame in
+                    #We want to go back through the loop again and give the most updated frame
+                    continue
+                
             
             # Calculate and update optic nerve FPS
             frame_count += 1
@@ -107,7 +116,7 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
         frame_count = 0
         start_time = time.time()
 
-        #tool instructions
+        #initial tool instructions
         use_ = control_msg_struct
         """schema:
         use_person_detect = control_msg_struct['person_detection']
@@ -117,53 +126,42 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
         use_vlm_point = control_msg_struct['vlm']['point']
         use_vlm_detect = control_msg_struct['vlm']['detect']"""
         limitedGPUenv = False
-        #local VLM states for this process
-        VLM_availible_local = True
+        # VLM thread worker for this process
         vlm_process = None
 
         if not limitedGPUenv:
+            #this will create a persistant VLM, loaded in memory which is reused, else in loop for analysis vlm is created/used/destroyed so gpu ram is released
             logging.debug("starting a long running VLM process")
             vlm_gpu = str(gpu_to_use)
-            vlm_process = mp.Process(target=vlm, args=(limitedGPUenv,internal_to_vlm_queue, internal_from_vlm_queue,vlm_gpu),daemon=True)
+            vlm_process = mp.Process(target=vlm, args=(limitedGPUenv,internal_to_vlm_queue, internal_from_vlm_queue,external_stats_queue,vlm_gpu),daemon=True)
             vlm_process.start()
 
 
 
         while True:
+            frame_data = None
             try:
+                #check for control instructions
+                try:
+                    use_ = internal_cortex_process_control_queue.get_nowait()
+                    logging.debug(f"visual_cortex_core received new operation instructions: {use_}")
+                except queue.Empty:
+                    #no new instructions
+                    pass
                 
-                frame_data = None
-                frames_discarded = 0
-                #get control instructions
-                # Keep getting frames until queue is empty, keeping only the last one (LIFO)
-                while True:
-                    try:
-                        use_ = internal_cortex_process_control_queue.get_nowait()
-                        logging.debug(f"visual_cortex_core received new operation instructions: {use_}")
-                    except queue.Empty:
-                        break
-                
-                # Keep getting frames until queue is empty, keeping only the last one (LIFO)
-                while True:
-                    try:
-                        frame_data = optic_nerve_queue.get_nowait()
-                        frames_discarded += 1
-                    except queue.Empty:
-                        break
-                
-                # If we got at least one frame, process the most recent one
+                # Queue only holds one frame, the nerve is managing putting frames in as (LIFO) at target frame rate of 30 fps ~0.033, so we wait if empty for one frame rotation
+                frame_data = optic_nerve_queue.get_nowait()
+
+                # If we got at least one frame, there is a connected active nerve
                 if frame_data is not None:
-                    frames_discarded -= 1  # Don't count the frame we're actually processing
-                    if frames_discarded > 0:
-                        logging.debug(f"Visual cortex: Discarded {frames_discarded} older frames, processing most recent")
                     
                     device_index = frame_data['camera_index']
                     capture_timestamp = frame_data['capture_timestamp']
                     raw_frame = frame_data['frame']
                     
-                    
                     processed_frame=raw_frame
                     person_detected = False
+
                     if use_['person_detection']:
                         # Process the frame (blocking)
                         processed_frame, person_detected = visual_cortex_process_img(raw_frame,IMG_DETECTION_CNN)
@@ -179,34 +177,26 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                         # Drop oldest frame and add new one
                         try:
                             _ = external_img_queue.get_nowait()
-                            external_img_queue.put_nowait({
+                        except queue.Empty:
+                            #race condition protection incase external consumer got the frame before this loop did
+                            pass
+                        external_img_queue.put_nowait({
                                 'frame': processed_frame,
                                 'camera_index': device_index,
                                 'capture_timestamp': capture_timestamp
                             })
-                        except queue.Empty:
-                            pass
+                        
 
                     # VLM processing logic
-                    if (use_['vlm']['caption'] or use_['vlm']['detect'] != '' or use_['vlm']['point'] != '' or use_['vlm']['query']  != '') and VLM_availible_local:
+                    if (use_['vlm']['caption'] or use_['vlm']['detect'] != '' or use_['vlm']['point'] != '' or use_['vlm']['query']  != ''):
                         logging.debug(f"Starting VLM analysis - VLM not busy")
-                        VLM_availible_local = False
-                        try:
-                            #flag that the VLM is in use
-                            external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
-                        except queue.Full:
-                            # Drop oldest and try again, critical we get the not in use message posted
-                            try:
-                                _ = external_stats_queue.get_nowait()
-                                external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
-                            except queue.Empty:
-                                pass
+                        
                         #If we are in a limited GPU situation, we load, use, and destroy the VLM. Else we are are using the one loaded in mem
                         if limitedGPUenv:
                             vlm_gpu = str(0)#default, assume there is only 1 gpu in a situation like this
                             vlm_process = mp.Process(
                                 target=vlm,
-                                args=(limitedGPUenv,internal_to_vlm_queue, internal_from_vlm_queue,vlm_gpu),
+                                args=(limitedGPUenv,internal_to_vlm_queue, internal_from_vlm_queue,external_stats_queue,external_stats_queue,vlm_gpu),
                                 daemon=True)
                             vlm_process.start()
                         
@@ -214,7 +204,9 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                             #put the frame in queue for the VLM
                             internal_to_vlm_queue.put_nowait({'frame':raw_frame,'device_index':device_index,'capture_timestamp':capture_timestamp, 'person_detected':person_detected,'instructions':use_})
                         except queue.Full:
-                            logging.error("Unable to put frame in the VLM queue for analysis - Queue FULL")
+                            #Do not get and replace the frame. We let the VLM finish what it was working on, this frame is just skipped
+                            logging.debug("VLM - Queue FULL - It is still working on previous")
+                            pass
 
                     # Create processed frame data
                     processed_data = {
@@ -236,22 +228,14 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                     try:
                         vlm_data = internal_from_vlm_queue.get_nowait()
                         processed_data.update(vlm_data)  # Merge VLM results
-                        VLM_availible_local = True
 
                         if vlm_process:
                             if limitedGPUenv:
                                 #end the vlm in limited gpu env so we can give back GPU memory
                                 vlm_process.join()
-                        try:
-                            external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
-                        except queue.Full:
-                            try:
-                                _ = external_stats_queue.get_nowait()
-                                external_stats_queue.put_nowait({'VLM_availible': VLM_availible_local})
-                            except queue.Empty:
-                                pass
+
                     except queue.Empty:
-                        logging.debug("No VLM data ready")
+                        logging.debug("No VLM data availible")
 
                     # Put processed frame in output queue with better error handling
                     try:
@@ -280,16 +264,14 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                                 external_stats_queue.put_nowait(stats_data)
                             except queue.Empty:
                                 pass
-
-                else:
-                    # No frames available, wait a bit before trying again
-                    time.sleep(0.01)
                     
             except queue.Empty:
+                logging.debug("visual cortex not receving image frames")
                 continue
         
-            # Slow the loop a bit to help CPU
-            time.sleep(0.001)
+            # Slow the loop a bit to help CPU while waiting for a nerve to connect
+            if frame_data is None:
+                time.sleep(0.001)
                 
     except KeyboardInterrupt:
         pass
@@ -325,7 +307,7 @@ def visual_cortex_process_img(frame, IMG_DETECTION_CNN):
 
     return frame, person_detected
 
-def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_internal_queue_vlm,gpu_device):
+def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_internal_queue_vlm,external_stats_queue,gpu_device):
     """Thread function to run VLM (Moondream) analysis without blocking main processing"""
     # Import and initialize VLM Moondream (done in thread to avoid blocking memory if it stays loaded)
     import os
@@ -372,8 +354,9 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
             frame: raw image frame with a person
             result_container: List to store results [match_result, probability]
         """
+        #TODO: these are just placeholders
         logging.debug("RUN PERSON RECOGNITION")
-        if frame:
+        if frame is not None:
             logging.debug("got PERSON RECOGNITION image")
         try:
             # Placeholder return values
@@ -391,11 +374,21 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
 
     
 
-    
+    def update_availiblity(external_stats_queue,status_boolean):
+        #Used to tell outside if the VLM can be used or if it's currently in use
+        try:
+            external_stats_queue.put_nowait({'VLM_availible': status_boolean})
+        except queue.Full:
+            try:
+                _ = external_stats_queue.get_nowait()
+                external_stats_queue.put_nowait({'VLM_availible': status_boolean})
+            except queue.Empty:
+                pass
 
     single_run = False
     got_a_frame = False
     while not single_run:
+        update_availiblity(external_stats_queue,False)
         frame = False
         camera_index = False
         capture_timestamp = False
@@ -530,6 +523,8 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
                 logging.error(f"VLM analysis error: {e}")
                 import traceback
                 traceback.print_exc()
+                update_availiblity(external_stats_queue,True)
+        update_availiblity(external_stats_queue,True)
 
     
 class VisualCortex():
@@ -545,9 +540,9 @@ class VisualCortex():
         # Visual queues
         self.external_cortex_queue = mpm.Queue(maxsize=30)
         #raw images from camera
-        self.internal_nerve_queue = mpm.Queue(maxsize=20)
+        self.internal_nerve_queue = mpm.Queue(maxsize=1)
         #images shown by generate_image_frame
-        self.external_img_queue = mpm.Queue(maxsize=20)
+        self.external_img_queue = mpm.Queue(maxsize=3)
         #holds the output of the vlm
         self.internal_from_vlm_queue = mpm.Queue(maxsize=1)#only hold a single result, this is used to determine if it's ready or not
         self.internal_to_vlm_queue = mpm.Queue(maxsize=1)#only hold a single result, this is used to determine if it's ready or not
