@@ -100,6 +100,7 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
     # Visual Cortex Processing Core CNN (yolo)
     from yolo_ import YOLOhf
     IMG_DETECTION_CNN = YOLOhf()
+    
 
     try:
         #counters and timer used in loop
@@ -187,7 +188,6 @@ def visual_cortex_core(optic_nerve_queue, external_cortex_queue, external_stats_
                             pass
 
                     # VLM processing logic
-                    #TODO: Integrate instruction use in the VLM
                     if (use_['vlm']['caption'] or use_['vlm']['detect'] != '' or use_['vlm']['point'] != '' or use_['vlm']['query']  != '') and VLM_availible_local:
                         logging.debug(f"Starting VLM analysis - VLM not busy")
                         VLM_availible_local = False
@@ -330,6 +330,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
     # Import and initialize VLM Moondream (done in thread to avoid blocking memory if it stays loaded)
     import os
     import logging
+    import concurrent.futures
     #Set which GPU we run the VLM on
     os.environ['CUDA_VISIBLE_DEVICES'] = gpu_device
 
@@ -338,6 +339,10 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
 
     from moondream_ import MoondreamWrapper
     IMG_PROCESSING_VLM = MoondreamWrapper(local_files_only=True)
+
+    # At module level:
+    person_recognition_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
 
     """
     #TODO: Integrate the use of 'instructions' arg
@@ -367,6 +372,9 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
             frame: raw image frame with a person
             result_container: List to store results [match_result, probability]
         """
+        logging.debug("RUN PERSON RECOGNITION")
+        if frame:
+            logging.debug("got PERSON RECOGNITION image")
         try:
             # Placeholder return values
             # For now, simulate no match
@@ -396,7 +404,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
         while True:
             try:
                 #{'frame':raw_frame,'device_index':device_index,'capture_timestamp':capture_timestamp, 'person_detected':person_detected,'instructions':use_}
-                data = internal_to_vlm_queue.get(timeout=5)#wait for 5 seconds.
+                data = internal_to_vlm_queue.get(timeout=0.1) #slow blocking delay
                 frame = data['frame']
                 camera_index = data['device_index']
                 capture_timestamp = data['capture_timestamp']
@@ -469,17 +477,10 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
                 pil_frame = Image.fromarray(frame_rgb)
 
                 #run person recognition
-                person_recognition_thread = False
                 person_recognition_result_container = [False, 0.0]  # [match_result, probability]
 
                 if instructions['person_recognition']:
-                    # Store result in a shared container
-                    person_recognition_thread = threading.Thread(
-                                        target=person_recognition,
-                                        args=(frame, person_recognition_result_container),
-                                        name="person_recognition_worker"
-                                    )
-                    person_recognition_thread.start()
+                    pr_future_result = person_recognition_worker.submit(person_recognition, frame, person_recognition_result_container)
 
                 # Generate caption
                 caption = ""
@@ -492,8 +493,8 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
                 ###
 
                 # If we are using person recognition, get (blocking) facial recognition results from our thread
-                if person_recognition_thread:
-                    person_recognition_thread.join()       
+                if instructions['person_recognition'] and pr_future_result:
+                    pr_future_result.result()  # Still blocking
                 
                 # Set recognition results from the container
                 person_match_result = person_recognition_result_container[0]
@@ -656,7 +657,7 @@ class VisualCortex():
         while True:
             try:
                 # Get processed frame (non-blocking to prevent hanging)
-                frame_data = self.external_img_queue.get(timeout=0.1)
+                frame_data = self.external_img_queue.get_nowait()#.get(timeout=0.1)
                 
                 # Filter by camera index if specified
                 if camera_index is not None:
@@ -900,7 +901,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
             
             try:
                 # Get audio frame (blocking with timeout) from the nerve
-                audio_data = internal_nerve_queue.get(timeout=1.0)
+                audio_data = internal_nerve_queue.get_nowait()#.get(timeout=1.0)
                 
                 # Process immediately - no accumulation needed for 512-sample chunks
                 audio_chunk = audio_data['audio_frame']
@@ -1054,6 +1055,9 @@ def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcriptio
     import gc
     import threading
     import numpy as np
+    import concurrent.futures
+    # At module level:
+    voice_recognition_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     
     def voice_recognition(chunk_to_process: np.ndarray, result_container: list) -> None:
@@ -1168,7 +1172,7 @@ def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcriptio
     # State tracking
     working_transcript = ""
     last_processed_length = 0  # Track how much of the current speech we've processed
-    current_speech_id = 0  # Track speech session changes
+    
     
     # Voice recognition will be handled per-chunk with individual threads
     
@@ -1186,7 +1190,7 @@ def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcriptio
                 
                 # Get first item (blocking)
                 try:
-                    latest_task = internal_speech_audio_queue.get(timeout=1.0)
+                    latest_task = internal_speech_audio_queue.get_nowait()#.get(timeout=1.0)
                 except queue.Empty:
                     continue
                 
@@ -1263,19 +1267,14 @@ def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcriptio
                         # Store result in a shared container
                         voice_result_container = [False, 0.0]  # [match_result, probability]
                         
-                        # Start voice recognition in a separate thread
-                        voice_recognition_thread = threading.Thread(
-                            target=voice_recognition,
-                            args=(chunk_to_process, voice_result_container),
-                            name="voice_recognition_worker"
-                        )
-                        voice_recognition_thread.start()
+                        # Start voice recognition in a separate thread worker
+                        vr_future_result =voice_recognition_worker.submit(voice_recognition, chunk_to_process, voice_result_container)
                         
                         # Transcribe the audio chunk (runs in parallel with voice recognition)
                         raw_transcription = speech_transcriber.transcribe(chunk_to_process)
                         
                         # Get (blocking) voice recognition results
-                        voice_recognition_thread.join()
+                        vr_future_result.result()
                         
                         # Set recognition results from the container
                         voice_match_result = voice_result_container[0]

@@ -293,7 +293,7 @@ if __name__ == "__main__":
             questions: List[str] = [
                 "Do you see a person in the image?",
                 "What is the main subject of this image?",
-                "What colors are most prominent?"
+                "Is there a person looking directly at the camera, answer True or False only."
             ]
             
             for question in questions:
