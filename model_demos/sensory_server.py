@@ -1048,7 +1048,6 @@ def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcriptio
     import logging
     import queue
     import gc
-    import threading
     import numpy as np
     import concurrent.futures
     # At module level:
@@ -1368,13 +1367,14 @@ class AuditoryCortex():
     manage all running audio functions. on init will start the auditory cortex, speech to text processes and default to connection
     with sound input device 0
     """
-    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_stt,nerve=auditory_nerve_connection,device_index=0,mpm=False):
+    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_stt,nerve=auditory_nerve_connection,device_index=0,mpm=False,wakeword_name='jarvis'):
         logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,stt)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
         #processes
         self.auditory_processes = {}
         self.auditory_processes['nerve'] = {}
+        self.wakeword_name = wakeword_name
 
         #Data queues
         self.external_cortex_queue = mpm.Queue(maxsize=30)
@@ -1386,6 +1386,8 @@ class AuditoryCortex():
         self.internal_speech_audio_queue = mpm.Queue(maxsize=100)  #100 chunks of 32ms = ~3200ms (3.2 second) buffer
         # internally used by Audio Cortex to hold speech to text results (transcriptions)
         self.internal_transcription_queue = mpm.Queue(maxsize=5)
+        #name/wakeword indicator to determine if data should activly be acted on.
+        self.detected_name_wakeword_queue = mpm.Queue(maxsize=1)#data schema in queue {'name_detected':bool, 'active_speaker':bool, 'recognized_speaker':{} or False}
         #nerve controller function
         self.nerve = nerve
         
