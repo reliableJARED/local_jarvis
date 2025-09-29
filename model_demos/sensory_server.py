@@ -12,8 +12,10 @@ from PIL import Image
 import torch
 import gc
 import threading
-from typing import Dict, Any
+from typing import Dict, List, Tuple, Optional, Union, Any
 import logging
+import sqlite3
+from voicerecognition import VoiceRecognitionSystem
 
 logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CRITICAL + 1)
 
@@ -354,7 +356,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
             frame: raw image frame with a person
             result_container: List to store results [match_result, probability]
         """
-        #TODO: these are just placeholders
+        #these are just placeholders
         logging.debug("RUN PERSON RECOGNITION")
         if frame is not None:
             logging.debug("got PERSON RECOGNITION image")
@@ -893,7 +895,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
     try:
         SAMPLE_SIZE_REQUIREMENT = 512
         while True:
-            
+
             try:
                 # Get audio frame (blocking with timeout) from the nerve
                 audio_data = internal_nerve_queue.get_nowait()#.get(timeout=1.0)
@@ -915,7 +917,6 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                 
                 # Add to pre-speech buffer
                 pre_speech_buffer.append(audio_chunk)
-                
                 
                 # Run VADIterator - this handles streaming state internally
                 try:
@@ -981,7 +982,8 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                         }
                     try:
                         #Replace with transcription data if any exists -note the timestamp will be the past
-                        cortex_output = internal_transcription_queue.get_nowait()#don't block
+                        stt_output = internal_transcription_queue.get_nowait()#don't block
+                        cortex_output.update(stt_output)#update fields with stt_output data           
                     except queue.Empty:
                         logging.debug("No data in internal_transcription_queue")
                         
@@ -990,7 +992,6 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                         external_cortex_queue.put_nowait(cortex_output)#-This data will be lost if queue is full
                     except:
                         try:
-                            #TODO: consider blocking request with .put(timeout=1), note that means for raw frames consumed at the start we would have to catch up and use LIFO 
                             logging.debug("external_cortex_queue FULL - CRITICAL ERROR - important result data could be lost")
                         except:
                             pass
@@ -1034,71 +1035,22 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                 pass
             print("Auditory cortex process stopped")
 
-def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcription_queue):
+def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_transcription_queue,internal_voice_recognition_in_queue,internal_voice_recognition_out_queue):
     """
     This is a multiprocess worker that will process audio chunks known to have speech.
     Uses LIFO - only processes the most recent audio data, skip and remove older data tasks from queue.
     Uses sliding window approach to build up transcript incrementally.
     Includes voice recognition functionality that runs in a separate thread.
 
-    IMPORTANT - Currently does NOT turely support multi device because of how the LIFO data queue works and there is no device transcript tracking
+    IMPORTANT - Currently does NOT turely support multi device because of how the transcript splicing data works, there is no device transcript tracking
 
     """
     from stt import SpeechTranscriber
     import logging
     import queue
     import gc
-    import numpy as np
-    import concurrent.futures
-    # At module level:
-    voice_recognition_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-    
-    def voice_recognition(chunk_to_process: np.ndarray, result_container: list) -> None:
-        """
-        Placeholder function for voice recognition.
-        
-        Args:
-            chunk_to_process: Audio chunk as numpy array
-            result_container: List to store results [match_result, probability]
-        """
-        import gc
-        try:
-            # TODO: Implement actual voice recognition logic
-            # This is a placeholder implementation
-            
-            # Step 1: Extract audio embedding from chunk_to_process
-            # embedding = extract_audio_embedding(chunk_to_process)
-            
-            # Step 2: Compare with embedding database
-            # similarities = compare_with_database(embedding)
-            
-            # Step 3: Find best match above threshold
-            # threshold = 0.85  # Adjust as needed
-            # best_match_id, best_similarity = find_best_match(similarities, threshold)
-            
-            # Placeholder return values
-            # For now, simulate no match
-            result_container[0] = False
-            result_container[1] = 0.0
-            
-            # Example of what a match would look like:
-            # if best_similarity > threshold:
-            #     result_container[0] = best_match_id
-            #     result_container[1] = best_similarity
-            # else:
-            #     result_container[0] = False
-            #     result_container[1] = best_similarity
-            
-        except Exception as e:
-            logging.error(f"Voice recognition error: {e}")
-            result_container[0] = False
-            result_container[1] = 0.0
-        finally:
-            # Explicit cleanup
-            # del embedding, similarities, etc.
-            gc.collect()  # force garbage collection
-
+   
     def find_overlap_position(old_transcript, new_raw_transcript):
         """
         Find where the new raw transcript overlaps with the existing working transcript.
@@ -1258,21 +1210,26 @@ def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcriptio
                 # Process the audio if we should
                 if should_process and chunk_to_process is not None and len(chunk_to_process) > 0:
                     try:
-                        # Store result in a shared container
-                        voice_result_container = [False, 0.0]  # [match_result, probability]
-                        
-                        # Start voice recognition in a separate thread worker
-                        vr_future_result =voice_recognition_worker.submit(voice_recognition, chunk_to_process, voice_result_container)
-                        
+                        # send data to voice recognition in a separate worker via queue
+                        try:
+                            vr_data = {'audio':full_audio_data}
+                            internal_voice_recognition_in_queue.put_nowait(vr_data)
+                        except:
+                            logging.error("Error sending data on internal_voice_recognition_in_queue")
+
                         # Transcribe the audio chunk (runs in parallel with voice recognition)
                         raw_transcription = speech_transcriber.transcribe(chunk_to_process)
                         
-                        # Get (blocking) voice recognition results
-                        vr_future_result.result()
-                        
                         # Set recognition results from the container
-                        voice_match_result = voice_result_container[0]
-                        voice_probability = voice_result_container[1]
+                        voice_match_result = False
+                        voice_probability = 0.0
+                        try:
+                            data = internal_voice_recognition_out_queue.get(timeout=1)#{'human_id':human_id,'new_person':new_person, 'similarity':similarity}
+                            voice_match_result = data['human_id']
+                            voice_probability =  data['similarity']
+                        except:
+                            logging.error("Error getting data on internal_voice_recognition_out_queue")
+                        
                         
                         logging.debug(f"Voice recognition result: {voice_match_result}, probability: {voice_probability:.3f}")
                         
@@ -1356,24 +1313,63 @@ def auditory_cortex_worker_stt(internal_speech_audio_queue,internal_transcriptio
                 gc.collect()
 
     except Exception as e:
-        print(f"auditory_cortex_worker_stt Primary Loop Error: {e}")
+        print(f"auditory_cortex_worker_speechToText Primary Loop Error: {e}")
 
     finally:
         # No cleanup needed
         pass
+
+def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,internal_voice_recognition_out_queue,database_path):
+    import uuid
+    #Create instance of the voice recognizer
+    vr = VoiceRecognitionSystem(db_path=database_path)
+    while True:
+        voice_data = None
+        try:
+            #voice_data: in np data array of Audio sample (should be 16kHz mono)
+            data = internal_voice_recognition_in_queue.get_nowait()
+            voice_data = data['audio']
+        except queue.Empty:
+            continue
+
+        if voice_data is not None:
+            human_id, similarity = vr.recognize_speaker(voice_data)
+            print(f"Similarity: {similarity}")
+            new_person = False
+            if not human_id:
+                #we dont have a profile for this voice, so we create a new one
+                human_id = uuid.uuid4().hex
+                success = vr.add_speaker_profile(human_id,[voice_data])
+                new_person = True
+                similarity = 1
+            else:
+                success = vr.add_voice_sample(human_id,voice_data)
+            
+            #now put the update in queue
+            try:
+                results = {'human_id':human_id,'new_person':new_person, 'similarity':similarity}
+                internal_voice_recognition_out_queue.put(results,timeout=1)
+            except queue.Full:
+                logging.error("internal_voice_recognition_out_queue is FULL - consume faster")
+                 
+
+        time.sleep(0.001)#small delay to help cpu
+    
 
 class AuditoryCortex():
     """
     manage all running audio functions. on init will start the auditory cortex, speech to text processes and default to connection
     with sound input device 0
     """
-    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_stt,nerve=auditory_nerve_connection,device_index=0,mpm=False,wakeword_name='jarvis'):
+    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,mpm=False,wakeword_name='jarvis',database_path=":memory:"):
         logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,stt)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
         #processes
         self.auditory_processes = {}
         self.auditory_processes['nerve'] = {}
+
+        self.database_path = database_path
         self.wakeword_name = wakeword_name
 
         #Data queues
@@ -1386,8 +1382,18 @@ class AuditoryCortex():
         self.internal_speech_audio_queue = mpm.Queue(maxsize=100)  #100 chunks of 32ms = ~3200ms (3.2 second) buffer
         # internally used by Audio Cortex to hold speech to text results (transcriptions)
         self.internal_transcription_queue = mpm.Queue(maxsize=5)
+        #internally used to send speech audio clips to regognizer
+        self.internal_voice_recognition_in_queue = mpm.Queue(maxsize=1)
+        #internally used to get speech recognition results
+        self.internal_voice_recognition_out_queue = mpm.Queue(maxsize=1)
+
+
+        #TODO:
+        #use the queue, itegrate
         #name/wakeword indicator to determine if data should activly be acted on.
         self.detected_name_wakeword_queue = mpm.Queue(maxsize=1)#data schema in queue {'name_detected':bool, 'active_speaker':bool, 'recognized_speaker':{} or False}
+
+
         #nerve controller function
         self.nerve = nerve
         
@@ -1403,14 +1409,26 @@ class AuditoryCortex():
         auditory_cortex_process.start()
         self.auditory_processes['core'] = auditory_cortex_process
 
-        #CPU intense speech to text and voice recognition process
+        #CPU intense speech to text
         stt_worker = mp.Process(
             target=stt,
             args=(self.internal_speech_audio_queue,
-                  self.internal_transcription_queue)
+                  self.internal_transcription_queue,
+                  self.internal_voice_recognition_in_queue,
+                  self.internal_voice_recognition_out_queue)
         )
         stt_worker.start()
         self.auditory_processes['stt'] = stt_worker
+
+        #CPU/GPU voice recognition process
+        vr_worker = mp.Process(
+            target=vr,
+            args=(self.internal_voice_recognition_in_queue,
+                  self.internal_voice_recognition_out_queue,
+                  self.database_path)
+        )
+        vr_worker.start()
+        self.auditory_processes['vr'] = vr_worker
 
         
 
@@ -1436,6 +1454,11 @@ class AuditoryCortex():
         success = self.process_kill(self.auditory_processes['stt'])
         return success
     
+    def stop_vr(self):
+        # Terminate voice recognition
+        success = self.process_kill(self.auditory_processes['vr'])
+        return success
+    
     def stop_cortex(self):
         # Terminate cortex process
         success = self.process_kill(self.auditory_processes['core'])
@@ -1453,6 +1476,11 @@ class AuditoryCortex():
         success = self.stop_stt()
         if not success:
             logging.error("Error shutting down Auditory Speech to Text process")
+            had_failure = True
+        #voice recognition
+        success = self.stop_vr()
+        if not success:
+            logging.error("Error shutting down Auditory voice recognition process")
             had_failure = True
         #Input Devices
         for i,nerve in enumerate(self.auditory_processes['nerve']):
@@ -1479,7 +1507,6 @@ class AuditoryCortex():
 """
 TEMPORAL LOBE
 """
-
 class TemporalLobe:
     """
     Combines visual and auditory cortex data into unified temporal awareness.
@@ -1487,7 +1514,7 @@ class TemporalLobe:
     non-default values from the most recent to oldest frames.
     """
     
-    def __init__(self, visual_cortex=None, auditory_cortex=None, buffer_duration=1.0, update_interval=1.0, mpm=None):
+    def __init__(self, visual_cortex=None, auditory_cortex=None, buffer_duration=1.0, update_interval=1.0, mpm=None,database_path=":memory:"):
         """
         Initialize TemporalLobe with visual and auditory cortex instances.
         
@@ -1553,8 +1580,13 @@ class TemporalLobe:
             # Format: 'stream_fps_0': fps_value (for video streaming)
         }
         
+       
+        # Connect to database with sqlite-vec extension
+        self.db = sqlite3.connect(database_path)
+
         logging.info(f"TemporalLobe initialized with {buffer_duration}s buffer, {update_interval}s updates")
 
+    
     def _create_empty_unified_state(self):
         """Create an empty unified state with default values"""
         return {
@@ -1595,6 +1627,9 @@ class TemporalLobe:
             'person_match': False, 
             'person_match_probability': 0.0,
             'caption': "",
+            'query': "",
+            'obj_detect': [],
+            'points': [],
             'vlm_timestamp': None,
             'speech_detected': False,
             'transcription': "",
@@ -1779,7 +1814,8 @@ class TemporalLobe:
         self.stats['last_update_time'] = time.time()
         self.last_unified_state = unified_state
         
-        
+        if unified_state['final_transcript']:
+            print(f"TARGET SPEAKER: {unified_state['voice_match']}")
         return unified_state
     
     def start_collection(self):
@@ -1901,6 +1937,38 @@ class TemporalLobe:
         """Get the last created unified state without creating a new one"""
         return self.last_unified_state
 
+"""
+MEMORY
+"""
+def create_known_human_database(db_name=":memory:"):
+    """Initialize database schema."""
+    # Main profiles table with person attributes
+    conn = sqlite3.connect(db_name)
+    conn.execute("""
+                CREATE TABLE IF NOT EXISTS profiles (
+                    human_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    age INTEGER,
+                    gender TEXT,
+                    department TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    employee_id TEXT,
+                    role TEXT,
+                    location TEXT,
+                    join_date TEXT,
+                    manager TEXT,
+                    team TEXT,
+                    access_level TEXT,
+                    status TEXT,
+                    notes TEXT,
+                    samples_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+    conn.close()
+    return db_name
 
 """
 HTML Interface 
@@ -2874,8 +2942,14 @@ if __name__ == '__main__':
     import signal
     import socket
 
+    print(f"AVAILIBLE CORE COUNT:{mp.cpu_count()}")
     # Set up logging
     logging.basicConfig(level=logging.INFO)
+
+    #Setup Database
+    ### the colon : around the database_path name is a key char to make this an temp in ram, not file saved database.
+    #for permanent use db_path="voice_profiles.db"
+    db_name = create_known_human_database(":memory:")
 
     # Global multiprocessing queues and managers MUST go here because of issues with Windows
     manager = mp.Manager()
@@ -2886,10 +2960,10 @@ if __name__ == '__main__':
     vc = VisualCortex(mpm=manager,gpu_to_use=gpu_to_use)
     
     #Audio Cortex
-    ac = AuditoryCortex(mpm=manager)
+    ac = AuditoryCortex(mpm=manager,database_path=db_name)
 
     #Temporal Lobe
-    temporal_lobe = TemporalLobe(visual_cortex=vc, auditory_cortex=ac, mpm=manager)
+    temporal_lobe = TemporalLobe(visual_cortex=vc, auditory_cortex=ac, mpm=manager,database_path=db_name)
 
     # Start temporal lobe collection
     temporal_lobe.start_collection()

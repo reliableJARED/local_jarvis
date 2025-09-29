@@ -30,7 +30,6 @@ class Orenda_DependencyManager:
         """
         self.logger = logging.getLogger(__name__) # Use module-level logger
 
-
     def _unzip_file(self, zip_path: str, extract_to: str) -> bool:
         """
         Unzip a file to the specified directory
