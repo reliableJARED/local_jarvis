@@ -1066,6 +1066,9 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                         transcription = cortex_output.get('transcription', '').lower().strip()
                         is_interrupt_attempt = False
 
+                        # Determine if this is speech from our locked speaker
+                        is_locked_speaker = (voice_match_id == locked_speaker_id)
+
                         # Check if this is the assistant speaking
                         if voice_match_id == assistant_voice_id:
                             cortex_output['hear_self_speaking'] = True
@@ -1086,8 +1089,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                             
                             logging.debug(f"During playback - SNR: {snr:.2f}, Energy ratio: {energy_ratio:.2f}, Voice ID: {voice_match_id}")
                             
-                            # Determine if this is a legitimate interrupt attempt from our target user
-                            is_locked_speaker = (voice_match_id == locked_speaker_id)
+                            
                             
                             # Adaptive interrupt criteria based on noise floor
                             # Higher SNR required = speech must be significantly above background
