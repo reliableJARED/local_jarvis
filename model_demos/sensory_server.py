@@ -501,7 +501,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
                 visual_scene_data['caption'] = caption
                 visual_scene_data['vlm_timestamp']=vlm_timestamp
                 visual_scene_data['formatted_time']=datetime.fromtimestamp(vlm_timestamp).strftime('%H:%M:%S')
-                visual_scene_data['person_match'] = person_match_result,
+                visual_scene_data['person_match'] = person_match_result
                 visual_scene_data['person_match_probability'] = match_probability
                 
                 try:
@@ -848,42 +848,78 @@ def auditory_nerve_connection(device_index, internal_nerve_queue, external_stats
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
 
-def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_stats_queue,internal_speech_audio_queue,internal_transcription_queue):
+def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_stats_queue,
+                        internal_speech_audio_queue, internal_transcription_queue,
+                        detected_name_wakeword_queue, wakeword_name, 
+                        playback_state, assistant_voice_id):
     """
-    Worker process for processing audio frames (auditory cortex function)
-    Optimized for real-time streaming with VADIterator and minimal buffering.
-    Now includes speech-to-text transcription.
+    Enhanced auditory cortex with dynamic background noise monitoring.
+    
+    Tracks two types of background noise:
+    1. Ambient noise (when no speech detected)
+    2. Playback echo/noise (when assistant is speaking or system is playing)
+    
+    Args:
+        playback_state: Shared dict with keys:
+            - 'is_playing': bool
+            - 'expected_energy': float (RMS energy of audio being played)
+            - 'start_time': float (when playback started)
+        assistant_voice_id: The voice embedding ID for the LLM's voice
+        locked_speaker_id: Shared value - which speaker has the lock (None if unlocked)
     """
     print("Started auditory cortex process")
     frame_count = 0
     start_time = time.time()
 
-    # Pre-roll buffer for capturing speech beginnings (audio right before the speech was detected)
-    pre_speech_buffer = deque(maxlen=10)  # ~10 chunks of 32ms = ~320ms buffer
+    # Pre-roll buffer for capturing speech beginnings
+    pre_speech_buffer = deque(maxlen=10)
     speech_active = False
     speech_buffer = []
-    full_speech = [] #holds numpy array of speech data
-    min_silence_duration_ms = 1000  # Minimum silence to end speech, 1000 = 1 second
+    full_speech = []
+    min_silence_duration_ms = 1000
     
-    # Initialize Silero VAD with VADIterator for streaming
+    # Voice lock management
+    non_match_duration = 0.0
+    RELEASE_THRESHOLD = 2.5
+    SILENCE_RELEASE_THRESHOLD = 4.0
+    locked_speaker_id = None
+    
+    # === ENHANCED NOISE MONITORING ===
+    # Track different noise profiles
+    ambient_noise_samples = deque(maxlen=100)  # ~3.2 seconds of ambient noise
+    playback_noise_samples = deque(maxlen=100)  # Noise during playback/assistant speech
+    
+    # Current noise estimates
+    ambient_noise_floor = 0.0
+    playback_noise_floor = 0.0
+    
+    # Adaptive thresholds
+    ambient_noise_percentile = 75  # Use 75th percentile to avoid outliers
+    playback_noise_percentile = 90  # Higher percentile during playback (more conservative)
+    
+    # Energy tracking
+    energy_history = deque(maxlen=50)
+    
+    # Noise update counters
+    NOISE_UPDATE_INTERVAL = 10  # Update noise floor every N samples
+    
+    #Indicator if system is playing auido
+    is_playback_context = False#playback_state.get('is_playing', False)
+    
+    # Initialize Silero VAD
     try:
-        # Load Silero VAD model
-        #torch.set_num_threads(1)  # Optimize for single-thread performance
         model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                     model='silero_vad',
                                     force_reload=False,
                                     onnx=False)
-        
-        # Extract VADIterator from utils
         (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
         
-        # Initialize VADIterator for streaming
         vad_iterator = VADIterator(
             model,
-            threshold=0.5,           # Speech probability threshold
-            sampling_rate=16000,     # Must match audio sample rate 16hz
-            min_silence_duration_ms=min_silence_duration_ms,  # Minimum silence to end speech
-            speech_pad_ms=30         # Padding around speech segments
+            threshold=0.5,
+            sampling_rate=16000,
+            min_silence_duration_ms=min_silence_duration_ms,
+            speech_pad_ms=30
         )
         
         print("Silero VAD with VADIterator loaded successfully")
@@ -895,22 +931,22 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
     try:
         SAMPLE_SIZE_REQUIREMENT = 512
         while True:
-
             try:
-                # Get audio frame (blocking with timeout) from the nerve
-                audio_data = internal_nerve_queue.get_nowait()#.get(timeout=1.0)
+                audio_data = internal_nerve_queue.get_nowait()
                 
-                # Process immediately - no accumulation needed for 512-sample chunks
                 audio_chunk = audio_data['audio_frame']
                 capture_timestamp = audio_data['capture_timestamp']
                 device_index = audio_data['device_index']
                 sample_rate = audio_data['sample_rate']
-                duration = SAMPLE_SIZE_REQUIREMENT /sample_rate
+                duration = SAMPLE_SIZE_REQUIREMENT / sample_rate
                 
-                # Ensure we have exactly 512 samples for consistent processing
                 if len(audio_chunk) != SAMPLE_SIZE_REQUIREMENT:
-                    logging.error(f'received audio chunk from nerve {device_index} not equal to 512 samples in auditory_cortex_core')
+                    logging.error(f'received audio chunk from nerve {device_index} not equal to 512 samples')
                     continue
+                
+                # Calculate energy of this chunk
+                chunk_energy = np.sqrt(np.mean(audio_chunk ** 2))  # RMS energy
+                energy_history.append(chunk_energy)
                 
                 # Convert to tensor for Silero VAD
                 audio_tensor = torch.from_numpy(audio_chunk)
@@ -918,122 +954,239 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                 # Add to pre-speech buffer
                 pre_speech_buffer.append(audio_chunk)
                 
-                # Run VADIterator - this handles streaming state internally
+                # Run VADIterator
                 try:
                     speech_dict = vad_iterator(audio_tensor, return_seconds=True)
-                    
+                   
                     # Process VAD results
                     if speech_dict:
-                        # Speech event detected (start or end)
                         if 'start' in speech_dict:
-                            # Speech start detected
                             logging.info(f"Speech START detected at {speech_dict['start']:.3f}s")
                             speech_active = True
-                            # Add pre-roll buffer to speech
                             speech_buffer = list(pre_speech_buffer)
-                                                        
+                                                
                         if 'end' in speech_dict:
-                            # Speech end detected
                             logging.info(f"Speech END detected at {speech_dict['end']:.3f}s")
-                            speech_active = False                               
+                            speech_active = False
+                           
+                    # === NOISE FLOOR UPDATES ===
+                    # Determine current context (is assistant playing audio) and update appropriate noise floor, shared dict with Speaker Output
+                    try:
+                        is_playback_context = False#playback_state.get('is_playing', False)
+                    except Exception as e:
+                        print(e)
+                    
+                    
+                    if not speech_active:
+                        #could be non speech audio, like music, or user has headphones and mic can't hear speech
+                        if is_playback_context:
+                            
+                            playback_noise_samples.append(chunk_energy)
+                            
+                            # Update every NOISE_UPDATE_INTERVAL samples if we have enough history
+                            if len(playback_noise_samples) >= 20 and len(playback_noise_samples) % NOISE_UPDATE_INTERVAL == 0:
+                                playback_noise_floor = np.percentile(
+                                    list(playback_noise_samples), 
+                                    playback_noise_percentile
+                                )
+                                
+                                logging.debug(f"Updated playback noise floor: {playback_noise_floor:.6f}")
 
-                    if speech_active or (not speech_active and len(full_speech)>0):
-                        #add to our audio with speech buffer
+                        #general abient noise
+                        else:
+                            
+                            ambient_noise_samples.append(chunk_energy)
+                            
+                            # Update every NOISE_UPDATE_INTERVAL samples if we have enough history
+                            if len(ambient_noise_samples) >= 20 and len(ambient_noise_samples) % NOISE_UPDATE_INTERVAL == 0:
+                                ambient_noise_floor = np.percentile(
+                                    list(ambient_noise_samples), 
+                                    ambient_noise_percentile
+                                )
+                                logging.debug(f"Updated ambient noise floor: {ambient_noise_floor:.6f}")
+                                
+                    if speech_active or (not speech_active and len(full_speech) > 0):
                         speech_buffer.append(audio_chunk)
-                        # Concatenate all speech audio chunks
                         full_speech = np.concatenate(speech_buffer)
-
-                        #internal_speech_audio_queue is consumed by speech to text and voice recognition process
-                        try :
-                            #when speech_active is False, that will indicate it's our final chunk with speech audio
-                            internal_speech_audio_queue.put_nowait((full_speech.copy(),speech_active,device_index,sample_rate,capture_timestamp))
+                        
+                        try:
+                            #send data out for transcription and voice recognition
+                            internal_speech_audio_queue.put_nowait((
+                                full_speech.copy(), 
+                                speech_active, 
+                                device_index, 
+                                sample_rate, 
+                                capture_timestamp
+                            ))
+                            
                         except queue.Full:
-                            logging.debug("internal_speech_audio_queue FULL - will clear queue and put data. - consume it faster")
-                            try :
-                                # Drain the queue
+                            logging.debug("internal_speech_audio_queue FULL - clearing and retrying")
+                            try:
                                 while True:
                                     try:
                                         trash = internal_speech_audio_queue.get_nowait()
                                     except queue.Empty:
                                         break
-                                #try again to put our data in
-                                internal_speech_audio_queue.put_nowait((full_speech.copy(),speech_active,device_index,sample_rate,capture_timestamp))
+                                internal_speech_audio_queue.put_nowait((
+                                    full_speech.copy(), 
+                                    speech_active, 
+                                    device_index, 
+                                    sample_rate, 
+                                    capture_timestamp
+                                ))
                             except queue.Full:
-                                logging.debug("Tried making space but internal_queue_speech_audio still FULL")
+                                logging.debug("internal_speech_audio_queue still FULL")
 
                         if not speech_active:
-                                # Clear speech buffers after sending final audio for transcription
-                                speech_buffer = []
-                                full_speech = []
-
-                     
+                            speech_buffer = []
+                            full_speech = []
+                    
+                    # Prepare cortex output
                     cortex_output = {
-                            'transcription': "",
-                            'final_transcript': False,
-                            'voice_match': False,
-                            'voice_probability': 0.0,
-                            'device_index': device_index,
-                            'speech_detected': speech_active,
-                            'capture_timestamp': capture_timestamp,
-                            'transcription_timestamp': capture_timestamp,
-                            'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S'),
-                            'sample_rate': sample_rate,
-                            'duration':duration
-                        }
+                        'transcription': "",
+                        'final_transcript': False,
+                        'voice_match': None,
+                        'voice_probability': 0.0,
+                        'device_index': device_index,
+                        'speech_detected': speech_active,
+                        'capture_timestamp': capture_timestamp,
+                        'transcription_timestamp': capture_timestamp,
+                        'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S'),
+                        'sample_rate': sample_rate,
+                        'duration': duration,
+                        'hear_self_speaking': False,
+                    }
+                    
                     try:
-                        #Replace with transcription data if any exists -note the timestamp will be the past
-                        stt_output = internal_transcription_queue.get_nowait()#don't block
-                        cortex_output.update(stt_output)#update fields with stt_output data           
+                        # Get transcription and voice recognition if available
+                        stt_output = internal_transcription_queue.get_nowait()
+                        cortex_output.update(stt_output)
+
+                        voice_match_id = cortex_output.get('voice_match')
+                        transcription = cortex_output.get('transcription', '').lower().strip()
+                        is_interrupt_attempt = False
+
+                        # Check if this is the assistant speaking
+                        if voice_match_id == assistant_voice_id:
+                            cortex_output['hear_self_speaking'] = True
+                            logging.debug(f"Detected my own voice: '{transcription}' - skipping")
+                        
+                        # Check if system is playing audio but we are not detecting assistant voice as source of speech
+                        elif is_playback_context and voice_match_id != assistant_voice_id:
+                            # Use playback-specific noise floor for comparison
+                            applicable_noise_floor = playback_noise_floor if playback_noise_floor > 0 else ambient_noise_floor
+                            
+                            # Calculate SNR (Signal-to-Noise Ratio)
+                            snr = chunk_energy / (applicable_noise_floor + 1e-10)
+                            
+                            # During playback, also check against expected playback energy
+                            expected_energy = 0#playback_state.get('expected_energy', 0.0)
+
+                            energy_ratio = chunk_energy / (expected_energy + 1e-10)
+                            
+                            logging.debug(f"During playback - SNR: {snr:.2f}, Energy ratio: {energy_ratio:.2f}, Voice ID: {voice_match_id}")
+                            
+                            # Determine if this is a legitimate interrupt attempt from our target user
+                            is_locked_speaker = (voice_match_id == locked_speaker_id)
+                            
+                            # Adaptive interrupt criteria based on noise floor
+                            # Higher SNR required = speech must be significantly above background
+                            min_snr = 3.0  # At least 3x above noise floor
+                            min_energy_ratio = 2.0  # At least 2x above playback energy
+                            
+                            if snr > min_snr and energy_ratio > min_energy_ratio:
+                                if is_locked_speaker :
+                                    # Locked user is interrupting - high priority
+                                    is_interrupt_attempt = True
+                                    logging.info(f"INTERRUPT detected from locked user: '{transcription}' "
+                                               f"(SNR: {snr:.2f}, energy ratio: {energy_ratio:.2f})")
+                                elif snr > 4.0 and energy_ratio > 3.0:
+                                    # Very strong signal from someone - allow interrupt even if not locked
+                                    logging.info(f"STRONG INTERRUPT detected: '{transcription}' "
+                                               f"(SNR: {snr:.2f}, energy ratio: {energy_ratio:.2f})")
+                                
+                            else:
+                                # Below threshold - likely echo or background
+                                logging.debug(f"noise or speech Below SNR/energy threshold during playback - ignoring: '{transcription}' "
+                                            f"(SNR: {snr:.2f}, min: {min_snr})")
+                        
+                        # Handle voice lock management (when not playing)
+                        else:
+                            # Check for wake word and if we should lock on to new voice
+                            if wakeword_name.lower() in transcription.lower():
+                                if transcription.lower().startswith(wakeword_name.lower()):
+                                    print(f"\n\nWake word detected: {transcription}\n\n")
+                                    # Lock to this speaker
+                                    if voice_match_id:
+                                        locked_speaker_id = voice_match_id
+                                        logging.info(f"Voice lock acquired by speaker: {voice_match_id}")
+                                    detected_name_wakeword_queue.put({'spoken_by': voice_match_id, 'is_interrupt_attempt':is_interrupt_attempt})
+                                else:
+                                    print(f"\n\nWake word in middle of speech: {transcription}\n\n")
+                                    print(f"\nSPOKEN BY: {voice_match_id} -Should Interrupt? {is_interrupt_attempt}\n")
+                                    detected_name_wakeword_queue.put({'spoken_by': voice_match_id, 'is_interrupt_attempt':is_interrupt_attempt})
+                            
+                            if locked_speaker_id == voice_match_id and transcription != '':
+                                #we want to ignore this speech since it's not the voice we are locked on to
+                                print("\nSending Transcript - Use some type of time out for speech not from Locked User to indicate final.\n")
+                                pass
+                            
+
                     except queue.Empty:
                         logging.debug("No data in internal_transcription_queue")
                         
                     # Put processed audio in output queue
                     try:
-                        external_cortex_queue.put_nowait(cortex_output)#-This data will be lost if queue is full
+                        external_cortex_queue.put_nowait(cortex_output)
                     except:
-                        try:
-                            logging.debug("external_cortex_queue FULL - CRITICAL ERROR - important result data could be lost")
-                        except:
-                            pass
-
+                        logging.debug("external_cortex_queue FULL - CRITICAL ERROR")
 
                 except Exception as vad_error:
                     print(f"VAD processing error: {vad_error}")
                     continue
                 
-                # Calculate auditory cortex processing stats
+                # Calculate stats
                 frame_count += 1
-                if frame_count % 50 == 0:  # Update every 50 frames (~1.6 seconds)
+                if frame_count % 50 == 0:
                     now = time.time()
-                    fps = frame_count / ( now - start_time)
-                    stats_dict={'auditory_cortex_fps': fps,
-                                'last_auditory_cortex': now}
-                    # Update Stats
-                    try:
-                        external_stats_queue.put_nowait(stats_dict)#-This data will be lost if queue is full
-                    except:
-                        try:
-                            logging.debug("external_stats_queue FULL - Try and consume faster")
-                        except:
-                            pass
+                    fps = frame_count / (now - start_time)
                     
+                    # Calculate average SNR
+                    current_snr = 0.0
+                    if ambient_noise_floor > 0:
+                        current_snr = chunk_energy / ambient_noise_floor
+                    
+                    stats_dict = {
+                        'auditory_cortex_fps': fps,
+                        'last_auditory_cortex': now,
+                        'ambient_noise_floor': ambient_noise_floor.item(),# Convert the NumPy float to a Python float during dictionary creation
+                        'playback_noise_floor': playback_noise_floor,#TODO: When this is implemented will need the .item() convert also
+                        'current_energy': chunk_energy.item(),# Convert the NumPy float to a Python float during dictionary creation
+                        'current_snr': current_snr.item(),# Convert the NumPy float to a Python float during dictionary creation
+                        'locked_speaker': locked_speaker_id,
+                        'ambient_samples': len(ambient_noise_samples),
+                        'playback_samples': len(playback_noise_samples)
+                    }
+                    try:
+                        external_stats_queue.put_nowait(stats_dict)
+                    except:
+                        pass
                     
             except queue.Empty:
                 continue
 
-            # Small delay to prevent excessive CPU usage
-            time.sleep(0.001)  # 1ms delay
+            time.sleep(0.001)
                 
     except KeyboardInterrupt:
         pass
     finally:
-            try:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except:
-                pass
-            print("Auditory cortex process stopped")
+        try:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except:
+            pass
+        print("Auditory cortex process stopped")
 
 def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_transcription_queue,internal_voice_recognition_in_queue,internal_voice_recognition_out_queue):
     """
@@ -1124,7 +1277,7 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
     
     # Parameters (at 16kHz sample rate)
     min_chunk_size = 80000  # 5 seconds minimum before starting transcription (if no final audio flag received)
-    overlap_samples = 16000  # 1 second overlap for word boundary detection
+    overlap_samples = 24000  # 1.5 second overlap for word boundary detection
     incremental_threshold = 48000  # 3 seconds of new audio before processing again
     
     try:
@@ -1210,9 +1363,10 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                 # Process the audio if we should
                 if should_process and chunk_to_process is not None and len(chunk_to_process) > 0:
                     try:
+                        #VOICE RECOGNITION
                         # send data to voice recognition in a separate worker via queue
                         try:
-                            vr_data = {'audio':full_audio_data}
+                            vr_data = {'audio':chunk_to_process}
                             internal_voice_recognition_in_queue.put_nowait(vr_data)
                         except:
                             logging.error("Error sending data on internal_voice_recognition_in_queue")
@@ -1319,8 +1473,12 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
         # No cleanup needed
         pass
 
-def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,internal_voice_recognition_out_queue,database_path):
+def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,internal_voice_recognition_out_queue,database_path,gpu_device):
     import uuid
+    import os
+    #Set which GPU we run the voice recognition on on
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_device)
+
     #Create instance of the voice recognizer
     vr = VoiceRecognitionSystem(db_path=database_path)
     while True:
@@ -1361,7 +1519,7 @@ class AuditoryCortex():
     manage all running audio functions. on init will start the auditory cortex, speech to text processes and default to connection
     with sound input device 0
     """
-    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,mpm=False,wakeword_name='jarvis',database_path=":memory:"):
+    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,mpm=False,wakeword_name='jarvis',database_path=":memory:",gpu_device=0):
         logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,stt)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
@@ -1386,17 +1544,18 @@ class AuditoryCortex():
         self.internal_voice_recognition_in_queue = mpm.Queue(maxsize=1)
         #internally used to get speech recognition results
         self.internal_voice_recognition_out_queue = mpm.Queue(maxsize=1)
-
-
-        #TODO:
-        #use the queue, itegrate
+        
         #name/wakeword indicator to determine if data should activly be acted on.
         self.detected_name_wakeword_queue = mpm.Queue(maxsize=1)#data schema in queue {'name_detected':bool, 'active_speaker':bool, 'recognized_speaker':{} or False}
+
+        playback_state = mpm.dict()
+        playback_state['is_playing'] = False
+        playback_state['expected_energy'] = 0.0
 
 
         #nerve controller function
         self.nerve = nerve
-        
+        assistant_voice_id = 'a1234'
         #Primary hub process
         auditory_cortex_process = mp.Process(
             target=cortex,
@@ -1404,7 +1563,9 @@ class AuditoryCortex():
                   self.external_cortex_queue,
                   self.external_stats_queue, 
                   self.internal_speech_audio_queue,
-                  self.internal_transcription_queue)
+                  self.internal_transcription_queue,
+                  self.detected_name_wakeword_queue,
+                  self.wakeword_name,playback_state, assistant_voice_id)
         )
         auditory_cortex_process.start()
         self.auditory_processes['core'] = auditory_cortex_process
@@ -1425,7 +1586,8 @@ class AuditoryCortex():
             target=vr,
             args=(self.internal_voice_recognition_in_queue,
                   self.internal_voice_recognition_out_queue,
-                  self.database_path)
+                  self.database_path,
+                  gpu_device)
         )
         vr_worker.start()
         self.auditory_processes['vr'] = vr_worker
@@ -1514,7 +1676,7 @@ class TemporalLobe:
     non-default values from the most recent to oldest frames.
     """
     
-    def __init__(self, visual_cortex=None, auditory_cortex=None, buffer_duration=1.0, update_interval=1.0, mpm=None,database_path=":memory:"):
+    def __init__(self, visual_cortex=None, auditory_cortex=None, buffer_duration=1.0, update_interval=1.0, mpm=None, database_path=":memory:"):
         """
         Initialize TemporalLobe with visual and auditory cortex instances.
         
@@ -1533,12 +1695,16 @@ class TemporalLobe:
         self.buffer_duration = buffer_duration
         self.update_interval = update_interval
 
-        #UI Helper
+        # UI Helper
         self.persistent_transcripts = []
         
         # Data buffers
         self.visual_buffer = deque()
         self.audio_buffer = deque()
+        
+        # Active speaker tracking
+        self.locked_speaker_id = None
+        self.locked_speaker_timestamp = None
         
         # Real-time pass-through queues
         if mpm:
@@ -1568,19 +1734,13 @@ class TemporalLobe:
             # Visual system FPS stats (from external_stats_queue)
             'visual_cortex_fps': 0.0,
             'last_visual_cortex': None,
-            'VLM_availible': True,  # VLM availability status
+            'VLM_availible': True,
             
             # Audio system FPS stats (from external_stats_queue)  
             'auditory_cortex_fps': 0.0,
             'last_auditory_cortex': None,
-            
-            # Per-device nerve FPS stats (dynamic based on active devices)
-            # Format: 'optic_nerve_fps_0': fps_value, 'last_optic_nerve_0': timestamp
-            # Format: 'auditory_nerve_fps_0': fps_value, 'last_auditory_nerve_0': timestamp
-            # Format: 'stream_fps_0': fps_value (for video streaming)
         }
         
-       
         # Connect to database with sqlite-vec extension
         self.db = sqlite3.connect(database_path)
 
@@ -1611,6 +1771,11 @@ class TemporalLobe:
             'audio_device_index': None,
             'transcription_timestamp': None,
             
+            # Active speaker tracking
+            'locked_speaker_id': None,
+            'locked_speaker_timestamp': None,
+            'is_locked_speaker': False,
+            
             # Frame counts for this update
             'visual_frames_in_update': 0,
             'audio_frames_in_update': 0,
@@ -1619,6 +1784,32 @@ class TemporalLobe:
             'buffer_visual_frames': 0,
             'buffer_audio_frames': 0
         }
+
+    def _check_wakeword_queue(self):
+        """
+        Check the wakeword queue for newly detected name wakewords.
+        Updates the locked speaker when a wakeword is detected.
+        """
+        if not self.auditory_cortex or not hasattr(self.auditory_cortex, 'detected_name_wakeword_queue'):
+            return
+        
+        try:
+            # Check for wakeword detections
+            while True:
+                try:
+                    wakeword_data = self.auditory_cortex.detected_name_wakeword_queue.get_nowait()
+                    speaker_id = wakeword_data.get('spoken_by')
+                    
+                    if speaker_id:
+                        self.locked_speaker_id = speaker_id
+                        self.locked_speaker_timestamp = time.time()
+                        print(f"temporalLobe Locked onto speaker: {speaker_id}")
+                    
+                except queue.Empty:
+                    break
+                    
+        except Exception as e:
+            logging.error(f"Error checking wakeword queue: {e}")
 
     def _is_default_value(self, key, value):
         """Check if a value is considered 'default' and should be replaced"""
@@ -1648,6 +1839,9 @@ class TemporalLobe:
         while self.running:
             current_time = time.time()
             
+            # Check wakeword queue continuously for immediate speaker locking
+            self._check_wakeword_queue()
+            
             # Collect visual frames
             if self.visual_cortex:
                 try:
@@ -1664,13 +1858,11 @@ class TemporalLobe:
                             self.visual_realtime_queue.put_nowait(visual_data)
                             self.stats['visual_realtime_frames_relayed'] += 1
                         except queue.Full:
-                            # If real-time queue is full, remove oldest and add new (LIFO-like behavior)
                             try:
                                 _ = self.visual_realtime_queue.get_nowait()
                                 self.visual_realtime_queue.put_nowait(visual_data)
                                 self.stats['visual_realtime_frames_relayed'] += 1
                             except queue.Empty:
-                                # Queue was just emptied by consumer, try again
                                 try:
                                     self.visual_realtime_queue.put_nowait(visual_data)
                                     self.stats['visual_realtime_frames_relayed'] += 1
@@ -1696,13 +1888,11 @@ class TemporalLobe:
                             self.audio_realtime_queue.put_nowait(audio_data)
                             self.stats['audio_realtime_frames_relayed'] += 1
                         except queue.Full:
-                            # If real-time queue is full, remove oldest and add new (LIFO-like behavior)
                             try:
                                 _ = self.audio_realtime_queue.get_nowait()
                                 self.audio_realtime_queue.put_nowait(audio_data)
                                 self.stats['audio_realtime_frames_relayed'] += 1
                             except queue.Empty:
-                                # Queue was just emptied by consumer, try again
                                 try:
                                     self.audio_realtime_queue.put_nowait(audio_data)
                                     self.stats['audio_realtime_frames_relayed'] += 1
@@ -1716,7 +1906,6 @@ class TemporalLobe:
             if self.visual_cortex:
                 try:
                     visual_stats = self.visual_cortex.external_stats_queue.get_nowait()
-                    # Update our stats dictionary with visual system stats
                     self.stats.update(visual_stats)
                     logging.debug(f"Updated visual stats: {visual_stats}")
                 except queue.Empty:
@@ -1726,7 +1915,6 @@ class TemporalLobe:
             if self.auditory_cortex:
                 try:
                     audio_stats = self.auditory_cortex.external_stats_queue.get_nowait()
-                    # Update our stats dictionary with audio system stats
                     self.stats.update(audio_stats)
                     logging.debug(f"Updated audio stats: {audio_stats}")
                 except queue.Empty:
@@ -1757,8 +1945,13 @@ class TemporalLobe:
         """
         Create unified state by rolling up non-default values from most recent to oldest frames.
         Returns the combined state from both visual and audio data in the buffer.
+        Filters audio based on locked speaker.
         """
         unified_state = self._create_empty_unified_state()
+        
+        # Add locked speaker info to state (updated continuously in _collect_frames)
+        unified_state['locked_speaker_id'] = self.locked_speaker_id
+        unified_state['locked_speaker_timestamp'] = self.locked_speaker_timestamp
         
         # Convert buffers to lists and sort by timestamp (most recent first)
         visual_frames = sorted(list(self.visual_buffer), 
@@ -1796,11 +1989,26 @@ class TemporalLobe:
                         unified_state[key] = frame[key]
                         logging.debug(f"Visual rollup: {key} = {frame[key]}")
 
-        # Process audio frames (most recent first)  
+        # Process audio frames (most recent first)
+        # Filter based on locked speaker if one is set
         for frame in audio_frames:
             # Always update device index from most recent frame
             if unified_state['audio_device_index'] is None:
                 unified_state['audio_device_index'] = frame.get('device_index')
+            
+            # Check if this frame is from the locked speaker
+            frame_speaker_id = frame.get('voice_match')
+            is_locked_speaker = (self.locked_speaker_id is not None and 
+                                frame_speaker_id == self.locked_speaker_id)
+            
+            # If we have a locked speaker, only process audio from that speaker
+            if self.locked_speaker_id is not None:
+                if not is_locked_speaker:
+                    logging.debug(f"Ignoring audio from non-locked speaker: {frame_speaker_id}")
+                    continue
+                else:
+                    # Mark that this audio is from the locked speaker
+                    unified_state['is_locked_speaker'] = True
             
             # Roll up non-default audio values
             for key in ['speech_detected', 'transcription', 'final_transcript', 
@@ -1815,8 +2023,18 @@ class TemporalLobe:
         self.last_unified_state = unified_state
         
         if unified_state['final_transcript']:
-            print(f"TARGET SPEAKER: {unified_state['voice_match']}")
+            print(f"TARGET SPEAKER: {unified_state['voice_match']} (Locked: {unified_state['is_locked_speaker']})")
+        
         return unified_state
+    
+    def unlock_speaker(self):
+        """Manually unlock the current speaker to allow any speaker to be processed"""
+        if self.locked_speaker_id:
+            logging.info(f"Unlocking speaker: {self.locked_speaker_id}")
+            self.locked_speaker_id = None
+            self.locked_speaker_timestamp = None
+        else:
+            logging.debug("No speaker currently locked")
     
     def start_collection(self):
         """Start background frame collection"""
@@ -1917,6 +2135,10 @@ class TemporalLobe:
         self.visual_buffer.clear()
         self.audio_buffer.clear()
         
+        # Clear speaker lock
+        self.locked_speaker_id = None
+        self.locked_speaker_timestamp = None
+        
         if had_failure:
             logging.error("Temporal Lobe shutdown completed with some failures")
         else:
@@ -1930,13 +2152,15 @@ class TemporalLobe:
             **self.stats,
             'buffer_visual_size': len(self.visual_buffer),
             'buffer_audio_size': len(self.audio_buffer),
-            'collection_running': self.running
+            'collection_running': self.running,
+            'locked_speaker_id': self.locked_speaker_id,
+            'locked_speaker_timestamp': self.locked_speaker_timestamp
         }
     
     def get_last_unified_state(self):
         """Get the last created unified state without creating a new one"""
         return self.last_unified_state
-
+    
 """
 MEMORY
 """
@@ -2787,6 +3011,7 @@ def stats():
     """API endpoint for performance statistics"""
     try:
         current_stats = temporal_lobe.get_stats()
+        
         return jsonify(current_stats)
     except Exception as e:
         logging.error(f"Error getting stats: {e}")
@@ -2980,7 +3205,7 @@ if __name__ == '__main__':
     unified_state = print({'timestamp': 1758855474.7669709, 
                         'formatted_time': '22:57:54', 
                         'person_detected': True, 
-                        'person_match': (False,), 
+                        'person_match': False, 
                         'person_match_probability': 0.0, 
                         'caption': ' The image shows a man with a beard and short hair, wearing a black hoodie over a white t-shirt. He is looking upwards and slightly to his left. The background features a cream-colored wall with vertical lines and a dark brown or black ceiling or trim.', 
                         'vlm_timestamp': 1758855473.9019487, 

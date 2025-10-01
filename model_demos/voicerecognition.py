@@ -35,7 +35,7 @@ class VoiceRecognitionSystem:
             max_samples_per_profile: Maximum voice samples per speaker (default: 10)
         """
         self.embedding_dim = embedding_dim
-        self.recognition_threshold = 0.4
+        self.recognition_threshold = 0.3
         self.new_profile_threshold = 0.7  # Used to determine if a new sample is actually a voice of existing profile
         self.max_samples_per_profile = max_samples_per_profile
         
