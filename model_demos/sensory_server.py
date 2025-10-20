@@ -1666,8 +1666,7 @@ class AuditoryCortex():
             logging.error(f"Auditory Process Stop Error: {e}")
             return False
 
-    
-  
+
 """
 TEMPORAL LOBE
 """

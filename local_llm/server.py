@@ -120,7 +120,7 @@ def handle_submit_input(data):
     
     try:
         user_input = data.get('message', '')
-        max_tokens = data.get('max_tokens', 512)
+        max_tokens = data.get('max_tokens', 2000)
         auto_execute_tools = data.get('auto_execute_tools', True)
         use_history = data.get('use_message_history', True)
         
@@ -346,7 +346,7 @@ if __name__ == '__main__':
     
     # Get machine IP and port
     host_ip = get_machine_ip()
-    port = 5000
+    port = 8080
     
     # Print detailed host information
     print_host_details(host_ip, port)
