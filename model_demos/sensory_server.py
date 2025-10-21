@@ -16,6 +16,7 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 import logging
 import sqlite3
 from voicerecognition import VoiceRecognitionSystem
+from kokoro_2 import kokoroTTS
 
 logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CRITICAL + 1)
 
@@ -929,7 +930,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
         return
     
     try:
-        SAMPLE_SIZE_REQUIREMENT = 512
+        SAMPLE_SIZE_REQUIREMENT = 512#DO NOT CHANGE VALUE required for VAD
         while True:
             try:
                 audio_data = internal_nerve_queue.get_nowait()
@@ -1666,6 +1667,14 @@ class AuditoryCortex():
             logging.error(f"Auditory Process Stop Error: {e}")
             return False
 
+"""
+SPEECH
+"""
+class BrocasArea():
+    def __init__(self):
+        self.tts = kokoroTTS()
+    def speak(self,text):
+        self.tts.synthesize_speech(text,auto_play=True)
 
 """
 TEMPORAL LOBE
@@ -1677,13 +1686,14 @@ class TemporalLobe:
     non-default values from the most recent to oldest frames.
     """
     
-    def __init__(self, visual_cortex=None, auditory_cortex=None, buffer_duration=1.0, update_interval=1.0, mpm=None, database_path=":memory:"):
+    def __init__(self, visual_cortex=None, auditory_cortex=None, brocas=None,buffer_duration=1.0, update_interval=1.0, mpm=None, database_path=":memory:"):
         """
         Initialize TemporalLobe with visual and auditory cortex instances.
         
         Args:
             visual_cortex: VisualCortex instance
-            auditory_cortex: AuditoryCortex instance  
+            auditory_cortex: AuditoryCortex instance
+            brocas: BrocasArea instance (speech)  
             buffer_duration: How long to buffer data in seconds (default 1.0)
             update_interval: How often to create unified updates in seconds (default 1.0)
             mpm: Multiprocessing manager for creating queues
@@ -1693,6 +1703,7 @@ class TemporalLobe:
             
         self.visual_cortex = visual_cortex
         self.auditory_cortex = auditory_cortex
+        self.brocas = brocas
         self.buffer_duration = buffer_duration
         self.update_interval = update_interval
 
@@ -1711,9 +1722,11 @@ class TemporalLobe:
         if mpm:
             self.audio_realtime_queue = mpm.Queue(maxsize=30)
             self.visual_realtime_queue = mpm.Queue(maxsize=30)
+            self.speaking_realtime_queue = mpm.Queue(maxsize=1)#active speaking
         else:
             self.audio_realtime_queue = None
             self.visual_realtime_queue = None
+            self.speaking_realtime_queue = None
         
         # Unified state tracking
         self.last_unified_state = self._create_empty_unified_state()
@@ -1776,6 +1789,9 @@ class TemporalLobe:
             'locked_speaker_id': None,
             'locked_speaker_timestamp': None,
             'is_locked_speaker': False,
+
+            #Speech Output
+            'speaking':False,
             
             # Frame counts for this update
             'visual_frames_in_update': 0,
@@ -1903,6 +1919,12 @@ class TemporalLobe:
                 except queue.Empty:
                     pass
             
+            #Collect status of speaking
+            if self.brocas:
+                try:
+                    status = self.brocas.is_speaking()
+                except Exception as e:
+                    logging.error(f"error getting speaking status from brocas: {e}")
             # Collect visual stats
             if self.visual_cortex:
                 try:
@@ -3188,8 +3210,11 @@ if __name__ == '__main__':
     #Audio Cortex
     ac = AuditoryCortex(mpm=manager,database_path=db_name)
 
+    #Broca's Area (speech)
+    sp = BrocasArea()
+
     #Temporal Lobe
-    temporal_lobe = TemporalLobe(visual_cortex=vc, auditory_cortex=ac, mpm=manager,database_path=db_name)
+    temporal_lobe = TemporalLobe(visual_cortex=vc, auditory_cortex=ac, brocas=sp,mpm=manager,database_path=db_name)
 
     # Start temporal lobe collection
     temporal_lobe.start_collection()
