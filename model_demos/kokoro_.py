@@ -44,7 +44,7 @@ class kokoroTTS:
             "am_michael", "am_onyx", "am_puck", "am_santa"
         ]
 
-        self.lang_code: str = 'a'  # 'a' for American English, 'b' for British English
+        self.accent: str = 'a'  # 'a' for American English, 'b' for British English
         self.voice: str = 'af_sky'  # Default
         self.speech_speed: float = 1.0  # Normal speed
 
@@ -56,7 +56,7 @@ class kokoroTTS:
                 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
             
             # Explicitly specify repo_id to suppress warning
-            self.pipeline = self.KPipeline(self.lang_code, repo_id='hexgrad/Kokoro-82M')
+            self.pipeline = self.KPipeline(self.accent, repo_id='hexgrad/Kokoro-82M')
 
             print("✅ Kokoro pipeline initialized successfully")
         except Exception as e:
