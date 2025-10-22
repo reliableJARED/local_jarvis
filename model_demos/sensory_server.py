@@ -1053,7 +1053,7 @@ def auditory_nerve_connection(device_index, internal_nerve_queue, external_stats
 def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_stats_queue,
                         internal_speech_audio_queue, internal_transcription_queue,
                         detected_name_wakeword_queue, wakeword_name, 
-                        playback_state, assistant_voice_id):
+                        playback_state):
     """
     Enhanced auditory cortex with dynamic background noise monitoring.
     
@@ -1066,7 +1066,6 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
             - 'is_playing': bool
             - 'expected_energy': float (RMS energy of audio being played)
             - 'start_time': float (when playback started)
-        assistant_voice_id: The voice embedding ID for the LLM's voice
         locked_speaker_id: Shared value - which speaker has the lock (None if unlocked)
     """
     print("Started auditory cortex process")
@@ -1107,6 +1106,9 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
     
     #Indicator if system is playing auido
     is_playback_context = False#playback_state.get('is_playing', False)
+
+    #Need voice to calibrate first
+    assistant_voice_id = None
     
     # Initialize Silero VAD
     try:
@@ -1221,7 +1223,8 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                                 speech_active, 
                                 device_index, 
                                 sample_rate, 
-                                capture_timestamp
+                                capture_timestamp,
+                                is_playback_context
                             ))
                             
                         except queue.Full:
@@ -1271,11 +1274,11 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                         transcription = cortex_output.get('transcription', '').lower().strip()
 
                         #TODO speech
-                        #Interrupt can only happen if assistant is activly speaking
+                        
                         if is_playback_context:
-                            is_interrupt_attempt = True
-                        else:
-                            is_interrupt_attempt = False
+                            assistant_voice_id = voice_match_id
+
+                        is_interrupt_attempt = False
 
                         # Determine if this is speech from our locked speaker
                         is_locked_speaker = (voice_match_id == locked_speaker_id)
@@ -1299,7 +1302,6 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                             energy_ratio = chunk_energy / (expected_energy + 1e-10)
                             
                             logging.debug(f"During playback - SNR: {snr:.2f}, Energy ratio: {energy_ratio:.2f}, Voice ID: {voice_match_id}")
-                            
                             
                             
                             # Adaptive interrupt criteria based on noise floor
@@ -1524,7 +1526,7 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                     logging.debug(f"Audio STT skipped {items_skipped} older audio chunks (LIFO mode)")
                 
                 # Unpack the latest task
-                full_audio_data, more_speech_coming, device_index, sample_rate, capture_timestamp = latest_task
+                full_audio_data, more_speech_coming, device_index, sample_rate, capture_timestamp,my_voice = latest_task
                 current_audio_length = len(full_audio_data)
                 
                 logging.debug(f"Audio length: {current_audio_length}, More coming: {more_speech_coming}, Last processed: {last_processed_length}")
@@ -1579,7 +1581,7 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                         #VOICE RECOGNITION
                         # send data to voice recognition in a separate worker via queue
                         try:
-                            vr_data = {'audio':chunk_to_process}
+                            vr_data = {'audio':chunk_to_process,'my_voice':my_voice}
                             internal_voice_recognition_in_queue.put_nowait(vr_data)
                         except:
                             logging.error("Error sending data on internal_voice_recognition_in_queue")
@@ -1700,6 +1702,7 @@ def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,
             #voice_data: in np data array of Audio sample (should be 16kHz mono)
             data = internal_voice_recognition_in_queue.get_nowait()
             voice_data = data['audio']
+            is_my_voice_id = data['my_voice']
         except queue.Empty:
             continue
 
@@ -1709,7 +1712,13 @@ def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,
             new_person = False
             if not human_id:
                 #we dont have a profile for this voice, so we create a new one
+                #if this is 'my_voice' it's the system talking
+                
+                #TODO: speech
                 human_id = uuid.uuid4().hex
+                if is_my_voice_id:
+                    human_id = "my_voice_id"
+                
                 success = vr.add_speaker_profile(human_id,[voice_data])
                 new_person = True
                 similarity = 1
@@ -1769,7 +1778,7 @@ class AuditoryCortex():
 
         #nerve controller function
         self.nerve = nerve
-        assistant_voice_id = 'a1234'
+
         #Primary hub process
         auditory_cortex_process = mp.Process(
             target=cortex,
@@ -1779,7 +1788,7 @@ class AuditoryCortex():
                   self.internal_speech_audio_queue,
                   self.internal_transcription_queue,
                   self.detected_name_wakeword_queue,
-                  self.wakeword_name,self.brocas_state, assistant_voice_id)
+                  self.wakeword_name,self.brocas_state)
         )
         auditory_cortex_process.start()
         self.auditory_processes['core'] = auditory_cortex_process
@@ -1971,7 +1980,9 @@ class TemporalLobe:
 
         logging.info(f"TemporalLobe initialized with {buffer_duration}s buffer, {update_interval}s updates")
 
-    
+    def speak(self,text):
+        self.brocas.synthesize_speech(text, auto_play=True)
+
     def _create_empty_unified_state(self):
         """Create an empty unified state with default values"""
         return {
@@ -2145,6 +2156,14 @@ class TemporalLobe:
                 except Exception as e:
                     logging.error(f"error getting speaking status from brocas: {e}")
                     pass
+                try:
+                    #Tell the Auditory Cortex we are speeking
+                    ##playback_state['is_playing'] = False
+                    #playback_state['expected_energy'] = 0.0
+                    self.auditory_cortex.brocas_state.put_nowait({'is_playing': self.brocas.is_speaking()})
+                except:
+                    pass
+
             
             # Collect visual stats
             if self.visual_cortex:
@@ -2159,11 +2178,21 @@ class TemporalLobe:
             if self.auditory_cortex:
                 try:
                     audio_stats = self.auditory_cortex.external_stats_queue.get_nowait()
-                    self.stats.update(audio_stats)
-                    logging.debug(f"Updated audio stats: {audio_stats}")
+                    
+                    # Convert NumPy types to native Python types for JSON serialization
+                    cleaned_audio_stats = {}
+                    for key, value in audio_stats.items():
+                        if hasattr(value, 'item'):
+                            # NumPy scalar - convert to native Python type
+                            cleaned_audio_stats[key] = value.item()
+                        else:
+                            cleaned_audio_stats[key] = value
+                    
+                    self.stats.update(cleaned_audio_stats)
+                    logging.debug(f"Updated audio stats: {cleaned_audio_stats}")
                 except queue.Empty:
                     pass
-            
+                        
             # Clean old frames from buffers
             self._clean_old_frames()
             
@@ -2195,13 +2224,8 @@ class TemporalLobe:
 
         #TODO speech
         #Is assistant speaking currently
-        speeking_state = self.stats['actively_speaking']
-        unified_state['actively_speaking'] = speeking_state
-        #Tell the Auditory Cortex we are speeking
-        ##playback_state['is_playing'] = False
-        #playback_state['expected_energy'] = 0.0
-        self.auditory_cortex.brocas_state.put_nowait({'is_playing':speeking_state,'expected_energy':0.0})
-
+        unified_state['actively_speaking'] = self.stats['actively_speaking']
+        
         # Add locked speaker info to state (updated continuously in _collect_frames)
         unified_state['locked_speaker_id'] = self.locked_speaker_id
         unified_state['locked_speaker_timestamp'] = self.locked_speaker_timestamp
@@ -2270,6 +2294,7 @@ class TemporalLobe:
                     if not self._is_default_value(key, frame[key]):
                         unified_state[key] = frame[key]
                         logging.debug(f"Audio rollup: {key} = {frame[key]}")
+
 
         self.stats['unified_updates_created'] += 1
         self.stats['last_update_time'] = time.time()
@@ -2401,6 +2426,7 @@ class TemporalLobe:
 
     def get_stats(self):
         """Get comprehensive processing statistics including all FPS data"""
+        #print(f"\n\n{self.stats}\n\n")
         return {
             **self.stats,
             'buffer_visual_size': len(self.visual_buffer),
@@ -3364,6 +3390,15 @@ def start_audio_device(device_index):
     """Start auditory nerve and auditory cortex processing for specific audio device"""
     try:
         temporal_lobe.start_audio_nerve(device_index)
+
+        time.sleep(6)#let nerve start up
+        #TODO: speech
+        #Voice Calibration
+        temporal_lobe.speak('I need to calibrate my voice.  Please remain quiet until I am done.')
+        temporal_lobe.speak('the quick brown fox jumps over the lazy dog.')
+        temporal_lobe.speak('Ok, voice calibrated.')
+
+
         return jsonify({
             'status': 'started', 
             'message': f'Auditory nerve {device_index} started'
@@ -3513,6 +3548,7 @@ if __name__ == '__main__':
         hostname = socket.gethostname()
         ip_address = socket.gethostbyname(hostname)
         print(f"Flask server running on IP: {ip_address}")
+
 
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
         
