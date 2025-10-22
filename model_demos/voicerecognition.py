@@ -623,3 +623,164 @@ class VoiceRecognitionSystem:
     def close(self):
         """Close database connection."""
         self.conn.close()
+
+
+
+if __name__ == "__main__":
+    # Configure logging to see what's happening
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    
+    print("=" * 60)
+    print("Voice Recognition System Demo")
+    print("=" * 60)
+    print("DEMO DATA IS NOT GOOD - it lacks sufficient variety, but it remains because it still demonstrates how to use")
+    print("in practice two speakers have very different profiles, even same sample same person can be less than 0.7 similarity")
+    # Initialize the system with an in-memory database
+    print("\n1. Initializing Voice Recognition System...")
+    vrs = VoiceRecognitionSystem(db_path=":memory:", use_gpu=False, max_samples_per_profile=5)
+    print("   ✓ System initialized")
+    
+    # Create some dummy audio samples (in practice, these would be real audio data)
+    # For demo purposes, we'll create random audio-like data
+    print("\n2. Creating demo audio samples...")
+    
+    # Simulate 3 different speakers with slightly different "voice characteristics"
+    np.random.seed(42)  # For reproducibility
+    
+    
+    # Speaker 1: "Alice" - High frequency emphasis, periodic patterns
+    alice_samples = []
+    for i in range(3):
+        t = np.linspace(0, 3, 16000 * 3)
+        # Base signal with high frequency components
+        signal = np.sin(2 * np.pi * 300 * t) * 0.3  # 300 Hz tone
+        signal += np.sin(2 * np.pi * 450 * t) * 0.2  # 450 Hz harmonic
+        # Add some noise and variation per sample
+        signal += np.random.randn(16000 * 3) * 0.05
+        signal += i * 0.01  # Slight DC offset variation
+        alice_samples.append(signal.astype(np.float32))
+
+    # Speaker 2: "Bob" - Low frequency emphasis, different pattern
+    bob_samples = []
+    for i in range(3):
+        t = np.linspace(0, 3, 16000 * 3)
+        # Base signal with low frequency components
+        signal = np.sin(2 * np.pi * 100 * t) * 0.4  # 100 Hz tone
+        signal += np.sin(2 * np.pi * 150 * t) * 0.25  # 150 Hz harmonic
+        # Different noise characteristics
+        signal += np.random.randn(16000 * 3) * 0.08
+        signal -= i * 0.02  # Opposite DC offset trend
+        bob_samples.append(signal.astype(np.float32))
+
+    # Speaker 3: Unknown speaker - Mid-range frequency, chaotic
+    t = np.linspace(0, 3, 16000 * 3)
+    unknown_sample = np.sin(2 * np.pi * 200 * t) * 0.5  # 200 Hz
+    unknown_sample += np.sin(2 * np.pi * 350 * t) * 0.3  # 350 Hz
+    # High noise level for more chaos
+    unknown_sample += np.random.randn(16000 * 3) * 0.2
+    unknown_sample = unknown_sample.astype(np.float32)
+    
+    print("   ✓ Created demo audio samples")
+    print(type(alice_samples[0]))
+
+    # Register Alice
+    print("\n3. Registering 'Alice' with initial voice sample...")
+    result = vrs.add_speaker_profile("Alice", [alice_samples[0]])
+    if result:
+        print(f"   ✓ Alice registered successfully")
+
+
+    # Add more samples for Alice
+    print("\n4. Adding additional samples for Alice...")
+    for i, sample in enumerate(alice_samples[1:], start=2):
+        if vrs.add_voice_sample("Alice", sample):
+            print(f"   ✓ Added sample {i}/3 for Alice")
+
+    # Register Bob
+    print("\n5. Registering 'Bob' with voice samples...")
+    vrs.add_speaker_profile("Bob", [bob_samples[0]])
+    for i, sample in enumerate(bob_samples[1:], start=2):
+        vrs.add_voice_sample("Bob", sample)
+    print("   ✓ Bob registered with all samples")
+    
+    # List all speakers
+    print("\n6. Listing all registered speakers...")
+    speakers = vrs.list_all_speakers()
+    print(f"   Registered speakers: {speakers}")
+    
+    # Recognize a known speaker (Alice)
+    print("\n7. Testing recognition with Alice's voice...")
+    id,similarity = vrs.recognize_speaker(alice_samples[0])
+    if id:
+        print(f"   ✓ Recognized: {id}")
+        print(f"     Similarity: {similarity}")
+    else:
+        print("   ✗ No match found")
+    
+    # Try to recognize Bob
+    print("\n8. Testing recognition with Bob's voice...")
+    id,similarity = vrs.recognize_speaker(bob_samples[0])
+    if id:
+        print(f"   ✓ Recognized: {id}")
+        print(f"     Similarity: {similarity}")
+    else:
+        print("   ✗ No match found")
+    
+    # Try to recognize unknown speaker
+    print("\n9. Testing with unknown speaker...")
+    id,similarity = vrs.recognize_speaker(unknown_sample)
+    if id:
+        print(f"   ✓ Recognized: {id}")
+        print(f"     Similarity: {similarity}")
+    else:
+        print("   ✗ No match found")
+    
+    # Get profile information
+    print("\n10. Getting Alice's profile information...")
+    profile = vrs.get_speaker_profile("Alice")
+    if profile:
+        print(f"   Profile details:")
+        print(f"     - Human ID: {profile['human_id']}")
+        print(f"     - Samples: {profile['samples_count']}")
+        print(f"     - Created: {profile['created_at']}")
+    
+    # Get voice quality metrics
+    print("\n11. Analyzing voice sample quality for Alice...")
+    metrics = vrs.get_voice_sample_quality_metrics("Alice")
+    if metrics:
+        print(f"   Quality metrics:")
+        print(f"     - Number of samples: {metrics['num_samples']}")
+        print(f"     - Average cohesion: {metrics['avg_cohesion_score']:.4f}")
+        print(f"     - Cluster quality: {metrics['cluster_quality']}")
+    
+    # Update profile attributes
+    print("\n12. Adding custom attributes to Bob's profile...")
+    vrs.update_profile_attribute("Bob", department="Engineering", access_level="admin")
+    bob_profile = vrs.get_speaker_profile("Bob")
+    print(f"   Updated profile: {bob_profile}")
+    
+    # Test the adaptive sample replacement (add a 6th sample to Alice who has max_samples=5)
+    print("\n13. Testing adaptive sample replacement...")
+    print(f"   Alice currently has {vrs.get_speaker_profile('Alice')['samples_count']} samples (max=5)")
+    print("   Adding one more sample (should replace weakest sample)...")
+    new_sample = np.random.randn(16000 * 3).astype(np.float32) * 0.1
+    if vrs.add_voice_sample("Alice", new_sample):
+        print("   ✓ Sample added/replaced successfully")
+        final_count = vrs.get_speaker_profile('Alice')['samples_count']
+        print(f"   Alice still has {final_count} samples (adaptive replacement worked)")
+    
+    # Delete a profile
+    print("\n14. Deleting Bob's profile...")
+    if vrs.delete_profile("Bob"):
+        print("   ✓ Bob's profile deleted")
+        remaining = vrs.list_all_speakers()
+        print(f"   Remaining speakers: {remaining}")
+    
+    # Clean up
+    print("\n15. Closing system...")
+    vrs.close()
+    print("   ✓ System closed")
+    
+    print("\n" + "=" * 60)
+    print("Demo completed successfully!")
+    print("=" * 60)

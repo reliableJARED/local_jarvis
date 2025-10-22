@@ -21,7 +21,8 @@ import os
 import platform
 import sounddevice as sd
 import soundfile as sf
-
+from brocasArea import BrocasArea
+from dataclasses import dataclass, field
 
 logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CRITICAL + 1)
 
@@ -30,202 +31,6 @@ log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
-
-"""
-SPEECH
-"""
-
-def BrocasArea_playback(play_queue, stop_queue, shutdown_event,active_playback):
-    """Play audio data using sounddevice."""
-    while not shutdown_event.is_set():
-        try:
-            # Get audio from queue (THIS WAS THE BUG - was using put_nowait instead of get_nowait)
-            data = play_queue.get(timeout=0.1)
-            audio = data[0]
-            samplerate = data[1]
-            
-            print(f"Playing audio chunk of length {len(audio)}")
-
-            #Set our playback flag
-            active_playback.set()
-            
-            # Play the audio chunk
-            sd.play(audio, samplerate)
-            
-            # Wait for playback to finish or until stop is requested
-            while not shutdown_event.is_set():
-                # Check if stop signal received
-                try:
-                    signal = stop_queue.get_nowait()
-                    if signal == 'stop':
-                        print("Stop signal received. Stopping playback.")
-                        sd.stop()
-                        active_playback.clear()#update our playback flag
-                        # Clear any remaining items from stop and play queues
-                        while not stop_queue.empty():
-                            stop_queue.get_nowait()
-                        while not play_queue.empty():
-                            play_queue.get_nowait()
-                        break
-                except queue.Empty:
-                    pass
-                
-                # Check if playback is still active
-                if not sd.get_stream().active:
-                    active_playback.clear()#clear when playback finishes naturally
-                    break
-                    
-                time.sleep(0.01)  # Check every 10ms
-                
-        except queue.Empty:
-            time.sleep(0.01)
-        except Exception as e:
-            if not shutdown_event.is_set():
-                print(f"Playback error: {e}")
-                active_playback.clear()#clear on error
-            time.sleep(0.01)
-    
-    # Clean shutdown
-    sd.stop()
-    print("Playback thread shutting down cleanly")
-
-
-class BrocasArea():
-    def __init__(self) -> None:
-        # Check for internet connection
-        _ = self.check_internet()
-
-        self.KPipeline = KPipeline
-        self.sf = sf
-        self.torch = torch
-        self.sd = sd
-        
-        
-        # Voice definitions reference
-        #https://github.com/hexgrad/kokoro/tree/main/kokoro.js/voices
-        VOICES_FEMALE: list[str] = [
-            "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", 
-            "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky"
-        ]
-        
-        VOICES_MALE: list[str] = [
-            "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", 
-            "am_michael", "am_onyx", "am_puck", "am_santa"
-        ]
-
-        self.lang_code: str = 'a'  # 'a' for American English
-        self.voice: str = 'af_sky,af_jessica'#  Single voice can be requested (e.g. 'af_sky') or multiple voices (e.g. 'af_bella,af_jessica'). If multiple voices are requested, they are averaged.
-        self.speech_speed: float = 1.0  # Normal speed
-
-        self.pipeline = None
-        self._initialize_pipeline()#will set pipeline
-
-        
-        # Create queues for thread communication
-        self.stop_queue = queue.Queue(maxsize=2)
-        self.play_queue = queue.Queue(maxsize=25)
-        self.shutdown_event = threading.Event()
-        self.active_playback = threading.Event()
-        
-        # Start playback thread as daemon so it exits when main program exits
-        self.playback_thread = threading.Thread(
-            target=BrocasArea_playback, 
-            args=(self.play_queue, self.stop_queue, self.shutdown_event,self.active_playback),
-            daemon=True
-        )
-        self.playback_thread.start()
-
-    def check_internet(self):
-        import socket
-        """Check if internet connection is available."""
-        try:
-            socket.create_connection(("huggingface.co", 443), timeout=5)
-            return True
-        except (socket.timeout, socket.error, OSError):
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            return False
-
-    def _initialize_pipeline(self) -> None:
-        """Initialize the Kokoro pipeline with MPS fallback for Mac.
-        https://github.com/hexgrad/kokoro/blob/main/kokoro/pipeline.py
-        """
-        try:
-            # Set MPS fallback for Mac M1/M2/M3/M4
-            if platform.system() == "Darwin" and self.torch.backends.mps.is_available():
-                os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-            
-            self.pipeline = self.KPipeline(self.lang_code, repo_id='hexgrad/Kokoro-82M')
-            print("Kokoro pipeline initialized successfully")
-        except Exception as e:
-            print(f"Failed to initialize Kokoro pipeline: {e}")
-            raise
-
-    def synthesize_speech(self, text: str, auto_play: bool = False) -> Optional[Tuple[np.ndarray, int]]:
-        """Synthesize speech from text and optionally play it."""
-        # Generate audio
-        generator: Generator[Tuple[Any, Any, Optional[np.ndarray]], None, None] = self.pipeline(
-            text, voice=self.voice, speed=self.speech_speed
-        )
-            
-        # Process audio
-        audio_data: np.ndarray = np.array([])
-        samplerate: int = 24000#smaller, slower/lower - bigger faster/higher
-
-        for i, (graphemes, phonemes, audio) in enumerate(generator):
-            if audio is not None:
-                audio_data = np.concatenate((audio_data, audio))
-
-                if auto_play:
-                    try:
-                        print(f"Queuing audio chunk {i}")
-                        self.play_queue.put((audio, samplerate))
-                    except Exception as e:
-                        print(f"Failed to queue audio: {e}")
-                        return None
-
-        if not auto_play:
-            return audio_data, samplerate
-
-        return None
-    
-    def stop_playback(self) -> None:
-        """Stop the current audio playback."""
-        print("Stopping playback...")
-        try:
-            self.stop_queue.put('stop', timeout=1)
-        except queue.Full:
-            print("Stop queue full, clearing and retrying")
-            while not self.stop_queue.empty():
-                self.stop_queue.get_nowait()
-            self.stop_queue.put('stop')
-
-    def play_audio(self, audio: np.ndarray, samplerate: int) -> None:
-        """Queue audio for playback."""
-        self.play_queue.put((audio, samplerate))
-
-    def is_speaking(self) -> bool:
-        """Check if audio is currently playing.
-        
-        Returns:
-            bool: True if audio is playing, False otherwise.
-        """
-        return self.active_playback.is_set()
-
-    def shutdown(self) -> None:
-        """Cleanly shutdown the TTS system."""
-        print("Shutting down TTS system...")
-        self.stop_playback()
-        self.shutdown_event.set()
-        
-        # Wait for playback thread to finish (with timeout)
-        self.playback_thread.join(timeout=2.0)
-        
-        if self.playback_thread.is_alive():
-            print("Warning: Playback thread did not shutdown cleanly")
-        else:
-            print("TTS system shutdown complete")
-
-
 
 
 """
@@ -1053,20 +858,11 @@ def auditory_nerve_connection(device_index, internal_nerve_queue, external_stats
 def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_stats_queue,
                         internal_speech_audio_queue, internal_transcription_queue,
                         detected_name_wakeword_queue, wakeword_name, 
-                        playback_state):
+                        external_brocas_state_queue):
     """
     Enhanced auditory cortex with dynamic background noise monitoring.
     
-    Tracks two types of background noise:
-    1. Ambient noise (when no speech detected)
-    2. Playback echo/noise (when assistant is speaking or system is playing)
     
-    Args:
-        playback_state: Shared dict with keys:
-            - 'is_playing': bool
-            - 'expected_energy': float (RMS energy of audio being played)
-            - 'start_time': float (when playback started)
-        locked_speaker_id: Shared value - which speaker has the lock (None if unlocked)
     """
     print("Started auditory cortex process")
     frame_count = 0
@@ -1177,7 +973,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                     # Determine current context (is assistant playing audio) and update appropriate noise floor, shared dict with Speaker Output
                     #TODO speech
                     try:
-                        brocas_state = playback_state.get_nowait()
+                        brocas_state = external_brocas_state_queue.get_nowait()
                         is_playback_context = brocas_state.get('is_playing',False)
                     except Exception as e:
                         #print(e)
@@ -1771,7 +1567,8 @@ class AuditoryCortex():
         self.detected_name_wakeword_queue = mpm.Queue(maxsize=1)#data schema in queue {'name_detected':bool, 'active_speaker':bool, 'recognized_speaker':{} or False}
 
         #TODO speech
-        self.brocas_state =  mpm.Queue(maxsize=1)#Bool is the assistant speaking
+        #This will have the state bool if speaking, transcript of speech and expected energy from the BrocasArea
+        self.external_brocas_state_queue =  mpm.Queue(maxsize=1)
         #playback_state['is_playing'] = False
         #playback_state['expected_energy'] = 0.0
 
@@ -1788,7 +1585,7 @@ class AuditoryCortex():
                   self.internal_speech_audio_queue,
                   self.internal_transcription_queue,
                   self.detected_name_wakeword_queue,
-                  self.wakeword_name,self.brocas_state)
+                  self.wakeword_name,self.external_brocas_state_queue)
         )
         auditory_cortex_process.start()
         self.auditory_processes['core'] = auditory_cortex_process
@@ -2160,7 +1957,7 @@ class TemporalLobe:
                     #Tell the Auditory Cortex we are speeking
                     ##playback_state['is_playing'] = False
                     #playback_state['expected_energy'] = 0.0
-                    self.auditory_cortex.brocas_state.put_nowait({'is_playing': self.brocas.is_speaking()})
+                    self.auditory_cortex.external_brocas_state_queue.put_nowait({'is_playing': self.brocas.is_speaking()})
                 except:
                     pass
 
