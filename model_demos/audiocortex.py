@@ -15,7 +15,7 @@ from typing import Optional
 logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CRITICAL + 1)
 
 
-#Dict Struct on the audio_cortex.internal_nerve_queue
+#Dict Struct on the audio_cortex.nerve_from_input_to_cortex
 #This is raw input audio from microphone
 AudioCortexNervelDataTemplate = {
     'device_index': None,  # int: Audio input device identifier, default 0
@@ -27,9 +27,9 @@ AudioCortexNervelDataTemplate = {
 
 
 
-#Tuple sent on the audio_cortex.internal_speech_audio_queue
+#Tuple sent on the audio_cortex.nerve_from_cortex_to_stt
 # This takes VAD processed audio and sends it for transcription 
-"""internal_speech_audio_queue.put_nowait((
+"""nerve_from_cortex_to_stt.put_nowait((
                                 full_speech.copy(), Data
                                 speech_active,  bool
                                 device_index, int
@@ -39,7 +39,7 @@ AudioCortexNervelDataTemplate = {
                             ))
 """
 
-#Dict Struct on the audio_cortex.internal_transcription_queue
+#Dict Struct on the audio_cortex.nerve_from_stt_to_cortex
 #This is post VAD, Recognition, Transcription data processed one last time in cortex for interruption detection prior to sending externally
 """cortex_output = {
                         'transcription': "",
@@ -72,7 +72,7 @@ BROCAS_AUDIO_TEMPLATE = {
 """
 AUDIO
 """
-def auditory_nerve_connection(device_index, internal_nerve_queue, external_stats_queue,sample_rate=16000, chunk_size=512):
+def auditory_nerve_connection(device_index, nerve_from_input_to_cortex, external_stats_queue,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
     Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.
     """
@@ -97,15 +97,15 @@ def auditory_nerve_connection(device_index, internal_nerve_queue, external_stats
         
         # Non-blocking queue put - drop frame if queue is full
         try:
-            internal_nerve_queue.put_nowait(audio_data)
+            nerve_from_input_to_cortex.put_nowait(audio_data)
         except:
             logging.warning(f"Audio nerve queue {device_index} data not being consumed fast enough!")
             try:
                 # Queue is full, delete last frame to make space for this one to maintain real-time performance
-                _ = internal_nerve_queue.get_nowait()
-                internal_nerve_queue.put_nowait(audio_data)
+                _ = nerve_from_input_to_cortex.get_nowait()
+                nerve_from_input_to_cortex.put_nowait(audio_data)
             except queue.Empty:
-                internal_nerve_queue.put_nowait(audio_data)
+                nerve_from_input_to_cortex.put_nowait(audio_data)
             pass
         
         
@@ -145,10 +145,34 @@ def auditory_nerve_connection(device_index, internal_nerve_queue, external_stats
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
 
-def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_stats_queue,
-                        internal_speech_audio_queue, internal_transcription_queue,
+"""
+#VOICE RECOGNITION
+                        # send data to voice recognition in a separate worker via queue
+                        try:
+                            vr_data = {'audio':chunk_to_process,'my_voice':my_voice}
+                            nerve_from_cortex_to_vr.put_nowait(vr_data)
+                        except:
+                            logging.error("Error sending data on nerve_from_cortex_to_vr")
+
+
+                        # Set recognition results from the container
+                        voice_match_result = False
+                        voice_probability = 0.0
+                        try:
+                            data = nerve_from_vr_to_cortex.get(timeout=1)#{'human_id':human_id,'new_person':new_person, 'similarity':similarity}
+                            voice_match_result = data['human_id']
+                            voice_probability =  data['similarity']
+                        except:
+                            logging.error("Error getting data on nerve_from_vr_to_cortex")
+                        
+                        
+                        logging.debug(f"Voice recognition result: {voice_match_result}, probability: {voice_probability:.3f}")
+"""
+
+def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, external_stats_queue,
+                        nerve_from_cortex_to_stt, nerve_from_stt_to_cortex,
                         detected_name_wakeword_queue, wakeword_name, 
-                        external_brocas_state_queue):
+                        external_brocas_state_queue,nerve_from_cortex_to_vr,nerve_from_vr_to_cortex):
     """
     Enhanced auditory cortex with dynamic background noise monitoring.
     
@@ -222,7 +246,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
         SAMPLE_SIZE_REQUIREMENT = 512#DO NOT CHANGE VALUE required for VAD
         while True:
             try:
-                audio_data = internal_nerve_queue.get_nowait()
+                audio_data = nerve_from_input_to_cortex.get_nowait()
                 
                 audio_chunk = audio_data['audio_frame']
                 capture_timestamp = audio_data['capture_timestamp']
@@ -260,7 +284,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                             logging.info(f"Speech END detected at {speech_dict['end']:.3f}s")
                             speech_active = False
                            
-                    # === NOISE FLOOR UPDATES ===
+                    # === NOISE FLOOR & PLAYBACK UPDATES ===
                     # Determine current context (is assistant playing audio) and update appropriate noise floor, shared dict with Speaker Output
                     #TODO speech
                     try:
@@ -303,26 +327,31 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                         speech_buffer.append(audio_chunk)
                         full_speech = np.concatenate(speech_buffer)
                         
+                        # send data to voice recognition
                         try:
-                            #send data out for transcription and voice recognition
-                            internal_speech_audio_queue.put_nowait((
+                            nerve_from_cortex_to_vr.put_nowait({'audio':full_speech.copy(),'my_voice':is_playback_context})
+                        except:
+                            logging.error("Error sending data on nerve_from_cortex_to_vr")
+
+                        try:
+                            #send data out for transcription
+                            nerve_from_cortex_to_stt.put_nowait((
                                 full_speech.copy(), 
                                 speech_active, 
                                 device_index, 
                                 sample_rate, 
-                                capture_timestamp,
-                                is_playback_context
+                                capture_timestamp
                             ))
                             
                         except queue.Full:
-                            logging.debug("internal_speech_audio_queue FULL - clearing and retrying")
+                            logging.debug("nerve_from_cortex_to_stt FULL - clearing and retrying")
                             try:
                                 while True:
                                     try:
-                                        trash = internal_speech_audio_queue.get_nowait()
+                                        trash = nerve_from_cortex_to_stt.get_nowait()
                                     except queue.Empty:
                                         break
-                                internal_speech_audio_queue.put_nowait((
+                                nerve_from_cortex_to_stt.put_nowait((
                                     full_speech.copy(), 
                                     speech_active, 
                                     device_index, 
@@ -331,7 +360,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                                     is_playback_context
                                 ))
                             except queue.Full:
-                                logging.debug("internal_speech_audio_queue still FULL")
+                                logging.debug("nerve_from_cortex_to_stt still FULL")
 
                         if not speech_active:
                             speech_buffer = []
@@ -355,14 +384,18 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                     
                     try:
                         # Get transcription and voice recognition if available
-                        stt_output = internal_transcription_queue.get_nowait()
+                        stt_output = nerve_from_stt_to_cortex.get_nowait()
                         cortex_output.update(stt_output)
+
+                        vr_output = nerve_from_vr_to_cortex.get_nowait()
+                        cortex_output.update(vr_output)
+
+                        #TODO:  - - Need to Merge via timestamp VR and STT for now don't just merge as is - - 
 
                         voice_match_id = cortex_output.get('voice_match')
                         transcription = cortex_output.get('transcription', '').lower().strip()
 
                         #TODO speech
-                        
                         if is_playback_context:
                             assistant_voice_id = voice_match_id
 
@@ -436,7 +469,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
                             
 
                     except queue.Empty:
-                        logging.debug("No data in internal_transcription_queue")
+                        logging.debug("No data in nerve_from_stt_to_cortex")
                         
                     # Put processed audio in output queue
                     try:
@@ -491,7 +524,7 @@ def auditory_cortex_core(internal_nerve_queue, external_cortex_queue, external_s
             pass
         print("Auditory cortex process stopped")
 
-def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_transcription_queue,internal_voice_recognition_in_queue,internal_voice_recognition_out_queue):
+def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_to_cortex):
     """
     This is a multiprocess worker that will process audio chunks known to have speech.
     Uses LIFO - only processes the most recent audio data, skip and remove older data tasks from queue.
@@ -575,9 +608,6 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
     working_transcript = ""
     last_processed_length = 0  # Track how much of the current speech we've processed
     
-    
-    # Voice recognition will be handled per-chunk with individual threads
-    
     # Parameters (at 16kHz sample rate)
     min_chunk_size = 80000  # 5 seconds minimum before starting transcription (if no final audio flag received)
     overlap_samples = 24000  # 1.5 second overlap for word boundary detection
@@ -586,13 +616,13 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
     try:
         while True:
             try:
-                # LIFO Implementation: Get most recent data
+                # Implementation, Get most recent data
                 latest_task = None
                 items_skipped = 0
                 
                 # Get first item (blocking)
                 try:
-                    latest_task = internal_speech_audio_queue.get_nowait()#.get(timeout=1.0)
+                    latest_task = nerve_from_cortex_to_stt.get_nowait()#.get(timeout=1.0)
                 except queue.Empty:
                     continue
                 
@@ -602,7 +632,7 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                 # Drain queue to get the most recent item (LIFO behavior)
                 while True:
                     try:
-                        newer_task = internal_speech_audio_queue.get_nowait()
+                        newer_task = nerve_from_cortex_to_stt.get_nowait()
                         if newer_task is None:
                             break
                         latest_task = newer_task
@@ -614,7 +644,7 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                     logging.debug(f"Audio STT skipped {items_skipped} older audio chunks (LIFO mode)")
                 
                 # Unpack the latest task
-                full_audio_data, more_speech_coming, device_index, sample_rate, capture_timestamp,my_voice = latest_task
+                full_audio_data, more_speech_coming, device_index, sample_rate, capture_timestamp = latest_task
                 current_audio_length = len(full_audio_data)
                 
                 logging.debug(f"Audio length: {current_audio_length}, More coming: {more_speech_coming}, Last processed: {last_processed_length}")
@@ -666,29 +696,11 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                 # Process the audio if we should
                 if should_process and chunk_to_process is not None and len(chunk_to_process) > 0:
                     try:
-                        #VOICE RECOGNITION
-                        # send data to voice recognition in a separate worker via queue
-                        try:
-                            vr_data = {'audio':chunk_to_process,'my_voice':my_voice}
-                            internal_voice_recognition_in_queue.put_nowait(vr_data)
-                        except:
-                            logging.error("Error sending data on internal_voice_recognition_in_queue")
+                        
 
                         # Transcribe the audio chunk (runs in parallel with voice recognition)
                         raw_transcription = speech_transcriber.transcribe(chunk_to_process)
                         
-                        # Set recognition results from the container
-                        voice_match_result = False
-                        voice_probability = 0.0
-                        try:
-                            data = internal_voice_recognition_out_queue.get(timeout=1)#{'human_id':human_id,'new_person':new_person, 'similarity':similarity}
-                            voice_match_result = data['human_id']
-                            voice_probability =  data['similarity']
-                        except:
-                            logging.error("Error getting data on internal_voice_recognition_out_queue")
-                        
-                        
-                        logging.debug(f"Voice recognition result: {voice_match_result}, probability: {voice_probability:.3f}")
                         
                         # Update working transcript
                         if working_transcript and more_speech_coming:
@@ -720,8 +732,8 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                         transcript_data = {
                             'transcription': working_transcript,
                             'final_transcript': not more_speech_coming,
-                            'voice_match': voice_match_result,
-                            'voice_probability': voice_probability,
+                            #'voice_match': voice_match_result,
+                            #'voice_probability': voice_probability,
                             'device_index': device_index,
                             'speech_detected': True,
                             'capture_timestamp': capture_timestamp,
@@ -733,17 +745,17 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
                         
                       
                         try:
-                            internal_transcription_queue.put_nowait(transcript_data)
+                            nerve_from_stt_to_cortex.put_nowait(transcript_data)
                             logging.debug(f"Sent {'final' if not more_speech_coming else 'interim'} transcript_data: {transcript_data} chars")
                         except queue.Full:
                             logging.debug("Transcription queue Full - consume faster - will start clearing!")
-                            # Clear the transcription queue before putting new data (LIFO behavior)
+                            # Clear the transcription queue before putting new data
                             while True:
                                 try:
-                                    _ = internal_transcription_queue.get_nowait()
+                                    _ = nerve_from_stt_to_cortex.get_nowait()
                                 except queue.Empty:
                                     logging.debug("Cleared old transcription from queue")
-                                    internal_transcription_queue.put_nowait(transcript_data)
+                                    nerve_from_stt_to_cortex.put_nowait(transcript_data)
                                     logging.debug(f"Sent {'final' if not more_speech_coming else 'interim'} transcript_data: {transcript_data} chars")
                                     break
                         
@@ -776,7 +788,7 @@ def auditory_cortex_worker_speechToText(internal_speech_audio_queue,internal_tra
         # No cleanup needed
         pass
 
-def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,internal_voice_recognition_out_queue,database_path,gpu_device):
+def auditory_cortex_worker_voiceRecognition(nerve_from_cortex_to_vr,nerve_from_vr_to_cortex,database_path,gpu_device):
     import uuid
     import os
     #Set which GPU we run the voice recognition on on
@@ -788,15 +800,16 @@ def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,
         voice_data = None
         try:
             #voice_data: in np data array of Audio sample (should be 16kHz mono)
-            data = internal_voice_recognition_in_queue.get_nowait()
+            data = nerve_from_cortex_to_vr.get_nowait()
             voice_data = data['audio']
-            is_my_voice_id = data['my_voice']
+            is_my_voice_id = data['my_voice']#bool is system is speaking now
         except queue.Empty:
             continue
 
         if voice_data is not None:
             human_id, similarity = vr.recognize_speaker(voice_data)
-            print(f"Similarity: {similarity}")
+            print(f"VR Similarity: {similarity}")
+            print(f"VR Expect My Voice: {is_my_voice_id}")
             new_person = False
             if not human_id:
                 #we dont have a profile for this voice, so we create a new one
@@ -816,9 +829,9 @@ def auditory_cortex_worker_voiceRecognition(internal_voice_recognition_in_queue,
             #now put the update in queue
             try:
                 results = {'human_id':human_id,'new_person':new_person, 'similarity':similarity}
-                internal_voice_recognition_out_queue.put(results,timeout=1)
+                nerve_from_vr_to_cortex.put(results,timeout=1)
             except queue.Full:
-                logging.error("internal_voice_recognition_out_queue is FULL - consume faster")
+                logging.error("nerve_from_vr_to_cortex is FULL - consume faster")
                  
 
         time.sleep(0.001)#small delay to help cpu
@@ -844,16 +857,16 @@ class AuditoryCortex():
         self.external_cortex_queue = mpm.Queue(maxsize=30)
         #stat tracker
         self.external_stats_queue = mpm.Queue(maxsize=5)
-        #raw sound capture
-        self.internal_nerve_queue = mpm.Queue(maxsize=20)
+        #raw sound capture carried to audio cortex
+        self.nerve_from_input_to_cortex = mpm.Queue(maxsize=20) #holds small buffer because we always want most recent anyway, queue is constantly drained if full
         # internally used by Audio Cortex to hold speech audio that needs transcription
-        self.internal_speech_audio_queue = mpm.Queue(maxsize=100)  #100 chunks of 32ms = ~3200ms (3.2 second) buffer
-        # internally used by Audio Cortex to hold speech to text results (transcriptions)
-        self.internal_transcription_queue = mpm.Queue(maxsize=5)
-        #internally used to send speech audio clips to regognizer
-        self.internal_voice_recognition_in_queue = mpm.Queue(maxsize=1)
+        self.nerve_from_cortex_to_stt = mpm.Queue(maxsize=100) #100 chunks of 32ms = ~3200ms (3.2 second) buffer
+        # internally used by speech to text to send data back to Audio Cortex(transcriptions)
+        self.nerve_from_stt_to_cortex = mpm.Queue(maxsize=5) 
+        #internally used to send speech audio clips to regognizer (voice recognition)
+        self.nerve_from_cortex_to_vr = mpm.Queue(maxsize=1) #nerve_from_cortex_to_vr
         #internally used to get speech recognition results
-        self.internal_voice_recognition_out_queue = mpm.Queue(maxsize=1)
+        self.nerve_from_vr_to_cortex = mpm.Queue(maxsize=1)
         
         #name/wakeword indicator to determine if data should activly be acted on.
         self.detected_name_wakeword_queue = mpm.Queue(maxsize=1)#data schema in queue {'name_detected':bool, 'active_speaker':bool, 'recognized_speaker':{} or False}
@@ -871,13 +884,16 @@ class AuditoryCortex():
         #Primary hub process
         auditory_cortex_process = mp.Process(
             target=cortex,
-            args=(self.internal_nerve_queue, 
+            args=(self.nerve_from_input_to_cortex, 
                   self.external_cortex_queue,
                   self.external_stats_queue, 
-                  self.internal_speech_audio_queue,
-                  self.internal_transcription_queue,
+                  self.nerve_from_cortex_to_stt,
+                  self.nerve_from_stt_to_cortex,
                   self.detected_name_wakeword_queue,
-                  self.wakeword_name,self.external_brocas_state_queue)
+                  self.wakeword_name,
+                  self.external_brocas_state_queue,
+                  self.nerve_from_cortex_to_vr,
+                  self.nerve_from_vr_to_cortex)
         )
         auditory_cortex_process.start()
         self.auditory_processes['core'] = auditory_cortex_process
@@ -885,10 +901,8 @@ class AuditoryCortex():
         #CPU intense speech to text
         stt_worker = mp.Process(
             target=stt,
-            args=(self.internal_speech_audio_queue,
-                  self.internal_transcription_queue,
-                  self.internal_voice_recognition_in_queue,
-                  self.internal_voice_recognition_out_queue)
+            args=(self.nerve_from_cortex_to_stt,
+                  self.nerve_from_stt_to_cortex)
         )
         stt_worker.start()
         self.auditory_processes['stt'] = stt_worker
@@ -896,8 +910,8 @@ class AuditoryCortex():
         #CPU/GPU voice recognition process
         vr_worker = mp.Process(
             target=vr,
-            args=(self.internal_voice_recognition_in_queue,
-                  self.internal_voice_recognition_out_queue,
+            args=(self.nerve_from_cortex_to_vr,
+                  self.nerve_from_vr_to_cortex,
                   self.database_path,
                   gpu_device)
         )
@@ -911,7 +925,7 @@ class AuditoryCortex():
         auditory_nerve_process = mp.Process(
             target=self.nerve,
             args=(device_index, 
-                  self.internal_nerve_queue, 
+                  self.nerve_from_input_to_cortex, 
                   self.external_stats_queue)
         )
         auditory_nerve_process.start()
