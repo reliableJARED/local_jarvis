@@ -24,7 +24,7 @@ class VoiceRecognitionSystem:
         - Embeddings are 192-dimensional (see speechbrain docs)
     """
 
-    def __init__(self, db_path=":memory:", embedding_dim=192, use_gpu=False, max_samples_per_profile=10):
+    def __init__(self, db_path=":memory:", embedding_dim=192, use_gpu=False, max_samples_per_profile=10,my_voice_id='my_voice_id'):
         """
         Initialize the voice recognition system.
         
@@ -38,6 +38,7 @@ class VoiceRecognitionSystem:
         self.recognition_threshold = 0.3
         self.new_profile_threshold = 0.7  # Used to determine if a new sample is actually a voice of existing profile
         self.max_samples_per_profile = max_samples_per_profile
+        self.my_voice_id = my_voice_id
         
         # Connect to standard SQLite database
         self.conn = sqlite3.connect(db_path)
@@ -192,7 +193,7 @@ class VoiceRecognitionSystem:
         
         for human_id, profile_emb in profiles:
             similarity = self._cosine_similarity(embedding, profile_emb)
-            #print(f"Internal Search Similarity: {similarity}")
+            print(f"voicerecognition Internal Search Similarity: {similarity}")
             if similarity > best_similarity:
                 best_similarity = similarity
                 best_match = human_id
@@ -243,7 +244,7 @@ class VoiceRecognitionSystem:
             return None
     
     def removeVoiceAudio(self, audio_chunk: np.ndarray, sample_rate: int = 16000, 
-                        database_id: str = 'my_voice') -> Optional[np.ndarray]:
+                        database_id: str = False) -> Optional[np.ndarray]:
         """
         Remove a known voice profile from mixed audio to isolate user interruptions.
         
@@ -260,7 +261,7 @@ class VoiceRecognitionSystem:
         Args:
             audio_chunk: Mixed audio containing both TTS and user voice (numpy array)
             sample_rate: Sample rate of the audio (default: 16000 Hz)
-            database_id: ID of the voice profile to remove (default: 'my_voice')
+            database_id: ID of the voice profile to remove (default: False) will populate
             
         Returns:
             Audio chunk with the specified voice removed, or None if processing fails
@@ -279,6 +280,8 @@ class VoiceRecognitionSystem:
             4. Apply adaptive spectral subtraction using the spectral profile
             5. Return isolated audio with target voice removed
         """
+        if not database_id:
+            database_id = self.my_voice_id
         try:
             # Validate input
             if audio_chunk is None or len(audio_chunk) == 0:
@@ -329,10 +332,10 @@ class VoiceRecognitionSystem:
             # Filter samples that have audio data
             audio_samples = [audio for _, _, audio, _ in samples if audio is not None]
             
-            """if not audio_samples:
-                logging.warning(f"No audio samples stored for '{database_id}', falling back to basic subtraction")
+            if not audio_samples:
+                logging.warning(f"No audio samples stored for '{database_id}'")
                 # Fall back to basic spectral subtraction if no samples
-                return self._basic_spectral_subtraction(audio_chunk, similarity)"""
+                return None
             
             logging.info(f"Using {len(audio_samples)} stored audio samples for voice removal")
             
@@ -349,8 +352,8 @@ class VoiceRecognitionSystem:
                 target_spectra.append(magnitude)
             
             if not target_spectra:
-                logging.warning("Could not create spectral profile, falling back to basic subtraction")
-                return self._basic_spectral_subtraction(audio_chunk, similarity)
+                logging.warning("Could not create spectral profile")
+                return None
             
             # Calculate average spectral profile
             # Normalize all spectra to same length by padding or truncating

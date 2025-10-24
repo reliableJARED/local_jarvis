@@ -458,12 +458,12 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                 else:
                                     print(f"\n\nWake word in middle of speech: {transcription}\n\n")
                                     print(f"\nSPOKEN BY: {voice_match_id} -Should Interrupt? {is_interrupt_attempt}\n")
-                                    try:
+                                    """try:
                                         detected_name_wakeword_queue.put({'spoken_by': voice_match_id, 'is_interrupt_attempt':is_interrupt_attempt})
                                     except queue.Full:
                                         logging.error("detected_name_wakeword_queue FULL - consume faster")
                                     except Exception as e:
-                                        logging.error(f"Error: detected_name_wakeword_queue: {e}")
+                                        logging.error(f"Error: detected_name_wakeword_queue: {e}")"""
                             
                             if locked_speaker_id != voice_match_id and transcription != '' and not is_playback_context:
                                 #we want to ignore this speech since it's not the voice we are locked on to
@@ -699,8 +699,9 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
                 # Process the audio if we should
                 if should_process and chunk_to_process is not None and len(chunk_to_process) > 0:
                     try:
-                         # send data to voice recognition in a separate worker via queue
+                         
                         try:
+                            #voice recognition in a separate worker via queue
                             vr_data = {'audio':chunk_to_process,'my_voice':my_voice}
                             nerve_from_stt_to_vr.put_nowait(vr_data)
                         except:
@@ -808,36 +809,41 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
         # No cleanup needed
         pass
 
-def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_to_stt,database_path,gpu_device):
+def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_to_stt,database_path,gpu_device,my_voice_id):
     import uuid
     import os
     #Set which GPU we run the voice recognition on on
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_device)
-
+    
     #Create instance of the voice recognizer
-    vr = VoiceRecognitionSystem(db_path=database_path)
+    vr = VoiceRecognitionSystem(db_path=database_path,my_voice_id=my_voice_id)
+
     while True:
         voice_data = None
         try:
             data = nerve_from_stt_to_vr.get_nowait()
             voice_data = data['audio'] #data in np data array of Audio sample (should be 16kHz mono)
-            is_my_voice_id = data['my_voice']
-        #except queue.Empty:
-        except Exception as e:
-            #print(e)
+            is_my_voice_id = data['my_voice']#bool
+        except queue.Empty:
             continue
+        except Exception as e:
+            logging.error(f"error getting data from nerve_from_stt_to_vr")
 
         if voice_data is not None:
+            
             human_id, similarity = vr.recognize_speaker(voice_data)
-            #print(f"VR Similarity: {similarity}")
-            #print(f"VR Expect My Voice: {is_my_voice_id}")
+            print(f"VR Similarity: {similarity}")
+            print(f"VR Expect My Voice: {is_my_voice_id}")
+            
+
             new_person = False
             if not human_id:
                 #we dont have a profile for this voice, so we create a new one
                 #if is_my_voice_id is true it's 'my_voice' it's the system talking
                 human_id = uuid.uuid4().hex
                 if is_my_voice_id:
-                    human_id = "my_voice_id"
+                    human_id = my_voice_id
+                    
                 #print(f"add_speaker_profile({human_id},[{voice_data}])")
                 success = vr.add_speaker_profile(human_id,[voice_data])
                 new_person = True
@@ -845,6 +851,15 @@ def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_t
             else:
                 success = vr.add_voice_sample(human_id,voice_data)
             
+            #TODO: This doesn't work - investigate more
+            if is_my_voice_id:
+                #remove the assistant voice audio from the sample
+                voice_data = vr.removeVoiceAudio(voice_data)
+                print(type(voice_data))
+                human_id, similarity = vr.recognize_speaker(voice_data)
+                print(f"2 - VR Similarity: {similarity}")
+                print(f"2 - VR Expect My Voice: {is_my_voice_id}")
+
             #now put the update in queue
             try:
                 results = {'human_id':human_id,'new_person':new_person, 'similarity':similarity}
@@ -899,6 +914,7 @@ class AuditoryCortex():
 
         #TODO speech
         #This will have the state bool if speaking, transcript of speech and expected energy from the BrocasArea
+        self.my_voice_id = 'my_voice_id'
         self.brocas_area = ba()
         """self.external_brocas_state_dict = mpm.dict({'is_playing':False,
                                                     'expected_energy':0.0,
@@ -940,12 +956,108 @@ class AuditoryCortex():
             args=(self.nerve_from_stt_to_vr,
                   self.nerve_from_vr_to_stt,
                   self.database_path,
-                  gpu_device)
+                  gpu_device,
+                  self.my_voice_id)
         )
         vr_worker.start()
         self.auditory_processes['vr'] = vr_worker
 
+        #calibration of system voice
+        self.run_calibration()
+
+    def resample_audio(self,audio_data: np.ndarray, orig_rate: int, target_rate: int) -> np.ndarray:
+        from scipy import signal
+        """
+        Resample audio from one sample rate to another.
         
+        Args:
+            audio_data: Input audio data
+            orig_rate: Original sample rate (e.g., 24000)
+            target_rate: Target sample rate (e.g., 16000)
+            
+        Returns:
+            Resampled audio data
+        """
+        # Calculate the number of samples in the resampled audio
+        num_samples = int(len(audio_data) * target_rate / orig_rate)
+        
+        # Use scipy's resample function for high-quality resampling
+        resampled = signal.resample(audio_data, num_samples)
+        
+        return resampled.astype(np.float32)
+
+
+    def run_calibration(self):
+        """
+        Run the voice calibration process.
+        """
+        logging.info("Starting voice calibration process...")
+        
+        # 10 diverse phrases covering different phonetic patterns
+        calibration_phrases = [
+            "The quick brown fox jumps over the lazy dog.",
+            "How much wood would a woodchuck chuck if a woodchuck could chuck wood?",
+            "She sells seashells by the seashore.",
+            "Peter Piper picked a peck of pickled peppers.",
+            "I scream, you scream, we all scream for ice cream!",
+            "Unique New York, you need New York, you know you need unique New York.",
+            "Red leather, yellow leather, red leather, yellow leather.",
+            "The sixth sick sheikh's sixth sheep's sick.",
+            "Can you can a can as a canner can can a can?",
+            "How can a clam cram in a clean cream can?"
+        ]
+        
+        logging.info(f"Prepared {len(calibration_phrases)} calibration phrases")
+        
+        logging.info("\n" + "="*50)
+        logging.info("SYNTHESIZING CALIBRATION PHRASES")
+        logging.info("="*50)
+        
+        for i, phrase in enumerate(calibration_phrases, 1):
+            logging.info(f"\nPhrase {i}/{len(calibration_phrases)}: {phrase[:50]}...")
+            
+            # Synthesize speech (DO NOT PLAY - auto_play=False)
+            logging.info("  → Synthesizing speech via BrocasArea...")
+            audio_dict = self.brocas_area.synthesize_speech(phrase, auto_play=False)
+            
+            if audio_dict is None:
+                logging.error(f"  ✗ Failed to synthesize phrase {i}")
+                continue
+            
+            # Extract audio data
+            audio_data_24k = audio_dict['audio_data']
+            orig_rate = audio_dict['samplerate']  # Should be 24000 Hz
+            
+            # Convert from 24kHz to 16kHz for voice recognition
+            logging.info(f"  → Converting from {orig_rate}Hz to 16kHz...")
+            audio_data_16k = self.resample_audio(audio_data_24k, orig_rate, 16000)
+            
+            #put the data into the recognition worker
+            try:
+                self.nerve_from_stt_to_vr.put({'audio':audio_data_16k,'my_voice':True})
+            except queue.Full:
+                logging.error("calibration error: cant put data on nerve_from_stt_to_vr its FULL")
+            except Exception as e:
+                logging.error(f"Calibartion error nerve_from_stt_to_vr: {e}")
+
+            try:
+                #wait for result of embedding and saving to memory
+                _ = self.nerve_from_vr_to_stt.get(timeout=20)
+            except queue.Empty:
+                logging.error("timed out waiting for data on nerve_from_vr_to_stt during calibration")
+            except Exception as e:
+                logging.error(f"Calibartion error nerve_from_vr_to_stt: {e}")
+            
+            logging.info(f"  ✓ Phrase {i} processed successfully")
+            logging.info(f"    Original length: {len(audio_data_24k)} samples @ {orig_rate}Hz")
+            logging.info(f"    Resampled length: {len(audio_data_16k)} samples @ 16000Hz")
+
+        logging.info("\n" + "="*50)
+        logging.info("CALIBRATION COMPLETE")
+        logging.info("="*50)
+        
+        return None
+
 
     def start_nerve(self,device_index=0):
         #I/O raw audio data capture
