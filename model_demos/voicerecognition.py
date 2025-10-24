@@ -159,7 +159,7 @@ class VoiceRecognitionSystem:
         
         for human_id, profile_emb in profiles:
             similarity = self._cosine_similarity(embedding, profile_emb)
-            print(f"Internal Search Similarity: {similarity}")
+            #print(f"Internal Search Similarity: {similarity}")
             if similarity > best_similarity:
                 best_similarity = similarity
                 best_match = human_id

@@ -106,6 +106,10 @@ def BrocasArea_playback(internal_play_queue, stop_queue, shutdown_event, status_
             
             audio = audio_template['audio_data']
             samplerate = audio_template['samplerate']
+
+            # Calculate average energy of this audio chunk
+            # Convert to numpy audio is a tensor
+            avg_energy = np.sqrt(np.mean(audio.cpu().numpy() ** 2))
             
             logging.debug(f"Playing audio chunk of length {len(audio)}")
 
@@ -115,7 +119,8 @@ def BrocasArea_playback(internal_play_queue, stop_queue, shutdown_event, status_
                 'transcript': audio_template['transcript'],
                 'samplerate': samplerate,
                 'num_channels': audio_template['num_channels'],
-                'audio_length': len(audio)
+                'audio_length': len(audio),
+                'avg_energy': avg_energy  # for Echo Cancellation
             })
             
             # Play the audio chunk
