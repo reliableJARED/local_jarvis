@@ -81,6 +81,8 @@ class VoiceRecognitionSystem:
                 sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 human_id TEXT NOT NULL,
                 embedding BLOB NOT NULL,
+                audio_data BLOB,
+                sample_rate INTEGER DEFAULT 16000,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (human_id) REFERENCES profiles(human_id) ON DELETE CASCADE
             )
@@ -102,8 +104,18 @@ class VoiceRecognitionSystem:
         return embedding.tobytes()
     
     @staticmethod
+    def _serialize_audio(audio: np.ndarray) -> bytes:
+        """Convert audio numpy array to bytes for storage."""
+        return audio.astype(np.float32).tobytes()
+    
+    @staticmethod
     def _deserialize_embedding(blob: bytes) -> np.ndarray:
         """Convert bytes back to numpy array."""
+        return np.frombuffer(blob, dtype=np.float32)
+    
+    @staticmethod
+    def _deserialize_audio(blob: bytes) -> np.ndarray:
+        """Convert bytes back to audio numpy array."""
         return np.frombuffer(blob, dtype=np.float32)
     
     def _cosine_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
@@ -119,13 +131,15 @@ class VoiceRecognitionSystem:
             VALUES (?, ?)
         """, (human_id, blob))
     
-    def _insert_voice_sample(self, human_id: str, embedding: np.ndarray) -> int:
-        """Insert a voice sample and return its ID."""
-        blob = self._serialize_embedding(embedding)
+    def _insert_voice_sample(self, human_id: str, embedding: np.ndarray, audio_data: Optional[np.ndarray] = None, sample_rate: int = 16000) -> int:
+        """Insert a voice sample with optional audio data and return its ID."""
+        emb_blob = self._serialize_embedding(embedding)
+        audio_blob = self._serialize_audio(audio_data) if audio_data is not None else None
+        
         cursor = self.conn.execute("""
-            INSERT INTO voice_samples (human_id, embedding)
-            VALUES (?, ?)
-        """, (human_id, blob))
+            INSERT INTO voice_samples (human_id, embedding, audio_data, sample_rate)
+            VALUES (?, ?, ?, ?)
+        """, (human_id, emb_blob, audio_blob, sample_rate))
         return cursor.lastrowid
     
     def _get_all_profile_embeddings(self) -> List[Tuple[str, np.ndarray]]:
@@ -137,15 +151,34 @@ class VoiceRecognitionSystem:
         return [(row['human_id'], self._deserialize_embedding(row['embedding'])) 
                 for row in rows]
     
-    def _get_voice_samples(self, human_id: str) -> List[Tuple[int, np.ndarray]]:
-        """Get all voice samples for a speaker."""
-        rows = self.conn.execute("""
-            SELECT sample_id, embedding FROM voice_samples
-            WHERE human_id = ?
-        """, (human_id,)).fetchall()
+    def _get_voice_samples(self, human_id: str, include_audio: bool = False) -> List[Tuple]:
+        """
+        Get all voice samples for a speaker.
         
-        return [(row['sample_id'], self._deserialize_embedding(row['embedding'])) 
-                for row in rows]
+        Args:
+            human_id: Speaker ID
+            include_audio: If True, return (sample_id, embedding, audio_data, sample_rate)
+                          If False, return (sample_id, embedding)
+        """
+        if include_audio:
+            rows = self.conn.execute("""
+                SELECT sample_id, embedding, audio_data, sample_rate FROM voice_samples
+                WHERE human_id = ?
+            """, (human_id,)).fetchall()
+            
+            return [(row['sample_id'], 
+                    self._deserialize_embedding(row['embedding']),
+                    self._deserialize_audio(row['audio_data']) if row['audio_data'] else None,
+                    row['sample_rate']) 
+                   for row in rows]
+        else:
+            rows = self.conn.execute("""
+                SELECT sample_id, embedding FROM voice_samples
+                WHERE human_id = ?
+            """, (human_id,)).fetchall()
+            
+            return [(row['sample_id'], self._deserialize_embedding(row['embedding'])) 
+                    for row in rows]
     
     def _find_nearest_profile(self, embedding: np.ndarray) -> Tuple[Optional[str], float]:
         """Find the nearest profile to the given embedding."""
@@ -209,6 +242,206 @@ class VoiceRecognitionSystem:
             logging.error(f"Error extracting embedding: {e}")
             return None
     
+    def removeVoiceAudio(self, audio_chunk: np.ndarray, sample_rate: int = 16000, 
+                        database_id: str = 'my_voice') -> Optional[np.ndarray]:
+        """
+        Remove a known voice profile from mixed audio to isolate user interruptions.
+        
+        This method is designed for diarization scenarios where TTS playback is mixed
+        with user speech. It attempts to subtract the known voice (e.g., TTS system voice)
+        from the audio chunk to isolate the user's voice.
+        
+        Uses stored audio samples from the database to create a spectral profile of the
+        target voice, then subtracts it from the mixed audio using adaptive spectral subtraction.
+
+        TODO: UPDATE THIS - could be used to isolate multiple known speakers in the same audio chunk (solve Party Problem)
+        Would accept a list of voice ids known to possibly be in the audio track
+        
+        Args:
+            audio_chunk: Mixed audio containing both TTS and user voice (numpy array)
+            sample_rate: Sample rate of the audio (default: 16000 Hz)
+            database_id: ID of the voice profile to remove (default: 'my_voice')
+            
+        Returns:
+            Audio chunk with the specified voice removed, or None if processing fails
+            
+        Note:
+            This uses an improved spectral subtraction approach with stored samples:
+            - Retrieves stored audio samples for the target voice
+            - Creates an average spectral profile from stored samples
+            - Applies adaptive spectral subtraction based on similarity
+            - For best results, ensure the voice profile has quality samples
+            
+        Algorithm:
+            1. Retrieve stored audio samples for the target voice
+            2. Calculate average spectral profile from stored samples
+            3. Extract embedding from mixed audio and calculate similarity
+            4. Apply adaptive spectral subtraction using the spectral profile
+            5. Return isolated audio with target voice removed
+        """
+        try:
+            # Validate input
+            if audio_chunk is None or len(audio_chunk) == 0:
+                logging.warning("Empty audio chunk provided")
+                return None
+            
+            # Ensure mono audio
+            if audio_chunk.ndim > 1:
+                audio_chunk = np.mean(audio_chunk, axis=0)
+                logging.info("Converted stereo audio to mono for voice removal")
+            
+            # Check if the profile exists
+            profile = self.get_speaker_profile(database_id)
+            if profile is None:
+                logging.error(f"Voice profile '{database_id}' not found in database")
+                return None
+            
+            # Get the voice embedding for similarity calculation
+            profile_embedding_blob = self.conn.execute(
+                "SELECT embedding FROM profiles_vec WHERE human_id = ?",
+                (database_id,)
+            ).fetchone()
+            
+            if profile_embedding_blob is None:
+                logging.error(f"No embedding found for profile '{database_id}'")
+                return None
+            
+            target_embedding = self._deserialize_embedding(profile_embedding_blob['embedding'])
+            
+            # Extract embedding from mixed audio
+            mixed_embedding = self.extract_audio_embedding(audio_chunk, sample_rate)
+            if mixed_embedding is None:
+                logging.warning("Could not extract embedding from mixed audio")
+                return audio_chunk  # Return original if extraction fails
+            
+            # Calculate similarity to determine contribution level
+            similarity = self._cosine_similarity(mixed_embedding, target_embedding)
+            logging.info(f"Voice similarity to '{database_id}': {similarity:.3f}")
+            
+            # If similarity is low, the target voice might not be present
+            if similarity < 0.3:
+                logging.info(f"Low similarity ({similarity:.3f}), target voice may not be present")
+                return audio_chunk
+            
+            # Retrieve stored audio samples for spectral profiling
+            samples = self._get_voice_samples(database_id, include_audio=True)
+            
+            # Filter samples that have audio data
+            audio_samples = [audio for _, _, audio, _ in samples if audio is not None]
+            
+            """if not audio_samples:
+                logging.warning(f"No audio samples stored for '{database_id}', falling back to basic subtraction")
+                # Fall back to basic spectral subtraction if no samples
+                return self._basic_spectral_subtraction(audio_chunk, similarity)"""
+            
+            logging.info(f"Using {len(audio_samples)} stored audio samples for voice removal")
+            
+            # Create average spectral profile from stored samples
+            target_spectra = []
+            for audio_sample in audio_samples:
+                # Ensure sample has enough length
+                if len(audio_sample) < 512:
+                    continue
+                    
+                # Compute FFT for the sample
+                fft_sample = np.fft.rfft(audio_sample)
+                magnitude = np.abs(fft_sample)
+                target_spectra.append(magnitude)
+            
+            if not target_spectra:
+                logging.warning("Could not create spectral profile, falling back to basic subtraction")
+                return self._basic_spectral_subtraction(audio_chunk, similarity)
+            
+            # Calculate average spectral profile
+            # Normalize all spectra to same length by padding or truncating
+            max_len = max(len(spec) for spec in target_spectra)
+            normalized_spectra = []
+            for spec in target_spectra:
+                if len(spec) < max_len:
+                    # Pad with zeros
+                    padded = np.pad(spec, (0, max_len - len(spec)), 'constant')
+                    normalized_spectra.append(padded)
+                else:
+                    # Truncate
+                    normalized_spectra.append(spec[:max_len])
+            
+            avg_target_spectrum = np.mean(normalized_spectra, axis=0)
+            
+            # Process the mixed audio
+            fft_mixed = np.fft.rfft(audio_chunk)
+            magnitude_mixed = np.abs(fft_mixed)
+            phase_mixed = np.angle(fft_mixed)
+            
+            # Match the target spectrum length to mixed audio spectrum
+            if len(avg_target_spectrum) < len(magnitude_mixed):
+                avg_target_spectrum = np.pad(
+                    avg_target_spectrum, 
+                    (0, len(magnitude_mixed) - len(avg_target_spectrum)), 
+                    'constant'
+                )
+            elif len(avg_target_spectrum) > len(magnitude_mixed):
+                avg_target_spectrum = avg_target_spectrum[:len(magnitude_mixed)]
+            
+            # Normalize the target spectrum to have similar energy to mixed audio
+            target_energy = np.sum(avg_target_spectrum ** 2)
+            mixed_energy = np.sum(magnitude_mixed ** 2)
+            if target_energy > 0:
+                avg_target_spectrum = avg_target_spectrum * np.sqrt(mixed_energy / target_energy)
+            
+            # Calculate adaptive subtraction factor based on similarity
+            # Higher similarity = more aggressive subtraction
+            subtraction_factor = min(similarity * 1.5, 0.98)  # Cap at 0.98
+            
+            # Apply spectral subtraction using the profile
+            # Subtract the scaled target spectrum from the mixed spectrum
+            magnitude_subtracted = magnitude_mixed - (subtraction_factor * avg_target_spectrum)
+            
+            # Apply spectral flooring using multiple methods
+            # 1. Use percentile-based noise floor
+            noise_floor = np.percentile(magnitude_mixed, 3)
+            
+            # 2. Use target spectrum minimum as additional constraint
+            target_floor = np.min(avg_target_spectrum) * 0.1
+            
+            # Take the maximum of the two floors
+            final_floor = max(noise_floor, target_floor)
+            
+            # Apply the floor
+            magnitude_subtracted = np.maximum(magnitude_subtracted, final_floor)
+            
+            # Apply spectral smoothing to reduce artifacts
+            window_size = 5
+            magnitude_smoothed = np.convolve(
+                magnitude_subtracted, 
+                np.ones(window_size) / window_size, 
+                mode='same'
+            )
+            
+            # Reconstruct signal with processed magnitude and original phase
+            fft_reconstructed = magnitude_smoothed * np.exp(1j * phase_mixed)
+            audio_reconstructed = np.fft.irfft(fft_reconstructed, n=len(audio_chunk))
+            
+            # Apply noise gating based on energy
+            frame_size = 512
+            for i in range(0, len(audio_reconstructed) - frame_size, frame_size // 2):
+                frame_energy = np.sum(audio_reconstructed[i:i+frame_size] ** 2)
+                if frame_energy < (final_floor ** 2) * frame_size:
+                    audio_reconstructed[i:i+frame_size] *= 0.1  # Attenuate low-energy frames
+            
+            # Normalize to prevent clipping
+            max_val = np.max(np.abs(audio_reconstructed))
+            if max_val > 0:
+                audio_reconstructed = audio_reconstructed / max_val * 0.85
+            
+            logging.info(f"Advanced voice removal applied using {len(audio_samples)} samples (factor: {subtraction_factor:.3f})")
+            return audio_reconstructed.astype(np.float32)
+            
+        except Exception as e:
+            logging.error(f"Error in removeVoiceAudio: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return None
+
     def _calculate_cohesion_score(self, embedding: np.ndarray, cluster: List[np.ndarray]) -> float:
         """
         Calculate how well an embedding fits with a cluster.
@@ -312,15 +545,17 @@ class VoiceRecognitionSystem:
             
         Note:
             If more than max_samples_per_profile samples provided, will automatically
-            select the most representative cluster.
+            select the most representative cluster. Audio samples are stored for voice removal.
         """
         try:
             # Extract embeddings from audio samples
             embeddings = []
+            valid_audio_samples = []
             for audio_sample in audio_samples:
                 embedding = self.extract_audio_embedding(audio_sample, sample_rate)
                 if embedding is not None:
                     embeddings.append(embedding)
+                    valid_audio_samples.append(audio_sample)
             
             if not embeddings:
                 logging.error(f"Failed to create embeddings for {human_id}")
@@ -328,7 +563,9 @@ class VoiceRecognitionSystem:
             
             # Select most representative samples if we have too many
             if len(embeddings) > self.max_samples_per_profile:
-                embeddings = self._select_representative_samples(embeddings)
+                selected_indices = self._select_representative_samples_indices(embeddings)
+                embeddings = [embeddings[i] for i in selected_indices]
+                valid_audio_samples = [valid_audio_samples[i] for i in selected_indices]
             
             # Check if voice already exists
             # Use average of all embeddings for checking
@@ -366,9 +603,9 @@ class VoiceRecognitionSystem:
             # Insert average embedding
             self._insert_profile_embedding(human_id, avg_embedding)
             
-            # Insert individual samples
-            for embedding in embeddings:
-                self._insert_voice_sample(human_id, embedding)
+            # Insert individual samples with audio data
+            for embedding, audio_sample in zip(embeddings, valid_audio_samples):
+                self._insert_voice_sample(human_id, embedding, audio_sample, sample_rate)
             
             self.conn.commit()
             logging.info(f"Added speaker profile: {human_id} with {len(embeddings)} samples")
@@ -450,7 +687,7 @@ class VoiceRecognitionSystem:
             
             if samples_count < self.max_samples_per_profile:
                 # Still have room, just add the new sample
-                self._insert_voice_sample(human_id, new_embedding)
+                self._insert_voice_sample(human_id, new_embedding, audio_sample, sample_rate)
                 existing_embeddings.append(new_embedding)
                 
                 logging.info(f"Added sample to {human_id} ({samples_count + 1}/{self.max_samples_per_profile})")
@@ -485,8 +722,8 @@ class VoiceRecognitionSystem:
                         (sample_id_to_replace,)
                     )
                     
-                    # Insert the new sample
-                    self._insert_voice_sample(human_id, new_embedding)
+                    # Insert the new sample with audio data
+                    self._insert_voice_sample(human_id, new_embedding, audio_sample, sample_rate)
                     
                     # Update the embeddings list for recalculation
                     existing_embeddings[least_cohesive_idx] = new_embedding
@@ -521,7 +758,7 @@ class VoiceRecognitionSystem:
             self.conn.rollback()
             logging.error(f"Error adding sample to {human_id}: {e}")
             return False
-    
+        
     def get_speaker_profile(self, human_id: str) -> Optional[Dict]:
         """Get complete profile information for a speaker."""
         result = self.conn.execute(
