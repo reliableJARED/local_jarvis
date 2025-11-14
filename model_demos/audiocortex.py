@@ -74,6 +74,7 @@ BROCAS_AUDIO_TEMPLATE = {
 """
 AUDIO
 """
+
 def auditory_nerve_connection(device_index, nerve_from_input_to_cortex, external_stats_queue,sample_rate=16000, chunk_size=512):
     """Worker process for capturing audio frames from a specific device (auditory nerve function).
     Optimized chunk size: 512 samples = ~32ms at 16kHz for optimal Silero VAD performance.

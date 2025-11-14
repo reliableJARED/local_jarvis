@@ -120,7 +120,8 @@ def BrocasArea_playback(internal_play_queue, stop_queue, shutdown_event, status_
                 'samplerate': samplerate,
                 'num_channels': audio_template['num_channels'],
                 'audio_length': len(audio),
-                'avg_energy': avg_energy  # for Echo Cancellation
+                'avg_energy': avg_energy,  # for Echo Cancellation,
+                'audo_data' : audio
             })
             
             # Play the audio chunk
@@ -139,7 +140,8 @@ def BrocasArea_playback(internal_play_queue, stop_queue, shutdown_event, status_
                         status_dict.update({
                             'is_playing': False,
                             'transcript': "",
-                            'audio_length':  0
+                            'audio_length':  0,
+                            'audo_data' : np.array([])
                         })
                         
                         # Clear any remaining items from stop and play queues
@@ -159,7 +161,8 @@ def BrocasArea_playback(internal_play_queue, stop_queue, shutdown_event, status_
                         status_dict.update({
                             'is_playing': False,
                             'transcript': "",
-                            'audio_length': 0
+                            'audio_length': 0,
+                            'audo_data' : np.array([])
                         })
                         break
                 except sd.PortAudioError:
@@ -167,7 +170,8 @@ def BrocasArea_playback(internal_play_queue, stop_queue, shutdown_event, status_
                     status_dict.update({
                         'is_playing': False,
                         'transcript': "",
-                        'audio_length': 0
+                        'audio_length': 0,
+                        'audo_data' : np.array([])
                     })
                     break
                     
@@ -182,7 +186,8 @@ def BrocasArea_playback(internal_play_queue, stop_queue, shutdown_event, status_
                 status_dict.update({
                     'is_playing': False,
                     'transcript': "",
-                    'audio_length': 0
+                    'audio_length': 0,
+                    'audo_data' : np.array([])
                 })
             time.sleep(0.01)
     
@@ -230,7 +235,8 @@ class BrocasArea():
             'transcript': "",
             'samplerate': 24000,
             'num_channels': 1,
-            'audio_length': 0
+            'audio_length': 0,
+            'audo_data' : np.array([])
         })
         
         # Start playback process
@@ -308,7 +314,7 @@ class BrocasArea():
                             'num_channels': 1
                         }
                         
-                        # IMPORTANT - updating status here because of the delay when immediately checking status
+                        # IMPORTANT - updating status here, before the internal_play_queue because of the delay when immediately checking status
                         self.status.update({'is_playing': True})
                         
                         # Put the data in queue for playback
@@ -319,6 +325,7 @@ class BrocasArea():
                         return None
 
         if not auto_play:
+           
             # Return complete audio data as a single dict
             return {
                 'transcript': text,
