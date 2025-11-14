@@ -225,7 +225,7 @@ class BrocasArea():
         self.manager = Manager()
         
         # Create queues for process communication
-        self.stop_queue = self.manager.Queue(maxsize=2)
+        self.stop_queue = self.manager.Queue(maxsize=1)
         self.internal_play_queue = self.manager.Queue(maxsize=10)
         self.shutdown_event = self.manager.Event()
         

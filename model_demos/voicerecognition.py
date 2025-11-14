@@ -7,6 +7,30 @@ import os
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 os.environ['SPEECHBRAIN_CACHE_FOLDER'] = os.path.abspath('pretrained_models')
 
+
+# =================================================================
+# >>>>>> INSERTED WARNING SUPPRESSION CODE BLOCK <<<<<<
+
+import warnings
+
+# 1. Suppress the torchaudio deprecation warning (torchaudio._backend.list_audio_backends)
+warnings.filterwarnings(
+    "ignore",
+    message="torchaudio._backend.list_audio_backends has been deprecated.*",
+    category=UserWarning,
+)
+
+# 2. Suppress the speechbrain.pretrained redirect warning
+warnings.filterwarnings(
+    "ignore",
+    message="Module 'speechbrain.pretrained' was deprecated, redirecting to 'speechbrain.inference'.*",
+    category=UserWarning,
+)
+
+# >>>>>> END OF WARNING SUPPRESSION CODE BLOCK <<<<<<
+# =================================================================
+
+
 from speechbrain.inference.speaker import EncoderClassifier
 
 

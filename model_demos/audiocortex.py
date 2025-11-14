@@ -37,7 +37,7 @@ AudioCortexNervelDataTemplate = {
                                 device_index, int
                                 sample_rate, int
                                 capture_timestamp, float
-                                is_playback_context bool
+                                system_actively_speaking bool
                             ))
 """
 
@@ -56,6 +56,8 @@ AudioCortexNervelDataTemplate = {
                         'sample_rate': sample_rate,
                         'duration': duration,
                         'hear_self_speaking': False,
+                        'is_interrupt_attempt':False,
+                        'is_locked_speaker': False,
                     }
 
 """
@@ -177,7 +179,7 @@ def auditory_nerve_connection(device_index, nerve_from_input_to_cortex, external
 
 def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, external_stats_queue,
                         nerve_from_cortex_to_stt, nerve_from_stt_to_cortex,
-                        detected_name_wakeword_queue, wakeword_name, 
+                        detected_name_wakeword_queue, wakeword_name, breakword,
                         external_brocas_state_dict):
     """
     Enhanced auditory cortex with dynamic background noise monitoring.
@@ -196,35 +198,20 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
     min_silence_duration_ms = 1000
     
     # Voice lock management
-    non_match_duration = 0.0
-    RELEASE_THRESHOLD = 2.5
-    SILENCE_RELEASE_THRESHOLD = 4.0
     locked_speaker_id = None
     
-    # === ENHANCED NOISE MONITORING ===
-    # Track different noise profiles
-    ambient_noise_samples = deque(maxlen=100)  # ~3.2 seconds of ambient noise
-    playback_noise_samples = deque(maxlen=100)  # Noise during playback/assistant speech
-    
     # Current noise estimates
-    ambient_noise_floor = 0.0
     playback_noise_floor = 0.0
     
-    # Adaptive thresholds
-    ambient_noise_percentile = 75  # Use 75th percentile to avoid outliers
-    playback_noise_percentile = 90  # Higher percentile during playback (more conservative)
-    
+
     # Energy tracking
     energy_history = deque(maxlen=50)
     
-    # Noise update counters
-    NOISE_UPDATE_INTERVAL = 10  # Update noise floor every N samples
-    
     #Indicator if system is playing auido
-    is_playback_context = False#playback_state.get('is_playing', False)
+    system_actively_speaking = False #playback_state.get('is_playing', False)
 
     #Need voice to calibrate first
-    assistant_voice_id = None
+    system_voice_id = None
     
     # Initialize Silero VAD
     try:
@@ -249,7 +236,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
         return
     
     try:
-        SAMPLE_SIZE_REQUIREMENT = 512#DO NOT CHANGE VALUE required for VAD
+        SAMPLE_SIZE_REQUIREMENT = 512 #DO NOT CHANGE VALUE required for VAD
         while True:
             try:
                 audio_data = nerve_from_input_to_cortex.get_nowait()
@@ -285,41 +272,13 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             logging.info(f"Speech START detected at {speech_dict['start']:.3f}s")
                             speech_active = True
                             speech_buffer = list(pre_speech_buffer)
-                            is_playback_context = external_brocas_state_dict.get('is_playing',False)
+                            system_actively_speaking = external_brocas_state_dict.get('is_playing',False)
                                                 
                         if 'end' in speech_dict:
                             logging.info(f"Speech END detected at {speech_dict['end']:.3f}s")
                             speech_active = False
                            
-                    # === NOISE FLOOR & PLAYBACK UPDATES ===
-                    if not speech_active:
-                        #could be non speech audio, like music, or user has headphones and mic can't hear speech
-                        if is_playback_context:
-                            
-                            playback_noise_samples.append(chunk_energy)
-                            
-                            # Update every NOISE_UPDATE_INTERVAL samples if we have enough history
-                            if len(playback_noise_samples) >= 20 and len(playback_noise_samples) % NOISE_UPDATE_INTERVAL == 0:
-                                playback_noise_floor = np.percentile(
-                                    list(playback_noise_samples), 
-                                    playback_noise_percentile
-                                )
-                                
-                                logging.debug(f"Updated playback noise floor: {playback_noise_floor:.6f}")
-
-                        #general abient noise
-                        else:
-                            
-                            ambient_noise_samples.append(chunk_energy)
-                            
-                            # Update every NOISE_UPDATE_INTERVAL samples if we have enough history
-                            if len(ambient_noise_samples) >= 20 and len(ambient_noise_samples) % NOISE_UPDATE_INTERVAL == 0:
-                                ambient_noise_floor = np.percentile(
-                                    list(ambient_noise_samples), 
-                                    ambient_noise_percentile
-                                )
-                                logging.debug(f"Updated ambient noise floor: {ambient_noise_floor:.6f}")
-                                
+                    #Either active speech, or final chunk after speech stopped     
                     if speech_active or (not speech_active and len(full_speech) > 0):
                         speech_buffer.append(audio_chunk)
                         full_speech = np.concatenate(speech_buffer)
@@ -332,7 +291,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                 device_index, 
                                 sample_rate, 
                                 capture_timestamp,
-                                is_playback_context
+                                system_actively_speaking
                             ))
                             
                         except queue.Full:
@@ -340,7 +299,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             try:
                                 while True:
                                     try:
-                                        trash = nerve_from_cortex_to_stt.get_nowait()
+                                        _ = nerve_from_cortex_to_stt.get_nowait()
                                     except queue.Empty:
                                         break
                                 nerve_from_cortex_to_stt.put_nowait((
@@ -349,7 +308,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                     device_index, 
                                     sample_rate, 
                                     capture_timestamp,
-                                    is_playback_context
+                                    system_actively_speaking
                                 ))
                             except queue.Full:
                                 logging.debug("nerve_from_cortex_to_stt still FULL")
@@ -372,6 +331,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         'sample_rate': sample_rate,
                         'duration': duration,
                         'hear_self_speaking': False,
+                        'is_interrupt_attempt':False,
+                        'is_locked_speaker': False,
                     }
                     
                     try:
@@ -382,62 +343,23 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         voice_match_id = cortex_output.get('voice_match')
                         transcription = cortex_output.get('transcription', '').lower().strip()
 
-                        #TODO speech
-                        if is_playback_context:
-                            assistant_voice_id = voice_match_id
-
-                        is_interrupt_attempt = False
-
                         # Determine if this is speech from our locked speaker
-                        is_locked_speaker = (voice_match_id == locked_speaker_id)
+                        if voice_match_id == locked_speaker_id:
+                            cortex_output['is_locked_speaker'] = True
 
                         # Check if this is the assistant speaking
-                        if voice_match_id == assistant_voice_id:
+                        if voice_match_id == system_voice_id:
                             cortex_output['hear_self_speaking'] = True
                             logging.debug(f"Detected my own voice: '{transcription}' ")
+
+                         #Check for the breakword interruption phrase in the transcript
+                        if breakword.lower() in transcription.lower() and system_actively_speaking:
+                            #Check if system actually in playback
+                            if external_brocas_state_dict.get('is_playing',False):
+                                #system is playing AND we have an interruption breakword detected
+                                print("INTERRUPTION")
+                                cortex_output['is_interrupt_attempt'] = True
                         
-                        # Check if system is playing audio but we are not detecting assistant voice as source of speech
-                        elif is_playback_context and voice_match_id != assistant_voice_id:
-                            if wakeword_name.lower() in transcription.lower():
-                                if voice_match_id:
-                                    locked_speaker_id = voice_match_id
-                                    is_interrupt_attempt = True
-                                    print("INTERRUPT!!!!!!!!!!!!!!!!!!!!!!")
-
-                            # Use playback-specific noise floor for comparison
-                            applicable_noise_floor = playback_noise_floor if playback_noise_floor > 0 else ambient_noise_floor
-                            
-                            # Calculate SNR (Signal-to-Noise Ratio)
-                            snr = chunk_energy / (applicable_noise_floor + 1e-10)
-                            
-                            # During playback, also check against expected playback energy
-                            expected_energy = 0#playback_state.get('expected_energy', 0.0)
-
-                            energy_ratio = chunk_energy / (expected_energy + 1e-10)
-                            
-                            logging.debug(f"During playback - SNR: {snr:.2f}, Energy ratio: {energy_ratio:.2f}, Voice ID: {voice_match_id}")
-                            
-                            
-                            # Adaptive interrupt criteria based on noise floor
-                            # Higher SNR required = speech must be significantly above background
-                            min_snr = 1.0  # At least 3x above noise floor
-                            min_energy_ratio = 2.0  # At least 2x above playback energy
-                            
-                            if snr > min_snr and energy_ratio > min_energy_ratio:
-                                if is_locked_speaker :
-                                    # Locked user is interrupting - high priority
-                                    is_interrupt_attempt = True
-                                    logging.info(f"INTERRUPT detected from locked user: '{transcription}' "
-                                               f"(SNR: {snr:.2f}, energy ratio: {energy_ratio:.2f})")
-                                elif snr > 4.0 and energy_ratio > 3.0:
-                                    # Very strong signal from someone - allow interrupt even if not locked
-                                    logging.info(f"STRONG INTERRUPT detected: '{transcription}' "
-                                               f"(SNR: {snr:.2f}, energy ratio: {energy_ratio:.2f})")
-                                
-                            else:
-                                # Below threshold - likely echo or background
-                                logging.debug(f"noise or speech Below SNR/energy threshold during playback - ignoring: '{transcription}' "
-                                            f"(SNR: {snr:.2f}, min: {min_snr})")
                         
                         # Handle voice lock management
                         else:
@@ -448,27 +370,17 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                     # Lock to this speaker
                                     if voice_match_id:
                                         locked_speaker_id = voice_match_id
-                                        logging.info(f"Voice lock acquired by speaker: {voice_match_id}")
+                                        logging.info(f"Voice lock acquired by speaker: {locked_speaker_id}")
                                     try:
-                                        detected_name_wakeword_queue.put({'spoken_by': voice_match_id, 'is_interrupt_attempt':is_interrupt_attempt})
+                                        detected_name_wakeword_queue.put({'spoken_by': voice_match_id})
                                     except queue.Full:
                                         logging.error("detected_name_wakeword_queue FULL - consume faster")
                                     except Exception as e:
                                         logging.error(f"Error: detected_name_wakeword_queue: {e}")
-
-                                else:
-                                    print(f"\n\nWake word in middle of speech: {transcription}\n\n")
-                                    print(f"\nSPOKEN BY: {voice_match_id} -Should Interrupt? {is_interrupt_attempt}\n")
-                                    """try:
-                                        detected_name_wakeword_queue.put({'spoken_by': voice_match_id, 'is_interrupt_attempt':is_interrupt_attempt})
-                                    except queue.Full:
-                                        logging.error("detected_name_wakeword_queue FULL - consume faster")
-                                    except Exception as e:
-                                        logging.error(f"Error: detected_name_wakeword_queue: {e}")"""
                             
-                            if locked_speaker_id != voice_match_id and transcription != '' and not is_playback_context:
+                            if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:
                                 #we want to ignore this speech since it's not the voice we are locked on to
-                                print("\nI hear speech, but not from a voice I am locked on to.. Ignore?\n")
+                                print("\nI hear speech, but not from a voice I am locked on to.. Ignore\n")
                                 pass
                             
 
@@ -491,21 +403,13 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                     now = time.time()
                     fps = frame_count / (now - start_time)
                     
-                    # Calculate average SNR
-                    current_snr = 0.0
-                    if ambient_noise_floor > 0:
-                        current_snr = chunk_energy / ambient_noise_floor
-                    
+
                     stats_dict = {
                         'auditory_cortex_fps': fps,
                         'last_auditory_cortex': now,
-                        'ambient_noise_floor': ambient_noise_floor.item(),# Convert the NumPy float to a Python float during dictionary creation
                         'playback_noise_floor': playback_noise_floor,#TODO: When this is implemented will need the .item() convert also
                         'current_energy': chunk_energy.item(),# Convert the NumPy float to a Python float during dictionary creation
-                        'current_snr': current_snr.item(),# Convert the NumPy float to a Python float during dictionary creation
-                        'locked_speaker': locked_speaker_id,
-                        'ambient_samples': len(ambient_noise_samples),
-                        'playback_samples': len(playback_noise_samples)
+                        'locked_speaker': locked_speaker_id
                     }
                     try:
                         external_stats_queue.put_nowait(stats_dict)
@@ -613,7 +517,7 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
     last_processed_length = 0  # Track how much of the current speech we've processed
     
     # Parameters (at 16kHz sample rate)
-    min_chunk_size = 80000  # 5 seconds minimum before starting transcription (if no final audio flag received)
+    min_chunk_size = 64000  # 4 seconds minimum before starting transcription (if no final audio flag received)
     overlap_samples = 24000  # 1.5 second overlap for word boundary detection
     incremental_threshold = 48000  # 3 seconds of new audio before processing again
     
@@ -856,7 +760,6 @@ def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_t
             if is_my_voice_id:
                 #remove the assistant voice audio from the sample
                 voice_data = vr.removeVoiceAudio(voice_data)
-                print(type(voice_data))
                 human_id, similarity = vr.recognize_speaker(voice_data)
                 print(f"2 - VR Similarity: {similarity}")
                 print(f"2 - VR Expect My Voice: {is_my_voice_id}")
@@ -894,6 +797,7 @@ class AuditoryCortex():
 
         self.database_path = database_path
         self.wakeword_name = wakeword_name
+        self.breakword = f"enough {self.wakeword_name}"
 
         #Data queues
         self.external_cortex_queue = mpm.Queue(maxsize=30)
@@ -913,14 +817,18 @@ class AuditoryCortex():
         #name/wakeword indicator to determine if data should activly be acted on.
         self.detected_name_wakeword_queue = mpm.Queue(maxsize=1)#data schema in queue {'name_detected':bool, 'active_speaker':bool, 'recognized_speaker':{} or False}
 
-        #TODO speech
-        #This will have the state bool if speaking, transcript of speech and expected energy from the BrocasArea
+        #Flag to connect assistant speaker embedding to audio output
         self.my_voice_id = 'my_voice_id'
         self.brocas_area = ba()
-        """self.external_brocas_state_dict = mpm.dict({'is_playing':False,
-                                                    'expected_energy':0.0,
-                                                    'transcript':"",
-                                                    'interrupt':False})"""
+        """self.external_brocas_state_dict = mpm.dict({
+                'is_playing': True,
+                'transcript': audio_template['transcript'],
+                'samplerate': samplerate,
+                'num_channels': audio_template['num_channels'],
+                'audio_length': len(audio),
+                'avg_energy': avg_energy,  # for Echo Cancellation,
+                'audo_data' : audio
+            })"""
 
         #nerve controller function
         self.nerve = nerve
@@ -935,6 +843,7 @@ class AuditoryCortex():
                   self.nerve_from_stt_to_cortex,
                   self.detected_name_wakeword_queue,
                   self.wakeword_name,
+                  self.breakword,
                   self.brocas_area.status)
         )
         auditory_cortex_process.start()
@@ -1269,6 +1178,10 @@ if __name__ == "__main__":
             # Check if there's data in the cortex queue - populated when text is being transcribed
             if not cortex.external_cortex_queue.empty():
                 cortex_data = cortex.external_cortex_queue.get()
+                """ try:
+                    _  = cortex.detected_name_wakeword_queue.get()
+                except:
+                    pass"""
                 
                 # Display the transcription
                 if cortex_data['transcription']:
@@ -1285,6 +1198,10 @@ if __name__ == "__main__":
                     # Add extra newline for final transcripts for readability
                     if cortex_data['final_transcript']:
                         print()
+                
+                #Interrupt
+                if cortex_data['is_interrupt_attempt']:
+                    cortex.brocas_area.stop_playback()
                         
             else:
                 # Small sleep to prevent busy-waiting
