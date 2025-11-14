@@ -1205,14 +1205,14 @@ if __name__ == "__main__":
                         
             else:
                 # Small sleep to prevent busy-waiting
-                time.sleep(0.1)
+                time.sleep(0.01)
             tic += 1
 
             #10 Second Loop
             if (tic % 1000) == 0:
                 print("10 seconds")
                 logging.info("Speech to Text Test...")
-                cortex.brocas_area.synthesize_speech("This is me talking for a little while so that you can try and interrupt me. If you say my name I should stop talking. if you say nothing I'll just finish this rant.",auto_play=True)
+                cortex.brocas_area.synthesize_speech("This is me talking for a little while so that you can try and interrupt me. If you say enough and then my name I should stop talking. if you say nothing I'll just finish this rant.",auto_play=True)
         
                 
     except KeyboardInterrupt:
