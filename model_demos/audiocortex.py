@@ -9,7 +9,7 @@ from collections import deque
 import torch
 import gc
 from voicerecognition import VoiceRecognitionSystem
-from dataclasses import dataclass, field
+
 import logging
 
 from brocasArea import BrocasArea
@@ -19,14 +19,14 @@ logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CR
 
 #Dict Struct on the audio_cortex.nerve_from_input_to_cortex
 #This is raw input audio from microphone
-AudioCortexNervelDataTemplate = {
+"""AudioCortexNervelDataTemplate = {
     'device_index': None,  # int: Audio input device identifier, default 0
     'audio_frame': None,   # np.ndarray: float32 audio samples, shape (n_samples,)
     'capture_timestamp': None,  # float: Unix timestamp when frame was captured
     'sample_rate': None    # int: Sample rate in Hz (default, 16000)
 }
 
-
+"""
 
 
 #Tuple sent on the audio_cortex.nerve_from_cortex_to_stt
@@ -71,6 +71,30 @@ BROCAS_AUDIO_TEMPLATE = {
     'samplerate': 24000,  # hz of sample - smaller, slower/lower - bigger faster/higher
     'num_channels': 1  # Mono audio from Kokoro
 }
+"""
+
+"""
+#VOICE RECOGNITION
+                        # send data to voice recognition in a separate worker via queue
+                        try:
+                            vr_data = {'audio':chunk_to_process,'my_voice':my_voice}
+                            nerve_from_stt_to_vr.put_nowait(vr_data)
+                        except:
+                            logging.error("Error sending data on nerve_from_stt_to_vr")
+
+
+                        # Set recognition results from the container
+                        voice_match_result = False
+                        voice_probability = 0.0
+                        try:
+                            data = nerve_from_vr_to_stt.get(timeout=1)#{'human_id':human_id,'new_person':new_person, 'similarity':similarity}
+                            voice_match_result = data['human_id']
+                            voice_probability =  data['similarity']
+                        except:
+                            logging.error("Error getting data on nerve_from_vr_to_stt")
+                        
+                        
+                        logging.debug(f"Voice recognition result: {voice_match_result}, probability: {voice_probability:.3f}")
 """
 
 """
@@ -152,30 +176,6 @@ def auditory_nerve_connection(device_index, nerve_from_input_to_cortex, external
         print(f"Audio stream error for device {device_index}: {e}")
     finally:
         print(f"Auditory nerve process for device {device_index} stopped")
-
-"""
-#VOICE RECOGNITION
-                        # send data to voice recognition in a separate worker via queue
-                        try:
-                            vr_data = {'audio':chunk_to_process,'my_voice':my_voice}
-                            nerve_from_stt_to_vr.put_nowait(vr_data)
-                        except:
-                            logging.error("Error sending data on nerve_from_stt_to_vr")
-
-
-                        # Set recognition results from the container
-                        voice_match_result = False
-                        voice_probability = 0.0
-                        try:
-                            data = nerve_from_vr_to_stt.get(timeout=1)#{'human_id':human_id,'new_person':new_person, 'similarity':similarity}
-                            voice_match_result = data['human_id']
-                            voice_probability =  data['similarity']
-                        except:
-                            logging.error("Error getting data on nerve_from_vr_to_stt")
-                        
-                        
-                        logging.debug(f"Voice recognition result: {voice_match_result}, probability: {voice_probability:.3f}")
-"""
 
 def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, external_stats_queue,
                         nerve_from_cortex_to_stt, nerve_from_stt_to_cortex,
@@ -409,7 +409,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         'last_auditory_cortex': now,
                         'playback_noise_floor': playback_noise_floor,#TODO: When this is implemented will need the .item() convert also
                         'current_energy': chunk_energy.item(),# Convert the NumPy float to a Python float during dictionary creation
-                        'locked_speaker': locked_speaker_id
+                        #'locked_speaker': locked_speaker_id
                     }
                     try:
                         external_stats_queue.put_nowait(stats_dict)
@@ -1037,94 +1037,6 @@ class AuditoryCortex():
         except Exception as e:
             logging.error(f"Auditory Process Stop Error: {e}")
             return False
-
-##############################
-"""
-def subtract_average_playback_energy(mic_chunk, playback_avg_energy, subtraction_factor=0.7):
-
-    Ultra-simple energy-based subtraction.
-    
-    Args:
-        mic_chunk: Current microphone chunk (np.ndarray)
-        playback_avg_energy: Average RMS energy of the playback audio
-        subtraction_factor: How much to subtract (0.5-0.9 recommended)
-    
-    Returns:
-        np.ndarray: Cleaned audio
-
-    if playback_avg_energy is None or playback_avg_energy == 0:
-        return mic_chunk
-    
-    # Calculate current mic energy
-    mic_energy = np.sqrt(np.mean(mic_chunk ** 2))
-    
-    # If mic energy is similar to or less than playback energy, it's likely just echo
-    if mic_energy <= playback_avg_energy * 1.2:
-        # Strongly attenuate - likely just echo
-        return mic_chunk * 0.2  # Keep 20% to detect very strong interrupts
-    
-    # Mic has significantly more energy than expected playback
-    # Subtract the playback energy contribution
-    energy_to_subtract = playback_avg_energy * subtraction_factor
-    
-    # Scale down the chunk proportionally
-    if mic_energy > energy_to_subtract:
-        scaling_factor = (mic_energy - energy_to_subtract) / mic_energy
-        return mic_chunk * scaling_factor
-    else:
-        # Not enough energy to be real speech over playback
-        return mic_chunk * 0.2
-"""
-
-"""
-# Even simpler - just gate based on energy threshold:
-def energy_gate_during_playback(mic_chunk, playback_avg_energy, threshold_multiplier=2.5):
-
-    Simplest approach: only allow audio through if significantly above playback energy.
-    
-    Args:
-        mic_chunk: Current microphone chunk
-        playback_avg_energy: Average energy of playback
-        threshold_multiplier: How much louder mic must be (2-3 recommended)
-    
-    Returns:
-        np.ndarray: Original or heavily attenuated audio
-
-    if playback_avg_energy is None or playback_avg_energy == 0:
-        return mic_chunk
-    
-    mic_energy = np.sqrt(np.mean(mic_chunk ** 2))
-    
-    # Must be significantly louder than playback to pass through
-    if mic_energy > playback_avg_energy * threshold_multiplier:
-        return mic_chunk  # Clear interrupt
-    else:
-        return mic_chunk * 0.1  # Heavily attenuate likely echo
-"""
-
-"""
-Why this works so well:
-
-Dead simple - just compare energies
-No timing issues - don't need to align audio samples
-Adaptive - updates with each new playback chunk
-Fast - minimal computation (one RMS calculation)
-Tunable - adjust threshold_multiplier easily
-
-Tuning guide:
-
-threshold_multiplier = 2.0: More sensitive, easier to interrupt (may get false positives)
-threshold_multiplier = 2.5: Balanced (recommended starting point)
-threshold_multiplier = 3.0: More strict, harder to interrupt (fewer false positives)
-
-To test and calibrate:
-
-Have assistant speak
-Try interrupting with wake word at normal volume
-If it doesn't detect → lower threshold_multiplier
-If it false-triggers on echo → raise threshold_multiplier
-"""
-##############################
 
 
 

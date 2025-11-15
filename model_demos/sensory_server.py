@@ -936,7 +936,7 @@ class TemporalLobe:
 
                     #TEST:
                     print("Speaking confirmation")
-                    self.auditory_cortex.brocas_area.synthesize_speech("You just spoke my name! I will keep speaking so you have a chance to interrupt\n how does that sound to you? is this enough speaking for a test?", auto_play=True)
+                    self.auditory_cortex.brocas_area.synthesize_speech(" You just spoke my name! \nTo stop this speech say Enough followed by my name. \nI will keep speaking so you have a chance to interrupt\n how does that sound to you? is this enough speaking for a test? If It's not I can just keep talking. What we need to evaluate is lag.", auto_play=True)
                     #self.brocas.synthesize_speech("You just spoke my name! I will keep speaking so you have a chance to interrupt\n how does that sound to you? is this enough speaking for a test?", auto_play=True)
 
 
@@ -973,15 +973,27 @@ class TemporalLobe:
         
         return key in defaults and value == defaults[key]
     
-    def _collect_frames(self):
+    #PRIMARY METHOD - runs in a parallel process
+    def _temporalLobe_State_Loop(self):
         """Background thread to continuously collect frames from both cortexes and relay to real-time queues"""
         logging.info("TemporalLobe frame collection started")
         
         while self.running:
             current_time = time.time()
             
+            #TODO: MAY NEED TO FIX THIS
             # Check wakeword queue continuously for immediate speaker locking
-            self._check_wakeword_queue()
+            #self._check_wakeword_queue()
+
+            try:
+                wakeword_data = self.auditory_cortex.detected_name_wakeword_queue.get_nowait()
+                speaker_id = wakeword_data.get('spoken_by')
+                if speaker_id:
+                        self.locked_speaker_id = speaker_id
+                        self.locked_speaker_timestamp = time.time()
+                        print(f"temporalLobe Locked onto speaker: {speaker_id}")
+            except:
+                pass
             
             # Collect visual frames
             if self.visual_cortex:
@@ -1023,6 +1035,13 @@ class TemporalLobe:
                     self.audio_buffer.append(audio_data.copy())
                     self.stats['audio_frames_processed'] += 1
                     
+                    #Collect status of speaking
+                    self.stats['actively_speaking'] = self.auditory_cortex.brocas_area.status.get('is_playing')
+
+                    #INTERRUPT DETECTION
+                    if audio_data['is_interrupt_attempt']:
+                        self.auditory_cortex.brocas_area.stop_playback()
+
                     # Relay to real-time queue for immediate consumption
                     if self.audio_realtime_queue:
                         try:
@@ -1043,14 +1062,6 @@ class TemporalLobe:
                 except queue.Empty:
                     pass
 
-            #Collect status of speaking
-            if self.auditory_cortex.brocas_area:
-                try:
-                    self.stats['actively_speaking'] = self.auditory_cortex.brocas_area.status.get('is_playing')
-                except Exception as e:
-                    logging.error(f"error getting speaking status from brocas: {e}")
-                    pass
-                
             
             # Collect visual stats
             if self.visual_cortex:
@@ -1113,7 +1124,7 @@ class TemporalLobe:
         #Is assistant speaking currently
         unified_state['actively_speaking'] = self.stats['actively_speaking']
         
-        # Add locked speaker info to state (updated continuously in _collect_frames)
+        # Add locked speaker info to state (updated continuously in _temporalLobe_State_Loop)
         unified_state['locked_speaker_id'] = self.locked_speaker_id
         unified_state['locked_speaker_timestamp'] = self.locked_speaker_timestamp
         
@@ -1188,7 +1199,7 @@ class TemporalLobe:
         self.last_unified_state = unified_state
         
         if unified_state['final_transcript']:
-            print(f"TARGET SPEAKER: {unified_state['voice_match']} (Locked: {unified_state['is_locked_speaker']})")
+            print(f"HEARD SPEECH FROM SPEAKER: {unified_state['voice_match']} (Locked: {unified_state['is_locked_speaker']})")
         
         return unified_state
     
@@ -1208,7 +1219,7 @@ class TemporalLobe:
             return
             
         self.running = True
-        self.collection_thread = threading.Thread(target=self._collect_frames, daemon=True)
+        self.collection_thread = threading.Thread(target=self._temporalLobe_State_Loop, daemon=True)
         self.collection_thread.start()
         logging.info("TemporalLobe collection started")
 
