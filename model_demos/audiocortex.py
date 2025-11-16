@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CR
 """cortex_output = {
                         'transcription': "",
                         'final_transcript': False,
-                        'voice_match': None,
+                        'voice_id': None,
                         'voice_probability': 0.0,
                         'device_index': device_index,
                         'speech_detected': speech_active,
@@ -199,6 +199,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
     
     # Voice lock management
     locked_speaker_id = None
+    locked_speaker_speaking = False #flag to trigger stop on transcription even if speech still detected by non-locked speaker
     
     # Current noise estimates
     playback_noise_floor = 0.0
@@ -321,7 +322,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                     cortex_output = {
                         'transcription': "",
                         'final_transcript': False,
-                        'voice_match': None,
+                        'voice_id': None,
                         'voice_probability': 0.0,
                         'device_index': device_index,
                         'speech_detected': speech_active,
@@ -340,12 +341,15 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         stt_output = nerve_from_stt_to_cortex.get_nowait()
                         cortex_output.update(stt_output)
 
-                        voice_match_id = cortex_output.get('voice_match')
+                        voice_match_id = cortex_output.get('voice_id', None)
                         transcription = cortex_output.get('transcription', '').lower().strip()
 
                         # Determine if this is speech from our locked speaker
                         if voice_match_id == locked_speaker_id:
                             cortex_output['is_locked_speaker'] = True
+                            #Our locked speaker is speaking
+                            locked_speaker_speaking = True
+                        
 
                         # Check if this is the assistant speaking
                         if voice_match_id == system_voice_id:
@@ -360,11 +364,14 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                 print("INTERRUPTION")
                                 cortex_output['is_interrupt_attempt'] = True
                         
-                        
+                        #Flag our locked speaking is done
+                        if cortex_output['final_transcript']:
+                            logging.debug("Locked speaker stopped talking")
+                            locked_speaker_speaking = False
+
                         # Handle voice lock management
-                        else:
-                            # Check for wake word and if we should lock on to new voice
-                            if wakeword_name.lower() in transcription.lower():
+                        # Check for wake word and if we should lock on to new voice
+                        if wakeword_name.lower() in transcription.lower():
                                 if transcription.lower().startswith(wakeword_name.lower()):
                                     print(f"\n\nWake word detected: {transcription}\n\n")
                                     # Lock to this speaker
@@ -377,11 +384,19 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                         logging.error("detected_name_wakeword_queue FULL - consume faster")
                                     except Exception as e:
                                         logging.error(f"Error: detected_name_wakeword_queue: {e}")
-                            
-                            if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:
+
+                        #Handle ignore non-locked speech    
+                        if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:
                                 #we want to ignore this speech since it's not the voice we are locked on to
                                 print("\nI hear speech, but not from a voice I am locked on to.. Ignore\n")
-                                pass
+                                #If a non-locked speaker is speaking in the background VAD will still feed speech, need to flag our locked speaker is done
+                                if locked_speaker_speaking:
+                                    #this means the locked speaker WAS speaking, but no longer is
+                                    locked_speaker_speaking = False
+                                    cortex_output['final_transcript'] = True
+                                    cortex_output['is_locked_speaker'] = True# Change this so down stream the final transcript AND locked are joined on this frame
+                        
+                        
                             
 
                     except queue.Empty:
@@ -658,7 +673,7 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
                         transcript_data = {
                             'transcription': working_transcript,
                             'final_transcript': not more_speech_coming,
-                            'voice_match': voice_match_result,
+                            'voice_id': voice_match_result,
                             'voice_probability': voice_probability,
                             'device_index': device_index,
                             'speech_detected': True,
@@ -1100,8 +1115,8 @@ if __name__ == "__main__":
                     status = "FINAL" if cortex_data['final_transcript'] else "INTERIM"
                     speaker_info = ""
                     
-                    if cortex_data['voice_match']:
-                        speaker_info = f" [Speaker: {cortex_data['voice_match']} " \
+                    if cortex_data['voice_id']:
+                        speaker_info = f" [Speaker: {cortex_data['voice_id']} " \
                                      f"({cortex_data['voice_probability']:.2%})]"
                     
                     print(f"[{cortex_data['formatted_time']}] [{status}]{speaker_info}: "

@@ -896,7 +896,7 @@ class TemporalLobe:
             'speech_detected': False,
             'transcription': "",
             'final_transcript': False,
-            'voice_match': False,
+            'voice_id': False,
             'voice_probability': 0.0,
             'audio_device_index': None,
             'transcription_timestamp': None,
@@ -919,11 +919,11 @@ class TemporalLobe:
             'buffer_audio_frames': 0
         }
 
-    def _check_wakeword_queue(self):
-        """
-        Check the wakeword queue for newly detected name wakewords.
-        Updates the locked speaker when a wakeword is detected.
-        """
+    """def _check_wakeword_queue(self):
+
+        #Check the wakeword queue for newly detected name wakewords.
+        #Updates the locked speaker when a wakeword is detected.
+
         if not self.auditory_cortex or not hasattr(self.auditory_cortex, 'detected_name_wakeword_queue'):
             return
         
@@ -949,7 +949,7 @@ class TemporalLobe:
                     break
                     
         except Exception as e:
-            logging.error(f"Error checking wakeword queue: {e}")
+            logging.error(f"Error checking wakeword queue: {e}")"""
 
     def _is_default_value(self, key, value):
         """Check if a value is considered 'default' and should be replaced.
@@ -966,17 +966,19 @@ class TemporalLobe:
             'speech_detected': False,
             'transcription': "",
             'final_transcript': False,
-            'voice_match': False,
+            'voice_id': False,
             'voice_probability': 0.0,
             'transcription_timestamp': None,
         }
         
         return key in defaults and value == defaults[key]
     
+    ########
     #PRIMARY METHOD - runs in a parallel process
+    ########
     def _temporalLobe_State_Loop(self):
-        """Background thread to continuously collect frames from both cortexes and relay to real-time queues"""
-        logging.info("TemporalLobe frame collection started")
+        """triggered by a Background thread to continuously collect frames from both cortexes and relay to real-time queues"""
+        logging.info("\nTemporalLobe frame collection loop started\n")
         
         while self.running:
             current_time = time.time()
@@ -991,7 +993,7 @@ class TemporalLobe:
                 if speaker_id:
                         self.locked_speaker_id = speaker_id
                         self.locked_speaker_timestamp = time.time()
-                        print(f"temporalLobe Locked onto speaker: {speaker_id}")
+                        print(f"\ntemporalLobe Locked onto speaker: {speaker_id}\n")
             except:
                 pass
             
@@ -1029,6 +1031,15 @@ class TemporalLobe:
             if self.auditory_cortex:
                 try:
                     audio_data = self.auditory_cortex.external_cortex_queue.get_nowait()
+                    
+                    #Ready to listen:
+                    #if not audio_data['speech_detected']:
+                        #no speech detected, ready to listen for 'wakeword'
+                        #print("Say my name to lock voice")
+
+                    #Display transcript:
+                    if audio_data['transcription'] != "" and audio_data['final_transcript'] and audio_data['is_locked_speaker']:
+                        print(f"\n\nAUDIO_DATA in templobe: {audio_data['transcription']} (is final: {audio_data['final_transcript']})\n")
                     audio_data['collection_timestamp'] = current_time
                     
                     # Add to buffer for temporal processing
@@ -1172,7 +1183,7 @@ class TemporalLobe:
                 unified_state['audio_device_index'] = frame.get('device_index')
             
             # Check if this frame is from the locked speaker
-            frame_speaker_id = frame.get('voice_match')
+            frame_speaker_id = frame.get('voice_id')
             is_locked_speaker = (self.locked_speaker_id is not None and 
                                 frame_speaker_id == self.locked_speaker_id)
             
@@ -1187,7 +1198,7 @@ class TemporalLobe:
             
             # Roll up non-default audio values
             for key in ['speech_detected', 'transcription', 'final_transcript', 
-                       'voice_match', 'voice_probability', 'transcription_timestamp']:
+                       'voice_id', 'voice_probability', 'transcription_timestamp']:
                 if key in frame and self._is_default_value(key, unified_state[key]):
                     if not self._is_default_value(key, frame[key]):
                         unified_state[key] = frame[key]
@@ -1199,7 +1210,7 @@ class TemporalLobe:
         self.last_unified_state = unified_state
         
         if unified_state['final_transcript']:
-            print(f"HEARD SPEECH FROM SPEAKER: {unified_state['voice_match']} (Locked: {unified_state['is_locked_speaker']})")
+            print(f"HEARD SPEECH FROM SPEAKER: {unified_state['voice_id']} (Locked: {unified_state['is_locked_speaker']})")
         
         return unified_state
     
@@ -2402,7 +2413,7 @@ if __name__ == '__main__':
                         'speech_detected': True, 
                         'transcription': "Is that the unified state format? It's hard for me to tell. If I keep  talking maybe I'll be able to see a transcript I guess I will I'm not", 
                         'final_transcript': False, 
-                        'voice_match': False, 
+                        'voice_id': False, 
                         'voice_probability': 0.0, 
                         'audio_device_index': 0, 
                         'transcription_timestamp': 1758855474.7669709, 
