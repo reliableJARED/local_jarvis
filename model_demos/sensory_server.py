@@ -2350,11 +2350,13 @@ if __name__ == '__main__':
     logging.debug(f"Setting up Visual Cortex VLM on GPU {gpu_to_use} - MAKE SURE YOU HAVE GPU assigned to {gpu_to_use}")
     vc = VisualCortex(mpm=manager,gpu_to_use=gpu_to_use)
     
-    #assistant name
+    #assistant name, interrupt and break
     wakeword_name='jarvis'
+    breakword = f"enough {wakeword_name}"
+    exitword = f"goodbye {wakeword_name}"
 
     #Audio Cortex
-    ac = AuditoryCortex(mpm=manager,wakeword_name=wakeword_name,gpu_device=gpu_to_use,database_path=db_name) #TODO: use a permanent db, not :memory:
+    ac = AuditoryCortex(mpm=manager,wakeword_name=wakeword_name,breakword=breakword,exitword=exitword,gpu_device=gpu_to_use,database_path=db_name) #TODO: use a permanent db, not :memory:
 
     #Broca's Area (speech)
     sp = BrocasArea()

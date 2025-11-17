@@ -778,11 +778,8 @@ def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_t
             human_id, similarity = vr.recognize_speaker(voice_data)
             print(f"VR Similarity: {similarity}")
             print(f"VR Expect My Voice: {is_my_voice_id}")
-            if is_my_voice_id:
-                human_id = my_voice_id
-                #create system voice profile
-                if vr.get_speaker_profile(my_voice_id) is not None:
-                    success = vr.add_speaker_profile(my_voice_id,[voice_data])
+            print(f"human_id recalled: {human_id}")
+            
                 
             new_person = False
             if not human_id:
@@ -822,7 +819,7 @@ class AuditoryCortex():
     manage all running audio functions. on init will start the auditory cortex, speech to text processes and default to connection
     with sound input device 0
     """
-    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,ba=BrocasArea,mpm=False,wakeword_name='jarvis',database_path=":memory:",gpu_device=0):
+    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,ba=BrocasArea,mpm=False,wakeword_name='jarvis',breakword="enough jarvis",exitword="goodbye jarvis",database_path=":memory:",gpu_device=0):
         logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,stt)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
@@ -832,8 +829,8 @@ class AuditoryCortex():
 
         self.database_path = database_path
         self.wakeword_name = wakeword_name
-        self.breakword = f"enough {self.wakeword_name}"
-        self.exitword = f"goodbye {self.wakeword_name}"
+        self.breakword = breakword
+        self.exitword = exitword
 
         #Data queues
         self.external_cortex_queue = mpm.Queue(maxsize=30)

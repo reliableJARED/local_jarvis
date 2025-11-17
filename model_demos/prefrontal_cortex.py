@@ -52,15 +52,36 @@ def internet_search(args,return_instructions=False):
         ws = WebSearch()
         logging.debug(f"SEARCH: {args}")
         query = args.get("query", "unknown")
-        summary = ws.askInternet(query)
-        return f"WEB SEARCH RESULTS: {summary}"
+
+        # Storage for results
+        results = {}
+
+        def search_regular():
+            results['summary'] = ws.askInternet(query)
+        
+        def search_google():
+            results['summary_g'] = ws.askInternet_google(query)
+
+        # Create and start threads
+        thread1 = threading.Thread(target=search_regular)
+        thread2 = threading.Thread(target=search_google)
+        
+        thread1.start()
+        thread2.start()
+        
+        # Wait for both to complete
+        thread1.join()
+        thread2.join()
+
+        return f"WEB SEARCH RESULTS: {results['summary']} {results['summary_g']}"
+
 
 
 class PrefrontalCortex:
     def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct",external_audio_tempLobe_to_prefrontalCortex=None,audio_cortex=None,wakeword_name='jarvis'):
         self.model_name = model_name
         #Audio analysis data queue
-        self.external_audio_tempLobe_to_prefrontalCortex =external_audio_tempLobe_to_prefrontalCortex
+        self.external_audio_tempLobe_to_prefrontalCortex = external_audio_tempLobe_to_prefrontalCortex
         #Audio Cortex instance connection
         self.audio_cortex = audio_cortex
 
@@ -78,7 +99,10 @@ class PrefrontalCortex:
                                                           local_files_only=self.local_files_only)
         
         self.model.eval()
+        
+        #TODO: Should be a multiprocessing dict
         self.messages = [{"role": "system", "content": f"You are multimodal AI assistant named '{wakeword_name.upper()}'. You receive Inputs from user as Voice to Text and Visual Descriptions of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  Use what you see and hear."}]
+        
         self.tools = {}
         self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET ACCESS use the tool if needed. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
         self.available_tools = []
@@ -894,7 +918,7 @@ class PrefrontalCortex:
                     #check for interruption again
                     if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt',False):
                         break
-                    
+
                     # Check if model wants to use tools
                     if parsed_response.get("tool_calls", False):
                         tool_calls = parsed_response.get("tool_calls")
@@ -929,7 +953,7 @@ class PrefrontalCortex:
 
             except queue.Empty:
                 # Small delay on loop to help CPU
-                #print(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
+                print(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
                 time.sleep(0.001)
                 continue  # Continue the outer while True loop
             
