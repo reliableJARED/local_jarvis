@@ -42,6 +42,10 @@ spacy-legacy==3.0.12
 spacy-loggers==1.0.5
 flask==3.1.2
 speechbrain==1.0.3
+beautifulsoup==4.14.2
+scikit-learn==1.7.2
+
+ddsg
 
 #see pytorch-requirements.txt for torch, torchaudio, torchvision
 # For CUDA 12.8 on 5000 series GPUs and later must use the nightly build for now. On older GPUs or MPS use the standard stable build on pip

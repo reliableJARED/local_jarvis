@@ -17,6 +17,7 @@ import logging
 import sqlite3
 from voicerecognition import VoiceRecognitionSystem
 from audiocortex import AuditoryCortex
+from prefrontal_cortex import PrefrontalCortex
 from kokoro import KPipeline
 import os
 import platform
@@ -829,11 +830,11 @@ class TemporalLobe:
         
         # Real-time pass-through queues
         if mpm:
-            self.audio_realtime_queue = mpm.Queue(maxsize=30)
+            self.external_audio_tempLobe_to_prefrontalCortex = mpm.Queue(maxsize=1) #ONLY 1 pending request to LLM at a time
             self.visual_realtime_queue = mpm.Queue(maxsize=30)
             self.speaking_realtime_queue = mpm.Queue(maxsize=1)#active speaking
         else:
-            self.audio_realtime_queue = None
+            self.external_audio_tempLobe_to_prefrontalCortex = None
             self.visual_realtime_queue = None
             self.speaking_realtime_queue = None
         
@@ -919,38 +920,6 @@ class TemporalLobe:
             'buffer_audio_frames': 0
         }
 
-    """def _check_wakeword_queue(self):
-
-        #Check the wakeword queue for newly detected name wakewords.
-        #Updates the locked speaker when a wakeword is detected.
-
-        if not self.auditory_cortex or not hasattr(self.auditory_cortex, 'detected_name_wakeword_queue'):
-            return
-        
-        try:
-            # Check for wakeword detections
-            while True:
-                try:
-                    wakeword_data = self.auditory_cortex.detected_name_wakeword_queue.get_nowait()
-                    speaker_id = wakeword_data.get('spoken_by')
-
-                    #TEST:
-                    print("Speaking confirmation")
-                    self.auditory_cortex.brocas_area.synthesize_speech(" You just spoke my name! \nTo stop this speech say Enough followed by my name. \nI will keep speaking so you have a chance to interrupt\n how does that sound to you? is this enough speaking for a test? If It's not I can just keep talking. What we need to evaluate is lag.", auto_play=True)
-                    #self.brocas.synthesize_speech("You just spoke my name! I will keep speaking so you have a chance to interrupt\n how does that sound to you? is this enough speaking for a test?", auto_play=True)
-
-
-                    if speaker_id:
-                        self.locked_speaker_id = speaker_id
-                        self.locked_speaker_timestamp = time.time()
-                        print(f"temporalLobe Locked onto speaker: {speaker_id}")
-                    
-                except queue.Empty:
-                    break
-                    
-        except Exception as e:
-            logging.error(f"Error checking wakeword queue: {e}")"""
-
     def _is_default_value(self, key, value):
         """Check if a value is considered 'default' and should be replaced.
         This is for sensory inputs audio/visual"""
@@ -983,10 +952,6 @@ class TemporalLobe:
         while self.running:
             current_time = time.time()
             
-            #TODO: MAY NEED TO FIX THIS
-            # Check wakeword queue continuously for immediate speaker locking
-            #self._check_wakeword_queue()
-
             try:
                 wakeword_data = self.auditory_cortex.detected_name_wakeword_queue.get_nowait()
                 speaker_id = wakeword_data.get('spoken_by')
@@ -1032,14 +997,34 @@ class TemporalLobe:
                 try:
                     audio_data = self.auditory_cortex.external_cortex_queue.get_nowait()
                     
-                    #Ready to listen:
-                    #if not audio_data['speech_detected']:
-                        #no speech detected, ready to listen for 'wakeword'
-                        #print("Say my name to lock voice")
-
+                    
                     #Display transcript:
                     if audio_data['transcription'] != "" and audio_data['final_transcript'] and audio_data['is_locked_speaker']:
                         print(f"\n\nAUDIO_DATA in templobe: {audio_data['transcription']} (is final: {audio_data['final_transcript']})\n")
+                        print(f"\n\n{audio_data}\n\n")
+
+                        if not audio_data['unlock_speaker']:
+
+                            #Send transcript from locked speaker to the prefrontal_cortex
+                            try:
+                                self.external_audio_tempLobe_to_prefrontalCortex.put_nowait(audio_data)
+                                self.stats['audio_realtime_frames_relayed'] += 1
+                            except queue.Full:
+                                try:
+                                    _ = self.external_audio_tempLobe_to_prefrontalCortex.get_nowait()
+                                    self.external_audio_tempLobe_to_prefrontalCortex.put_nowait(audio_data)
+                                    self.stats['audio_realtime_frames_relayed'] += 1
+                                except queue.Empty:
+                                    try:
+                                        self.external_audio_tempLobe_to_prefrontalCortex.put_nowait(audio_data)
+                                        self.stats['audio_realtime_frames_relayed'] += 1
+                                    except queue.Full:
+                                        logging.debug("Audio realtime queue full - frame dropped")
+                        else:
+                            self.auditory_cortex.brocas_area.stop_playback()
+                            self.locked_speaker_id = None
+                            self.speak("Good Bye!")
+
                     audio_data['collection_timestamp'] = current_time
                     
                     # Add to buffer for temporal processing
@@ -1053,23 +1038,6 @@ class TemporalLobe:
                     if audio_data['is_interrupt_attempt']:
                         self.auditory_cortex.brocas_area.stop_playback()
 
-                    # Relay to real-time queue for immediate consumption
-                    if self.audio_realtime_queue:
-                        try:
-                            self.audio_realtime_queue.put_nowait(audio_data)
-                            self.stats['audio_realtime_frames_relayed'] += 1
-                        except queue.Full:
-                            try:
-                                _ = self.audio_realtime_queue.get_nowait()
-                                self.audio_realtime_queue.put_nowait(audio_data)
-                                self.stats['audio_realtime_frames_relayed'] += 1
-                            except queue.Empty:
-                                try:
-                                    self.audio_realtime_queue.put_nowait(audio_data)
-                                    self.stats['audio_realtime_frames_relayed'] += 1
-                                except queue.Full:
-                                    logging.debug("Audio realtime queue full - frame dropped")
-                                    
                 except queue.Empty:
                     pass
 
@@ -2356,6 +2324,7 @@ def video_feed(camera_index):
 def signal_handler(sig, frame):
     """Handle shutdown signals"""
     print("\nShutting down...")
+    success = prefrontal_cortex.shutdown()
     success = temporal_lobe.shutdown_all()
     print(f"Shutdown {'completed successfully' if success else 'completed with failures'}")
     sys.exit(0)
@@ -2381,14 +2350,22 @@ if __name__ == '__main__':
     logging.debug(f"Setting up Visual Cortex VLM on GPU {gpu_to_use} - MAKE SURE YOU HAVE GPU assigned to {gpu_to_use}")
     vc = VisualCortex(mpm=manager,gpu_to_use=gpu_to_use)
     
+    #assistant name
+    wakeword_name='jarvis'
+
     #Audio Cortex
-    ac = AuditoryCortex(mpm=manager,wakeword_name='jarvis',gpu_device=gpu_to_use,database_path=db_name) #TODO: use a permanent db, not :memory:
+    ac = AuditoryCortex(mpm=manager,wakeword_name=wakeword_name,gpu_device=gpu_to_use,database_path=db_name) #TODO: use a permanent db, not :memory:
 
     #Broca's Area (speech)
     sp = BrocasArea()
 
     #Temporal Lobe
     temporal_lobe = TemporalLobe(visual_cortex=vc, auditory_cortex=ac, brocas=sp,mpm=manager,database_path=db_name)
+
+    #Prefrontal Cortex
+    prefrontal_cortex = PrefrontalCortex(external_audio_tempLobe_to_prefrontalCortex=temporal_lobe.external_audio_tempLobe_to_prefrontalCortex,
+                                         audio_cortex=ac,
+                                         wakeword_name=wakeword_name)
 
     # Start temporal lobe collection
     temporal_lobe.start_collection()

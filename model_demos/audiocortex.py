@@ -53,11 +53,13 @@ logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CR
                         'capture_timestamp': capture_timestamp,
                         'transcription_timestamp': capture_timestamp,
                         'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S'),
+                        'audio_data': Data array of np.float32 audio chunks
                         'sample_rate': sample_rate,
                         'duration': duration,
                         'hear_self_speaking': False,
                         'is_interrupt_attempt':False,
                         'is_locked_speaker': False,
+                        'unlock_speaker':False
                     }
 
 """
@@ -179,8 +181,10 @@ def auditory_nerve_connection(device_index, nerve_from_input_to_cortex, external
 
 def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, external_stats_queue,
                         nerve_from_cortex_to_stt, nerve_from_stt_to_cortex,
-                        detected_name_wakeword_queue, wakeword_name, breakword,
-                        external_brocas_state_dict):
+                        detected_name_wakeword_queue, wakeword_name, breakword, exitword,
+                        external_brocas_state_dict,
+                        my_voice_id,
+                        brocas_area_interrupt_trigger):
     """
     Enhanced auditory cortex with dynamic background noise monitoring.
     
@@ -211,8 +215,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
     #Indicator if system is playing auido
     system_actively_speaking = False #playback_state.get('is_playing', False)
 
-    #Need voice to calibrate first
-    system_voice_id = None
+    #ID of the system voice
+    system_voice_id = my_voice_id
     
     # Initialize Silero VAD
     try:
@@ -283,7 +287,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                     if speech_active or (not speech_active and len(full_speech) > 0):
                         speech_buffer.append(audio_chunk)
                         full_speech = np.concatenate(speech_buffer)
-                        
+                        #continue to sample state because of delays
+                        system_actively_speaking = external_brocas_state_dict.get('is_playing',False)
                         try:
                             #send data out for transcription and recognition
                             nerve_from_cortex_to_stt.put_nowait((
@@ -314,6 +319,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             except queue.Full:
                                 logging.debug("nerve_from_cortex_to_stt still FULL")
 
+                        #Reset after speaking done
                         if not speech_active:
                             speech_buffer = []
                             full_speech = []
@@ -329,11 +335,13 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         'capture_timestamp': capture_timestamp,
                         'transcription_timestamp': capture_timestamp,
                         'formatted_time': datetime.fromtimestamp(capture_timestamp).strftime('%H:%M:%S'),
+                        'audio_data': None,# NOT adding data here - design is only passing data if activly listening 
                         'sample_rate': sample_rate,
                         'duration': duration,
                         'hear_self_speaking': False,
                         'is_interrupt_attempt':False,
                         'is_locked_speaker': False,
+                        'unlock_speaker':False
                     }
                     
                     try:
@@ -356,27 +364,39 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             cortex_output['hear_self_speaking'] = True
                             logging.debug(f"Detected my own voice: '{transcription}' ")
 
-                         #Check for the breakword interruption phrase in the transcript
+                        #Check for the breakword interruption phrase in the transcript
                         if breakword.lower() in transcription.lower() and system_actively_speaking:
                             #Check if system actually in playback
-                            if external_brocas_state_dict.get('is_playing',False):
+                            if external_brocas_state_dict.get('is_playing',True):
                                 #system is playing AND we have an interruption breakword detected
                                 print("INTERRUPTION")
                                 cortex_output['is_interrupt_attempt'] = True
+                                brocas_area_interrupt_trigger.update({'interrupt':True})
+                        
+                        #Check for the exitword release locked speaker
+                        if exitword.lower() in transcription.lower():
+                            cortex_output['unlock_speaker'] = True
+                            locked_speaker_id = None
+                            
                         
                         #Flag our locked speaking is done
                         if cortex_output['final_transcript']:
                             logging.debug("Locked speaker stopped talking")
                             locked_speaker_speaking = False
+                            cortex_output['audio_data'] = full_speech.copy() #add the audio data
+                            brocas_area_interrupt_trigger.update({'interrupt':False})
 
                         # Handle voice lock management
                         # Check for wake word and if we should lock on to new voice
                         if wakeword_name.lower() in transcription.lower():
                                 if transcription.lower().startswith(wakeword_name.lower()):
                                     print(f"\n\nWake word detected: {transcription}\n\n")
+                                    brocas_area_interrupt_trigger.update({'interrupt':False})
                                     # Lock to this speaker
                                     if voice_match_id:
                                         locked_speaker_id = voice_match_id
+                                        cortex_output['is_locked_speaker'] = True
+                                        cortex_output['audio_data'] = full_speech.copy() #provide the audio data
                                         logging.info(f"Voice lock acquired by speaker: {locked_speaker_id}")
                                     try:
                                         detected_name_wakeword_queue.put({'spoken_by': voice_match_id})
@@ -385,7 +405,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                     except Exception as e:
                                         logging.error(f"Error: detected_name_wakeword_queue: {e}")
 
-                        #Handle ignore non-locked speech    
+                        #Handle ignore non-locked speaker still talking    
                         if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:
                                 #we want to ignore this speech since it's not the voice we are locked on to
                                 print("\nI hear speech, but not from a voice I am locked on to.. Ignore\n")
@@ -395,7 +415,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                     locked_speaker_speaking = False
                                     cortex_output['final_transcript'] = True
                                     cortex_output['is_locked_speaker'] = True# Change this so down stream the final transcript AND locked are joined on this frame
-                        
+                                    cortex_output['audio_data'] = full_speech.copy() #provide the audio data
+                                    brocas_area_interrupt_trigger.update({'interrupt':False})
                         
                             
 
@@ -754,8 +775,12 @@ def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_t
             human_id, similarity = vr.recognize_speaker(voice_data)
             print(f"VR Similarity: {similarity}")
             print(f"VR Expect My Voice: {is_my_voice_id}")
-            
-
+            if is_my_voice_id:
+                human_id = my_voice_id
+                #create system voice profile
+                if vr.get_speaker_profile(my_voice_id) is not None:
+                    success = vr.add_speaker_profile(my_voice_id,[voice_data])
+                
             new_person = False
             if not human_id:
                 #we dont have a profile for this voice, so we create a new one
@@ -770,16 +795,8 @@ def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_t
                 similarity = 1
             else:
                 success = vr.add_voice_sample(human_id,voice_data)
-            
-            #TODO: This doesn't work - investigate more
-            if is_my_voice_id:
-                #remove the assistant voice audio from the sample
-                voice_data = vr.removeVoiceAudio(voice_data)
-                human_id, similarity = vr.recognize_speaker(voice_data)
-                print(f"2 - VR Similarity: {similarity}")
-                print(f"2 - VR Expect My Voice: {is_my_voice_id}")
 
-            #now put the update in queue
+            #now put the recognized voice in queue
             try:
                 results = {'human_id':human_id,'new_person':new_person, 'similarity':similarity}
                 nerve_from_vr_to_stt.put_nowait(results) 
@@ -813,6 +830,7 @@ class AuditoryCortex():
         self.database_path = database_path
         self.wakeword_name = wakeword_name
         self.breakword = f"enough {self.wakeword_name}"
+        self.exitword = f"goodbye {self.wakeword_name}"
 
         #Data queues
         self.external_cortex_queue = mpm.Queue(maxsize=30)
@@ -831,6 +849,11 @@ class AuditoryCortex():
         
         #name/wakeword indicator to determine if data should activly be acted on.
         self.detected_name_wakeword_queue = mpm.Queue(maxsize=1)#data schema in queue {'name_detected':bool, 'active_speaker':bool, 'recognized_speaker':{} or False}
+
+        # Create shared dict for current status
+        self.brocas_area_interrupt_trigger = mpm.dict({
+            'interrupt': False
+        })
 
         #Flag to connect assistant speaker embedding to audio output
         self.my_voice_id = 'my_voice_id'
@@ -859,7 +882,10 @@ class AuditoryCortex():
                   self.detected_name_wakeword_queue,
                   self.wakeword_name,
                   self.breakword,
-                  self.brocas_area.status)
+                  self.exitword,
+                  self.brocas_area.status,
+                  self.my_voice_id,
+                  self.brocas_area_interrupt_trigger)
         )
         auditory_cortex_process.start()
         self.auditory_processes['core'] = auditory_cortex_process
