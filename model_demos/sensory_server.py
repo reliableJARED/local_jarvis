@@ -997,14 +997,12 @@ class TemporalLobe:
                 try:
                     audio_data = self.auditory_cortex.external_cortex_queue.get_nowait()
                     
-                    
                     #Display transcript:
                     if audio_data['transcription'] != "" and audio_data['final_transcript'] and audio_data['is_locked_speaker']:
                         print(f"\n\nAUDIO_DATA in templobe: {audio_data['transcription']} (is final: {audio_data['final_transcript']})\n")
                         print(f"\n\n{audio_data}\n\n")
 
                         if not audio_data['unlock_speaker']:
-
                             #Send transcript from locked speaker to the prefrontal_cortex
                             try:
                                 self.external_audio_tempLobe_to_prefrontalCortex.put_nowait(audio_data)

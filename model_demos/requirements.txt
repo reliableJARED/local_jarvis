@@ -42,10 +42,12 @@ spacy-legacy==3.0.12
 spacy-loggers==1.0.5
 flask==3.1.2
 speechbrain==1.0.3
-beautifulsoup
+beautifulsoup4
 scikit-learn
-ddsg
-playwright
+ddgs
+playwright #also need to run: playwright install
+
+
 
 #see pytorch-requirements.txt for torch, torchaudio, torchvision
 # For CUDA 12.8 on 5000 series GPUs and later must use the nightly build for now. On older GPUs or MPS use the standard stable build on pip
