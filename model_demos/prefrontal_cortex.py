@@ -866,10 +866,10 @@ class PrefrontalCortex:
                                 parsed_response = self._parse_tool_calls(full_response)
                                 messages_copy.append(parsed_response)
                                 break  # Break  from token generation loop
-                            
-                            self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
-                            speech_buffer = ""
-                            word_count = 0
+                            else:
+                                self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
+                                speech_buffer = ""
+                                word_count = 0
                     
                     # Clean up input tensors
                     del model_inputs
@@ -890,6 +890,10 @@ class PrefrontalCortex:
                     
                     # Parse for tool calls
                     parsed_response = self._parse_tool_calls(full_response)
+                    
+                    #check for interruption again
+                    if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt',False):
+                        break
                     
                     # Check if model wants to use tools
                     if parsed_response.get("tool_calls", False):

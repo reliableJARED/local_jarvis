@@ -369,7 +369,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             #Check if system actually in playback
                             if external_brocas_state_dict.get('is_playing',True):
                                 #system is playing AND we have an interruption breakword detected
-                                print("INTERRUPTION")
+                                logging.debug("INTERRUPTION - set True 1")
                                 cortex_output['is_interrupt_attempt'] = True
                                 brocas_area_interrupt_trigger.update({'interrupt':True})
                         
@@ -380,10 +380,11 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             
                         
                         #Flag our locked speaking is done
-                        if cortex_output['final_transcript']:
+                        if cortex_output['final_transcript'] and cortex_output['is_locked_speaker']:
                             logging.debug("Locked speaker stopped talking")
                             locked_speaker_speaking = False
                             cortex_output['audio_data'] = full_speech.copy() #add the audio data
+                            logging.debug("INTERRUPTION - set False 1")
                             brocas_area_interrupt_trigger.update({'interrupt':False})
 
                         # Handle voice lock management
@@ -391,6 +392,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         if wakeword_name.lower() in transcription.lower():
                                 if transcription.lower().startswith(wakeword_name.lower()):
                                     print(f"\n\nWake word detected: {transcription}\n\n")
+                                    logging.debug("INTERRUPTION - set False 2")
                                     brocas_area_interrupt_trigger.update({'interrupt':False})
                                     # Lock to this speaker
                                     if voice_match_id:
@@ -416,6 +418,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                     cortex_output['final_transcript'] = True
                                     cortex_output['is_locked_speaker'] = True# Change this so down stream the final transcript AND locked are joined on this frame
                                     cortex_output['audio_data'] = full_speech.copy() #provide the audio data
+                                    logging.debug("INTERRUPTION - set False 3")
                                     brocas_area_interrupt_trigger.update({'interrupt':False})
                         
                             
