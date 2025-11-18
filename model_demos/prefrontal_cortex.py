@@ -5,6 +5,7 @@ import re
 import os
 import socket
 import time
+from datetime import datetime
 import gc
 import random
 import string
@@ -53,8 +54,9 @@ def internet_search(args,return_instructions=False):
         logging.debug(f"SEARCH: {args}")
         query = args.get("query", "unknown")
 
-        result = ws.askInternet_google(query)
-        return result
+        #result = ws.askInternet_google(query)
+        results = ws.askInternet(query)
+        return ",".join(results)
 
         # Storage for results
         results = {}
@@ -102,9 +104,12 @@ class PrefrontalCortex:
                                                           local_files_only=self.local_files_only)
         
         self.model.eval()
-        
+        # Get current time
+        timestamp = datetime.now().strftime("%A, %B %d, %Y")
+        print(timestamp)  # Monday, November 17, 2025
+
         #TODO: Should be a multiprocessing dict
-        self.messages = [{"role": "system", "content": f"You are multimodal AI assistant named '{wakeword_name.upper()}'. You receive Inputs from user as Voice to Text and Visual Descriptions of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  Use what you see and hear."}]
+        self.messages = [{"role": "system", "content": f"Today is {timestamp}. You are multimodal AI assistant named '{wakeword_name.upper()}'. User provides inputs from a Voice to Text and you also have a Visual Description of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  If it applies and is related, incorporate what you see in your response."}]
         
         self.tools = {}
         self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
@@ -871,18 +876,28 @@ class PrefrontalCortex:
                     word_count = 0
                     
                     for token_text in self._generate_streaming(model_inputs):
-                        
+    
                         full_response += token_text
-                        speech_buffer += token_text
                         print(token_text)
+                        
+                        # Check if we're starting a tool call section in the buffer
+                        if ('<tool' in speech_buffer or '<function' in speech_buffer) and not ('</tool' in speech_buffer or '</function' in speech_buffer):
+                            # Stop adding tokens to speech buffer once tool call starts
+                            continue
+                        
+                        speech_buffer += token_text
                         #print(self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt'))
 
                         # Count words (simple split by spaces)
                         words_in_buffer = speech_buffer.split()
                         word_count = len(words_in_buffer)
                         
-                        # Check for sentence-ending punctuation
-                        has_sentence_break = any(punct in token_text for punct in ['.', '!', '?', '\n','<tool'])
+                        # Check for sentence-ending punctuation in the full buffer
+                        # Use '. ' (period with space) to avoid breaking on abbreviations like U.S.S.
+                        has_sentence_break = ('. ' in speech_buffer or 
+                                            '!' in speech_buffer or 
+                                            '?' in speech_buffer or 
+                                            '\n' in speech_buffer)
                         
                         # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
                         if word_count >= max_words_start_speech or (has_sentence_break and speech_buffer.strip()):

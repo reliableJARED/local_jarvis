@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 MAX_CHUNK_TOKENS = 950 #model max is 1024 input
 MAX_RESPONSE_TOKENS = 500
 OVERLAP_SIZE = 125  # Number of tokens to overlap between chunks
-MIN_SIMILARITY_REJECTION = 0.5 #when doing a similarity based return, below this is not even included in pool for ranking
+MIN_SIMILARITY_REJECTION = 0.5 #when doing a similarity based summary, below this is not even included in pool for summary ranking
 TOP_k_RATIO = 0.75 #percential threshold
 class TextSummarizer:
     #The bart-large-cnn model is a fine-tuned version of the BART (large-sized) model, 
@@ -42,7 +42,13 @@ class TextSummarizer:
     def _load_model(self):
         self.device = torch.device(self.use_gpu_with_most_memory())
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, local_files_only=self.local_files_only)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name, local_files_only=self.local_files_only)
+        # Load model with low_cpu_mem_usage=False to avoid meta tensor issues
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(
+            self.model_name, 
+            local_files_only=self.local_files_only,
+            low_cpu_mem_usage=False,  #   Disable memory optimization is causing issues in threads
+            torch_dtype=torch.float32  # Explicitly set dtype for consistency
+        )
         self.model = self.model.to(self.device)
         self.model.eval()
 

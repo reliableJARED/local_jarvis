@@ -377,8 +377,6 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         #Check for the exitword release locked speaker
                         if exitword.lower() in transcription.lower():
                             cortex_output['unlock_speaker'] = True
-                            locked_speaker_id = None
-                            
                         
                         #Flag our locked speaker is done
                         if cortex_output['final_transcript'] and cortex_output['is_locked_speaker']:
@@ -430,6 +428,9 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                     # Put processed audio in output queue
                     try:
                         external_cortex_queue.put_nowait(cortex_output)
+                        #If this was the exitword, reset
+                        if cortex_output['unlock_speaker']:
+                            locked_speaker_id = None
                     except:
                         logging.debug("external_cortex_queue FULL - CRITICAL ERROR")
 
