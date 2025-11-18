@@ -2,8 +2,7 @@
 from ddgs import DDGS
 from bs4 import BeautifulSoup
 from bs4.element import Comment
-import urllib.request
-import urllib.error
+
 import urllib.parse
 import random
 import asyncio
@@ -15,34 +14,6 @@ class WebSearch:
     def __init__(self):
         self.search = DDGS()
         self.summarizer = TextSummarizer()
-
-    def open_url(self,url):
-        user_agents = [
-            #Chrome on Windows:
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            #Chrome on macOS:
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            #Chrome on Linux:
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"]
-        headers = {
-            'User-Agent': random.choice(user_agents)
-        }
-        try:
-            page = urllib.request.Request(url, headers=headers)
-            response = urllib.request.urlopen(page)
-            html = response.read()
-            return html
-        except urllib.error.HTTPError as e:
-            print(f"HTTP Error {e.code} while fetching {url}. Reason: {e.reason}")
-            return None
-        except Exception as e:
-            print(f"An unexpected error occurred while fetching {url}: {e}")
-            return None
 
     def tag_visible(self,element):
         if element.parent.name in ['style', 'script', 'head', 'title', 'meta', '[document]']:
@@ -63,6 +34,60 @@ class WebSearch:
     def summarize_text(self,text):
         summary = self.summarizer.summarize_text(text)
         return summary
+
+    async def _fetch_with_playwright(self, url, wait_time=2):
+        """
+        Fetch content from a URL using Playwright with cookie handling and realistic browser behavior
+        
+        Args:
+            url: URL to fetch
+            wait_time: Seconds to wait after page load for dynamic content
+        
+        Returns:
+            HTML content as string, or None if failed
+        """
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled']
+            )
+            
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            ]
+            
+            context = await browser.new_context(
+                user_agent=random.choice(user_agents),
+                viewport={'width': 1920, 'height': 1080},
+                locale='en-US',
+                timezone_id='America/New_York',
+                accept_downloads=False,
+            )
+            
+            page = await context.new_page()
+            
+            try:
+                # Navigate with realistic behavior - wait for network idle
+                print(f"Fetching with Playwright: {url}")
+                await page.goto(url, wait_until='networkidle', timeout=30000)
+                
+                # Wait a bit for any dynamic content to load
+                await asyncio.sleep(wait_time)
+                
+                # Get the page content
+                content = await page.content()
+                print(f"✓ Successfully fetched content from {url}")
+                
+                return content
+                
+            except Exception as e:
+                print(f"✗ Error fetching {url}: {type(e).__name__}: {e}")
+                return None
+            
+            finally:
+                await browser.close()
 
     async def _google_search_playwright(self, query, max_results=10):
         """
@@ -246,9 +271,9 @@ class WebSearch:
                 
                 continue
             
-            # Regular HTML processing
+            # Use Playwright for HTML content fetching
             print(f"Fetching content from: {url}\n\n")
-            html_content = self.open_url(url)
+            html_content = asyncio.run(self._fetch_with_playwright(url))
             
             if html_content is None:
                 all_summaries.append(snippet)
@@ -264,7 +289,7 @@ class WebSearch:
     
     def askInternet(self, query, max_results=5):
         # Perform the search https://pypi.org/project/ddgs/
-        results = self.search.text(query, backend="duckduckgo,bing,yahoo,brave, mojeek, mullvad_brave, mullvad_google, wikipedia, yandex", max_results=max_results)
+        results = self.search.text(query, backend="bing,yahoo,duckduckgo,brave, yandex", max_results=max_results)
         print(results)
         print("="*50)
         # Show all the results
@@ -309,9 +334,9 @@ class WebSearch:
                 
                 continue
             
-            # Regular HTML processing
+            # Use Playwright for HTML content fetching
             print(f"Fetching content from: {url}\n\n")
-            html_content = self.open_url(url)
+            html_content = asyncio.run(self._fetch_with_playwright(url))
             
             if html_content is None:
                 all_summaries.append(snippet)
@@ -327,7 +352,7 @@ class WebSearch:
 if __name__ == "__main__":
     
     ws = WebSearch()
-    print(ws.open_url("https://www.google.com"))
+    
     #summary = ws.askInternet("did the Patriots win today?")
     summary = ws.askInternet_google("did the Patriots win today?")
     print("\n\nALL SUMMARIES:\n\n")

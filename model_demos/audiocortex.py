@@ -371,6 +371,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                 #system is playing AND we have an interruption breakword detected
                                 logging.debug("INTERRUPTION - set True 1")
                                 cortex_output['is_interrupt_attempt'] = True
+                                cortex_output['transcription'] = ""
                                 brocas_area_interrupt_trigger.update({'interrupt':True})
                         
                         #Check for the exitword release locked speaker
@@ -379,7 +380,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             locked_speaker_id = None
                             
                         
-                        #Flag our locked speaking is done
+                        #Flag our locked speaker is done
                         if cortex_output['final_transcript'] and cortex_output['is_locked_speaker']:
                             logging.debug("Locked speaker stopped talking")
                             locked_speaker_speaking = False
@@ -914,7 +915,7 @@ class AuditoryCortex():
         self.auditory_processes['vr'] = vr_worker
 
         #calibration of system voice
-        self.run_calibration()
+        #self.run_calibration()
 
     def resample_audio(self,audio_data: np.ndarray, orig_rate: int, target_rate: int) -> np.ndarray:
         from scipy import signal

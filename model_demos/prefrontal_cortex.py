@@ -32,14 +32,14 @@ def internet_search(args,return_instructions=False):
         """Run an internet search."""
         #Function DNA
         # D what does this function do
-        d = "Search the internet and get results to query"
+        d = "Search the internet for user and get results for the query, use a detailed search query to answer users question or reqeust."
 
         # N what is the name of this function
         n = internet_search.__name__
 
         # A what are the arguments to the function
         #each argument instruction is a dict and needs to have a name, type, description and if it's a required argument
-        a = [{"name":"query","type":"string","description":"search query for internet","required":True}]
+        a = [{"name":"query","type":"string","description":"internet search query","required":True}]
 
         # Instructions for model how to use the function    
         if return_instructions:
@@ -52,6 +52,9 @@ def internet_search(args,return_instructions=False):
         ws = WebSearch()
         logging.debug(f"SEARCH: {args}")
         query = args.get("query", "unknown")
+
+        result = ws.askInternet_google(query)
+        return result
 
         # Storage for results
         results = {}
@@ -73,7 +76,7 @@ def internet_search(args,return_instructions=False):
         thread1.join()
         thread2.join()
 
-        return f"WEB SEARCH RESULTS: {results['summary']} {results['summary_g']}"
+        return f"WEB SEARCH RESULTS: {','.join(results['summary'])} {','.join(results['summary_g'])}"
 
 
 
@@ -104,7 +107,7 @@ class PrefrontalCortex:
         self.messages = [{"role": "system", "content": f"You are multimodal AI assistant named '{wakeword_name.upper()}'. You receive Inputs from user as Voice to Text and Visual Descriptions of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  Use what you see and hear."}]
         
         self.tools = {}
-        self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET ACCESS use the tool if needed. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
+        self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
         self.available_tools = []
         self.streaming_tool_break_flag = " BREAK_HERE_TOOLS_WERE_USED "
         first_param_dtype = next(self.model.parameters()).dtype
@@ -871,7 +874,7 @@ class PrefrontalCortex:
                         
                         full_response += token_text
                         speech_buffer += token_text
-                        
+                        print(token_text)
                         #print(self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt'))
 
                         # Count words (simple split by spaces)
@@ -879,7 +882,7 @@ class PrefrontalCortex:
                         word_count = len(words_in_buffer)
                         
                         # Check for sentence-ending punctuation
-                        has_sentence_break = any(punct in token_text for punct in ['.', '!', '?', '\n'])
+                        has_sentence_break = any(punct in token_text for punct in ['.', '!', '?', '\n','<tool'])
                         
                         # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
                         if word_count >= max_words_start_speech or (has_sentence_break and speech_buffer.strip()):
@@ -906,14 +909,16 @@ class PrefrontalCortex:
                         # Break from tool iteration loop to go back to waiting for next audio input
                         break
                     
-                    """# Synthesize any remaining text in buffer
+                    # Synthesize any remaining text in buffer
                     if speech_buffer.strip():
                         # Final check before last synthesis
                         if not self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt',False):
-                            self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)"""
+                            self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
                     
                     # Parse for tool calls
+                    print(f"FULL RESPONSE: {full_response}")
                     parsed_response = self._parse_tool_calls(full_response)
+                    print(f"PARSED RESPONSE: {parsed_response}")
                     
                     #check for interruption again
                     if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt',False):
@@ -930,12 +935,15 @@ class PrefrontalCortex:
                         logging.debug(f"[Found {len(tool_calls)} tool call(s)]")
                         
                         tool_results = self._execute_tool_calls(tool_calls)
+
+                        print(f"\nTOOL RESULTS: {tool_results}")
+                        
                         messages_copy.extend(tool_results)
                         
                         # Continue loop to generate response with results from tools
                         continue
                     else:
-                        # Strip the <response> tags if model used them
+                        # Strip the <response> tags if model used them by accident
                         parsed_response["content"] = self.strip_response_tags(parsed_response["content"])
                         # No more tool calls, we're done
                         messages_copy.append(parsed_response)
@@ -950,10 +958,18 @@ class PrefrontalCortex:
 
                 # Update the actual message history with all the interactions
                 self.messages = messages_copy
+                print(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
 
+                #CLEAR - if we are all done, this just pulls once to clear the queue. prevents speech while waiting from being injested
+                try:
+                    _ = self.external_audio_tempLobe_to_prefrontalCortex.get_nowait()
+                except:
+                    continue
+
+                
             except queue.Empty:
                 # Small delay on loop to help CPU
-                print(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
+                
                 time.sleep(0.001)
                 continue  # Continue the outer while True loop
             
