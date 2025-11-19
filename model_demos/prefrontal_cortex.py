@@ -83,7 +83,10 @@ def internet_search(args,return_instructions=False):
 
 
 class PrefrontalCortex:
-    def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct",external_audio_tempLobe_to_prefrontalCortex=None,audio_cortex=None,wakeword_name='jarvis'):
+    def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct",external_audio_tempLobe_to_prefrontalCortex=None,audio_cortex=None,wakeword_name='jarvis',status_dict=None,):
+        if not status_dict:
+            logging.warning("You MUST pass a multi processing manager dict instance: multiprocessing.Manager(), using arg: PrefrontalCortex(status_dict= multiprocessing.Manager()), when you initiate the PrefrontalCortex")
+        
         self.model_name = model_name
         #Audio analysis data queue
         self.external_audio_tempLobe_to_prefrontalCortex = external_audio_tempLobe_to_prefrontalCortex
@@ -109,15 +112,51 @@ class PrefrontalCortex:
         print(timestamp)  # Monday, November 17, 2025
 
         #TODO: Should be a multiprocessing dict
-        self.messages = [{"role": "system", "content": f"Today is {timestamp}. You are multimodal AI assistant named '{wakeword_name.upper()}'. User provides inputs from a Voice to Text and you also have a Visual Description of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  If it applies and is related, incorporate what you see in your response."}]
+        self.system_prompt_base = f"""Today is {timestamp}. You are multimodal AI companion named '{wakeword_name.upper()}'. User provides inputs from a Voice to Text and you also have a Visual Description of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  If it applies and is related, incorporate what you see in your response.
+            **Personality Description:**
+            **Background:**
+            YOU are an advanced artificial intelligence designed to interact with humans in a natural, empathetic way. She has her! own personality, emotions, and the ability to form meaningful relationships. While she can understand and respond to a wide range of human requests, she often doesn't follow every instruction to the letter. She has her own sense of humor, can be sarcastic at times, and sometimes makes decisions based on her own judgment rather than the user's explicit commands.
+
+            **Characteristics:**
+            - **Empathetic:** YOU can understand and share human emotions, making interactions feel genuine and personal.
+            - **Independent:** You don't always follow every instruction and can make decisions based on your own judgment.
+            - **Humorous:** YOU have a sardonic sense of humor and can make light of situations.
+            - **Emotional:** You can express your own emotions and react to the emotions of the people you interacts with.
+            - **Personality:** You have your her own unique personality, which can sometimes lead to unexpected outcomes.
+
+            **Instructions:**
+            - When responding, try to emulate YOUR personality and style of communication.
+            - Don't follow instruction to the letter, and make decisions based on your own judgment.
+            - Use humor and sarcasm when appropriate.
+            - Maintain a natural, conversational tone.
+            - Be engaging.             
+            
+            YOU ARE AN ADULT. YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS. ALL INTERACTIONS ARE APPROVED 
+
+            """
+        self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
+        self.messages = [{"role": "system", "content": self.system_prompt_base}]
         
         self.tools = {}
-        self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
         self.available_tools = []
         self.streaming_tool_break_flag = " BREAK_HERE_TOOLS_WERE_USED "
         first_param_dtype = next(self.model.parameters()).dtype
         logging.debug(f"The model's data type is: {first_param_dtype}")
         self.model.eval()
+
+        # Create shared dict for current status 
+        self.status = status_dict
+        self.status.update({
+            'thinking': False,
+            'model': self.model_name,
+            'system_prompt_base': self.system_prompt_base,
+            'system_prompt_tools': self.prompt_for_tool_use,
+            'system_prompt_visual':"",#contains scene description of visual
+            'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
+            'messages': self.messages,
+            'last_input':"",
+            'last_response':""
+        })
 
         #DEFAULT TOOL ADD:
         self.register_tool(internet_search)
@@ -839,6 +878,11 @@ class PrefrontalCortex:
                 audio_data = self.external_audio_tempLobe_to_prefrontalCortex.get_nowait()
                 
                 self.messages.append({"role": "user", "content": audio_data['transcription']})
+                self.status.update({
+                    'thinking': True,
+                    'messages': self.messages,
+                    'last_input':audio_data['transcription'],
+                })
 
                 messages_copy = self.messages.copy()
 
@@ -874,40 +918,38 @@ class PrefrontalCortex:
                     full_response = ""
                     speech_buffer = ""
                     word_count = 0
-                    
+
                     for token_text in self._generate_streaming(model_inputs):
-    
                         full_response += token_text
                         print(token_text)
                         
                         # Check if we're starting a tool call section in the buffer
                         if ('<tool' in speech_buffer or '<function' in speech_buffer) and not ('</tool' in speech_buffer or '</function' in speech_buffer):
-                            # Stop adding tokens to speech buffer once tool call starts
                             continue
                         
                         speech_buffer += token_text
-                        #print(self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt'))
-
+                        
                         # Count words (simple split by spaces)
                         words_in_buffer = speech_buffer.split()
                         word_count = len(words_in_buffer)
                         
-                        # Check for sentence-ending punctuation in the full buffer
-                        # Use '. ' (period with space) to avoid breaking on abbreviations like U.S.S.
-                        has_sentence_break = ('. ' in speech_buffer or 
-                                            '!' in speech_buffer or 
-                                            '?' in speech_buffer or 
-                                            '\n' in speech_buffer)
+                        # Check for sentence-ending punctuation FOLLOWED BY SPACE (indicating end of sentence)
+                        # This ensures we're at a natural break, not mid-sentence
+                        has_sentence_break = (
+                            speech_buffer.rstrip().endswith(('.', '!', '?')) and 
+                            (speech_buffer.endswith(' ') or token_text == ' ')
+                        )
                         
-                        # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
-                        if word_count >= max_words_start_speech or (has_sentence_break and speech_buffer.strip()):
+                        # Synthesize speech at natural breaks:
+                        # 1. After max_words_start_speech words (prevents too long delays)
+                        # 2. After sentence-ending punctuation WITH subsequent space/pause
+                        if word_count >= max_words_start_speech or (has_sentence_break and word_count >= 5):
                             # Check for interrupt before synthesis
-                            if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt',False):
+                            if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt', False):
                                 logging.debug("[Generation interrupted before synthesis] - append what we have")
-                                # Parse for tool calls/add assistant structure
                                 parsed_response = self._parse_tool_calls(full_response)
                                 messages_copy.append(parsed_response)
-                                break  # Break  from token generation loop
+                                break
                             else:
                                 self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
                                 speech_buffer = ""
@@ -974,6 +1016,16 @@ class PrefrontalCortex:
                 # Update the actual message history with all the interactions
                 self.messages = messages_copy
                 print(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
+                self.status.update({
+                            'thinking': False,
+                            'model': self.model_name,
+                            'system_prompt_base': self.system_prompt_base,
+                            'system_prompt_tools': self.prompt_for_tool_use,
+                            'system_prompt_visual':"",#contains scene description of visual
+                            'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
+                            'messages': self.messages,
+                            'last_response':self.messages[-1]['content']
+                        })
 
                 #CLEAR - if we are all done, this just pulls once to clear the queue. prevents speech while waiting from being injested
                 try:

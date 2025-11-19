@@ -365,7 +365,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             logging.debug(f"Detected my own voice: '{transcription}' ")
 
                         #Check for the breakword interruption phrase in the transcript
-                        if breakword.lower() in transcription.lower() and system_actively_speaking:
+                        if breakword.lower().replace('.', '').replace(',', '') in transcription.lower() and system_actively_speaking:
                             #Check if system actually in playback
                             if external_brocas_state_dict.get('is_playing',True):
                                 #system is playing AND we have an interruption breakword detected
@@ -375,7 +375,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                 brocas_area_interrupt_trigger.update({'interrupt':True})
                         
                         #Check for the exitword release locked speaker
-                        if exitword.lower() in transcription.lower():
+                        if exitword.lower().lower().replace('.', '').replace(',', '') in transcription.lower():
                             cortex_output['unlock_speaker'] = True
                         
                         #Flag our locked speaker is done

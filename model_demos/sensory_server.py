@@ -956,9 +956,9 @@ class TemporalLobe:
                 wakeword_data = self.auditory_cortex.detected_name_wakeword_queue.get_nowait()
                 speaker_id = wakeword_data.get('spoken_by')
                 if speaker_id:
-                        self.locked_speaker_id = speaker_id
-                        self.locked_speaker_timestamp = time.time()
-                        print(f"\ntemporalLobe Locked onto speaker: {speaker_id}\n")
+                    self.locked_speaker_id = speaker_id
+                    self.locked_speaker_timestamp = time.time()
+                    print(f"\ntemporalLobe Locked onto speaker: {speaker_id}\n")
             except:
                 pass
             
@@ -2165,6 +2165,8 @@ def stats():
     """API endpoint for performance statistics"""
     try:
         current_stats = temporal_lobe.get_stats()
+        #print("-"*20)
+        #print(prefrontal_cortex_status.get('last_response', ""))
         
         return jsonify(current_stats)
     except Exception as e:
@@ -2176,6 +2178,7 @@ def unified_state():
     """API endpoint for current unified state"""
     try:
         unified = temporal_lobe.get_unified_state()
+        
         return jsonify(unified)
     except Exception as e:
         logging.error(f"Error getting unified state: {e}")
@@ -2352,6 +2355,17 @@ if __name__ == '__main__':
     wakeword_name='jarvis'
     breakword = f"enough {wakeword_name}"
     exitword = f"goodbye {wakeword_name}"
+    prefrontal_cortex_status = manager.dict({
+            'thinking': False,
+            'model': None,
+            'system_prompt_base': "",#the core prompt
+            'system_prompt_tools': "",#prompt addition to emphasize tool use
+            'system_prompt_visual':"",#contains scene description of visual
+            'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
+            'messages': [],#OpenAI format chat messages
+            'last_input':"", #last input to the prefrontal cortex
+            'last_response':""#last response from prefrontal cortex
+        })
 
     #Audio Cortex
     ac = AuditoryCortex(mpm=manager,wakeword_name=wakeword_name,breakword=breakword,exitword=exitword,gpu_device=gpu_to_use,database_path=db_name) #TODO: use a permanent db, not :memory:
@@ -2365,7 +2379,7 @@ if __name__ == '__main__':
     #Prefrontal Cortex
     prefrontal_cortex = PrefrontalCortex(external_audio_tempLobe_to_prefrontalCortex=temporal_lobe.external_audio_tempLobe_to_prefrontalCortex,
                                          audio_cortex=ac,
-                                         wakeword_name=wakeword_name)
+                                         wakeword_name=wakeword_name,status_dict=prefrontal_cortex_status)
 
     # Start temporal lobe collection
     temporal_lobe.start_collection()
@@ -2401,7 +2415,6 @@ if __name__ == '__main__':
     """
 
 
-    
     # Set multiprocessing start method
     mp.set_start_method('spawn', force=True)
 

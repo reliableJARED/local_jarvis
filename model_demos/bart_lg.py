@@ -47,7 +47,7 @@ class TextSummarizer:
             self.model_name, 
             local_files_only=self.local_files_only,
             low_cpu_mem_usage=False,  #   Disable memory optimization is causing issues in threads
-            torch_dtype=torch.float32  # Explicitly set dtype for consistency
+            dtype=torch.float32  # Explicitly set dtype for consistency
         )
         self.model = self.model.to(self.device)
         self.model.eval()
