@@ -477,6 +477,29 @@ class PrefrontalCortex:
                     logging.debug(f"Error parsing response-wrapped function tag arguments: {e}")
                     continue
 
+        # Pattern 9: XML tags with unquoted JSON in arguments attribute
+        # Matches: <tool name="internet_search" arguments={"query": "value"} />
+        unquoted_args_pattern = r'<(?:tool|function)\s+name=["\']([^"\']+)["\']\s+arguments=(\{[^/>]+\})\s*/>'
+        for match in re.finditer(unquoted_args_pattern, content, re.IGNORECASE):
+            function_name = match.group(1)
+            arguments_str = match.group(2)
+            
+            try:
+                # Parse the arguments JSON
+                arguments = json.loads(arguments_str)
+                logging.debug(f"Tool Call (unquoted args): {function_name} with args {arguments}")
+                
+                tool_calls.append({
+                    "id": self._generate_tool_call_id(),
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "arguments": arguments
+                    }
+                })
+            except json.JSONDecodeError as e:
+                logging.debug(f"Error parsing unquoted args: {e}")
+                continue
 
         if tool_calls:
             
