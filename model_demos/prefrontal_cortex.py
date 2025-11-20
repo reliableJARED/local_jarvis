@@ -164,6 +164,9 @@ class PrefrontalCortex:
         #DEFAULT TOOL ADD:
         self.register_tool(internet_search)
 
+        # Shutdown flag for graceful termination
+        self.shutdown_event = threading.Event()
+
         #Start MAIN loop a separate thread 
         self.chat_thread = threading.Thread(target=self.chat_streaming, daemon=True)
         self.chat_thread.start()
@@ -614,21 +617,46 @@ class PrefrontalCortex:
                 logits = outputs.logits[:, -1, :]
                 past_key_values = outputs.past_key_values
                 
-                # Apply temperature scaling
-                logits = logits / 0.7
+                # Apply temperature scaling with safety check
+                temperature = 0.7
+                logits = logits / max(temperature, 1e-8)
                 
-                # Apply top-p sampling
+                # Clip logits to prevent overflow
+                logits = torch.clamp(logits, min=-100, max=100)
+                
+                # Apply top-p sampling with safety checks
                 sorted_logits, sorted_indices = torch.sort(logits, descending=True)
                 cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
                 
                 sorted_indices_to_remove = cumulative_probs > 0.8
+                # Keep at least one token (don't remove the first one)
                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                 sorted_indices_to_remove[..., 0] = 0
                 
                 indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                logits[indices_to_remove] = float('-inf')
                 
-                probs = torch.softmax(logits, dim=-1)
+                # CRITICAL FIX: Use a large negative value instead of -inf
+                # and ensure at least one token remains valid
+                logits_filtered = logits.clone()
+                logits_filtered[indices_to_remove] = -1e10
+                
+                # Additional safety: if all logits are -inf (shouldn't happen with fix above),
+                # reset to original logits
+                if torch.all(torch.isinf(logits_filtered)):
+                    logits_filtered = logits
+                
+                # Compute probabilities with numerical stability
+                probs = torch.softmax(logits_filtered, dim=-1)
+                
+                # Final safety check: handle any NaN or invalid probabilities
+                if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any():
+                    print(f"Warning: Invalid probabilities detected at step {step}, using fallback")
+                    # Fallback to uniform distribution over valid tokens
+                    probs = torch.ones_like(probs) / probs.shape[-1]
+                
+                # Ensure probabilities sum to 1 (numerical stability)
+                probs = probs / probs.sum(dim=-1, keepdim=True)
+                
                 next_token = torch.multinomial(probs, num_samples=1)
                 
                 if next_token.item() == self.tokenizer.eos_token_id:
@@ -673,7 +701,7 @@ class PrefrontalCortex:
         full_response = self.tokenizer.decode(generated_token_ids, skip_special_tokens=True) if generated_token_ids else ""
         
         return full_response
-
+    
     def token_count(self, text: str) -> int:
         """Count tokens in text."""
         tokens = self.tokenizer.encode(text)
@@ -921,7 +949,7 @@ class PrefrontalCortex:
                             else:
                                 #make sure we have at least 3 words to speak, since \n\n or other non punctuation breaks cause false speech positives
                                 if speech_buffer != "" and word_count >= min_words_start_speech:
-                                    self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
+                                    self.audio_cortex.brocas_area.synthesize_speech(speech_buffer, auto_play=True)
                                     speech_buffer = ""
                                     word_count = 0
 
@@ -940,7 +968,7 @@ class PrefrontalCortex:
                     if speech_buffer.strip():
                         # Final check before last synthesis
                         if not self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt',False):
-                            self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
+                            self.audio_cortex.brocas_area.synthesize_speech(speech_buffer, auto_play=True)
                     
                     # Parse for tool calls
                     print(f"FULL RESPONSE: {full_response}")
