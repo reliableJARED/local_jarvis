@@ -371,6 +371,9 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
 
                         #Check for the breakword interruption phrase in the transcript
                         if breakword.lower().replace('.', '').replace(',', '') in transcription.replace('.', '').replace(',', '') and system_actively_speaking:
+                            #placeholder to a User feedback audio sound like a beep. just play sys sound for now
+                            print('\a')
+                            
                             #Check if system actually in playback
                             if external_brocas_state_dict.get('is_playing',True):
                                 #system is playing AND we have an interruption breakword detected

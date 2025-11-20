@@ -951,7 +951,7 @@ class PrefrontalCortex:
                                 if speech_buffer != "" and word_count >= min_words_start_speech:
                                     self.audio_cortex.brocas_area.synthesize_speech(speech_buffer, auto_play=True)
                                     speech_buffer = ""
-                                    word_count = 0
+                                    word_count = 0 
 
                     # Clean up input tensors
                     del model_inputs
