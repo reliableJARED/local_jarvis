@@ -10,7 +10,10 @@ import gc
 import random
 import string
 from typing import List, Dict, Any, Callable, Generator
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 import torch
 import logging
 import queue
@@ -33,7 +36,7 @@ def internet_search(args,return_instructions=False):
         """Run an internet search."""
         #Function DNA
         # D what does this function do
-        d = "Search the internet for user and get results for the query, use a detailed search query to answer users question or reqeust."
+        d = "Search the internet get real time data and results for the query, use a detailed search query to answer users question or reqeust."
 
         # N what is the name of this function
         n = internet_search.__name__
@@ -134,7 +137,7 @@ class PrefrontalCortex:
             YOU ARE AN ADULT. YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS. ALL INTERACTIONS ARE APPROVED 
 
             """
-        self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
+        self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. Use Internet to support answers to subjects you do not have knowledge or extensive knowledge on. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
         self.messages = [{"role": "system", "content": self.system_prompt_base}]
         
         self.tools = {}
@@ -208,8 +211,8 @@ class PrefrontalCortex:
         #if this is our first tool, adjust the system prompt
         if len(self.available_tools) == 0:
             #get current prompt
-            sp = self.messages[0]['content']
-            self.messages[0] = {"role": "system", "content": sp+"\n\nREMEMBER - you have tools you can use to assist answering a user input. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"}
+            sp = self.system_prompt_base
+            self.messages[0] = {"role": "system", "content": sp+self.prompt_for_tool_use}
         
         #ensures that before adding the new tool to self.available_tools, any with same name are removed.
         self.available_tools = [t for t in self.available_tools if t["function"]["name"] != name]
@@ -570,80 +573,54 @@ class PrefrontalCortex:
     def _generate_streaming(self, model_inputs, max_new_tokens: int = 4500) -> Generator[str, None, str]:
         """
         Generate tokens one at a time and yield them as strings.
-        
-        Args:
-            model_inputs: Tokenized input tensors from the tokenizer
-            max_new_tokens: Maximum number of new tokens to generate
-            
-        Yields:
-            str: Each decoded token/chunk as it's generated
-            
-        Returns:
-            str: The complete generated response text
         """
-        # Track how many input tokens we started with
         input_ids_len = model_inputs.input_ids.shape[1]
-        
-        # Store all generated token IDs
         generated_token_ids = []
         
-        # Buffer for handling multi-byte characters (like emojis)
-        # We accumulate tokens here until they decode cleanly
-        decode_buffer = []
-        last_output_length = 0  # Track how much text we've already yielded
+        # Simpler approach: keep track of what we've already output
+        all_decoded_text = ""
+        last_yield_position = 0
         
-        # Cache for efficient generation (stores attention key/value pairs)
         past_key_values = None
-        
-        # Start with the input IDs
         input_ids = model_inputs.input_ids
         attention_mask = model_inputs.attention_mask if hasattr(model_inputs, 'attention_mask') else None
         
         start_time = time.time()
         
-        # Generate one token at a time
         with torch.no_grad():
             for step in range(max_new_tokens):
-                # Prepare inputs for this generation step
                 if past_key_values is None:
-                    # First step: use full input
                     current_input_ids = input_ids
                     current_attention_mask = attention_mask
                 else:
-                    # Subsequent steps: only use the last generated token
-                    # This is more efficient due to caching
                     current_input_ids = input_ids[:, -1:]
                     if attention_mask is not None:
-                        # Extend attention mask by one position
                         current_attention_mask = torch.cat([
                             attention_mask,
                             torch.ones((attention_mask.shape[0], 1), 
-                                     dtype=attention_mask.dtype, 
-                                     device=attention_mask.device)
+                                    dtype=attention_mask.dtype, 
+                                    device=attention_mask.device)
                         ], dim=1)
                     else:
                         current_attention_mask = None
                 
-                # Forward pass through the model
                 outputs = self.model(
                     input_ids=current_input_ids,
                     attention_mask=current_attention_mask,
                     past_key_values=past_key_values,
-                    use_cache=True  # Enable KV caching for speed
+                    use_cache=True
                 )
                 
-                # Get logits for the next token position
                 logits = outputs.logits[:, -1, :]
                 past_key_values = outputs.past_key_values
                 
                 # Apply temperature scaling
                 logits = logits / 0.7
                 
-                # Apply top-p (nucleus) sampling
+                # Apply top-p sampling
                 sorted_logits, sorted_indices = torch.sort(logits, descending=True)
                 cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
                 
-                # Remove tokens with cumulative probability above threshold
                 sorted_indices_to_remove = cumulative_probs > 0.8
                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                 sorted_indices_to_remove[..., 0] = 0
@@ -651,88 +628,52 @@ class PrefrontalCortex:
                 indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
                 logits[indices_to_remove] = float('-inf')
                 
-                # Sample the next token
                 probs = torch.softmax(logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
                 
-                # Check if we hit end of sequence
                 if next_token.item() == self.tokenizer.eos_token_id:
                     break
                 
-                # Add token to our buffers
                 generated_token_ids.append(next_token.item())
-                decode_buffer.append(next_token.item())
                 
-                # Try to decode the buffer into text
-                token_text = ""
+                # Decode all tokens generated so far
                 try:
-                    # Decode all tokens in the buffer
-                    full_decoded = self.tokenizer.decode(decode_buffer, 
-                                                        skip_special_tokens=False,
-                                                        clean_up_tokenization_spaces=False)
+                    all_decoded_text = self.tokenizer.decode(
+                        generated_token_ids, 
+                        skip_special_tokens=False,
+                        clean_up_tokenization_spaces=False
+                    )
                     
-                    # Extract only the new text we haven't yielded yet
-                    new_text = full_decoded[last_output_length:]
+                    # Get only the new text since last yield
+                    new_text = all_decoded_text[last_yield_position:]
                     
-                    # Check if the text is valid (no replacement characters)
+                    # Only yield if we have valid new text (no replacement characters)
                     if new_text and '�' not in new_text:
-                        token_text = new_text
-                        last_output_length = len(full_decoded)
+                        yield new_text
+                        last_yield_position = len(all_decoded_text)
                         
-                        # Reset buffer periodically to prevent memory buildup
-                        if len(decode_buffer) > 20:
-                            decode_buffer = []
-                            last_output_length = 0
-                    else:
-                        # Text contains incomplete unicode, keep buffering
-                        # But don't let buffer grow too large
-                        if len(decode_buffer) > 50:
-                            # Force output and reset
-                            clean_text = full_decoded[last_output_length:].rstrip('�')
-                            if clean_text:
-                                token_text = clean_text
-                            decode_buffer = []
-                            last_output_length = 0
-                            
                 except UnicodeDecodeError:
-                    # Decoding failed, keep buffering
-                    if len(decode_buffer) > 50:
-                        decode_buffer = decode_buffer[-10:]
-                        last_output_length = 0
-                
-                # Yield the decoded text if we have any
-                if token_text:
-                    yield token_text
+                    # If decode fails, just continue to next token
+                    pass
                 
                 # Update input_ids for next iteration
                 input_ids = torch.cat([input_ids, next_token], dim=1)
                 if attention_mask is not None:
                     attention_mask = current_attention_mask
         
-        # Handle any remaining buffered tokens at the end
-        if decode_buffer:
-            try:
-                remaining_text = self.tokenizer.decode(decode_buffer, 
-                                                      skip_special_tokens=False,
-                                                      clean_up_tokenization_spaces=False)
-                final_new_text = remaining_text[last_output_length:].rstrip('�')
-                if final_new_text:
-                    yield final_new_text
-            except:
-                pass
+        # Handle any remaining text
+        if last_yield_position < len(all_decoded_text):
+            remaining_text = all_decoded_text[last_yield_position:].rstrip('�')
+            if remaining_text:
+                yield remaining_text
         
         generation_time = time.time() - start_time
         tps = len(generated_token_ids) / generation_time if generation_time > 0 else 0
-        #logging.debug(f"\n[Streaming] Generated {len(generated_token_ids)} tokens in {generation_time:.3f}s. TPS: {tps:.2f}")
         
-        # Decode the full response
-        if generated_token_ids:
-            full_response = self.tokenizer.decode(generated_token_ids, skip_special_tokens=True)
-        else:
-            full_response = ""
+        full_response = self.tokenizer.decode(generated_token_ids, skip_special_tokens=True) if generated_token_ids else ""
         
         return full_response
-    
+
     def token_count(self, text: str) -> int:
         """Count tokens in text."""
         tokens = self.tokenizer.encode(text)
@@ -865,15 +806,35 @@ class PrefrontalCortex:
                 time.sleep(0.001)
                 continue
             
-    def chat_streaming(self, file_contents: list = None, max_tool_iterations: int = 5, max_words_start_speech: int = 30) -> str:
+    def chat_streaming(self, file_contents: list = None, max_tool_iterations: int = 5, max_words_start_speech: int = 30, min_words_start_speech: int = 3) -> str:
         """
         Generate streaming response with recursive tool support and periodic speech synthesis.
         Continues calling tools until model stops requesting them or max iterations reached.
         Synthesizes speech every 8 words or at punctuation breaks.
         Can be interrupted via self.interrupt['should_interrupt'] flag.
         """
+        def _is_entering_tool_call(buffer: str) -> bool:
+            """
+            Detect if we're entering a tool call section based on partial patterns.
+            Returns True if the buffer contains the start of any tool call pattern.
+            """
+            # Check for opening tags and patterns that indicate tool calls are starting
+            tool_indicators = [
+                '<tool',           # <tools>, <tool>, <tool_call>, <tool_calls>
+                '<function',       # <function>, <function_call>, <function-call>, <function-calls>
+                '<response>',      # <response> wrapper
+                '<xml>',           # <xml> wrapper
+                '```json',         # Markdown code blocks
+                '```xml',
+                '{"name"',         # Standalone JSON tool calls
+            ]
+            
+            buffer_lower = buffer.lower()
+            return any(indicator in buffer_lower for indicator in tool_indicators)
+
         
         while True:
+            
             try:
                 audio_data = self.external_audio_tempLobe_to_prefrontalCortex.get_nowait()
                 
@@ -910,7 +871,7 @@ class PrefrontalCortex:
                             tokenize=False,
                             add_generation_prompt=True
                         )
-                    
+                    print(text)
                     # Tokenize the input
                     model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
                     
@@ -920,41 +881,50 @@ class PrefrontalCortex:
                     word_count = 0
 
                     for token_text in self._generate_streaming(model_inputs):
+                        # Check interrupt FIRST
+                        if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt', False):
+                            logging.debug("[Generation interrupted]")
+                            parsed_response = self._parse_tool_calls(full_response)
+                            messages_copy.append(parsed_response)
+                            break
+                        
                         full_response += token_text
-                        print(token_text)
+                        print(token_text)#, end='', flush=True)
                         
                         # Check if we're starting a tool call section in the buffer
-                        if ('<tool' in speech_buffer or '<function' in speech_buffer) and not ('</tool' in speech_buffer or '</function' in speech_buffer):
-                            continue
+                        # Use partial checks like this since the model sometimes does tool_calls or tool or tools function function_call etc.
+                        #if '<tool' not in speech_buffer and '<function' not in speech_buffer and '{"name' not in speech_buffer:
+                            # add to be spoken
+                        if not _is_entering_tool_call(full_response):
+                            
+                            speech_buffer += token_text
+
                         
-                        speech_buffer += token_text
-                        
-                        # Count words (simple split by spaces)
-                        words_in_buffer = speech_buffer.split()
+                        # Count words accurately
+                        words_in_buffer = speech_buffer.strip().split()
                         word_count = len(words_in_buffer)
                         
-                        # Check for sentence-ending punctuation FOLLOWED BY SPACE (indicating end of sentence)
-                        # This ensures we're at a natural break, not mid-sentence
-                        has_sentence_break = (
-                            speech_buffer.rstrip().endswith(('.', '!', '?')) and 
-                            (speech_buffer.endswith(' ') or token_text == ' ')
-                        )
+                        has_sentence_break = (speech_buffer.endswith('.') or 
+                                            '!' in speech_buffer or 
+                                            '?' in speech_buffer or 
+                                            '\n' in speech_buffer)
                         
-                        # Synthesize speech at natural breaks:
-                        # 1. After max_words_start_speech words (prevents too long delays)
-                        # 2. After sentence-ending punctuation WITH subsequent space/pause
-                        if word_count >= max_words_start_speech or (has_sentence_break and word_count >= 5):
+                        # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
+                        if word_count >= max_words_start_speech or has_sentence_break:
                             # Check for interrupt before synthesis
-                            if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt', False):
+                            if self.audio_cortex.brocas_area_interrupt_trigger.get('interrupt',False):
                                 logging.debug("[Generation interrupted before synthesis] - append what we have")
+                                # Parse for tool calls/add assistant structure
                                 parsed_response = self._parse_tool_calls(full_response)
                                 messages_copy.append(parsed_response)
-                                break
+                                break  # Break from token generation loop
                             else:
-                                self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
-                                speech_buffer = ""
-                                word_count = 0
-                    
+                                #make sure we have at least 3 words to speak, since \n\n or other non punctuation breaks cause false speech positives
+                                if speech_buffer != "" and word_count >= min_words_start_speech:
+                                    self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
+                                    speech_buffer = ""
+                                    word_count = 0
+
                     # Clean up input tensors
                     del model_inputs
                     gc.collect()
@@ -983,6 +953,7 @@ class PrefrontalCortex:
 
                     # Check if model wants to use tools
                     if parsed_response.get("tool_calls", False):
+                        print("\n\nCALLING TOOLS\n\n")
                         tool_calls = parsed_response.get("tool_calls")
                         # Format the messages for the fact model called tools
                         tool_calls_format = parsed_response.get("content", "")
@@ -1042,10 +1013,19 @@ class PrefrontalCortex:
             
     def shutdown(self):
         """Stop the chat thread cleanly."""
+        logging.debug('[Initiating Prefrontal Cortex shutdown...]')
+        self.shutdown_event.set()
+        
         try:
-            self.chat_thread.join(timeout=5)  # Wait up to 5 seconds
-            logging.debug('Prefrontal Cortext stopped')
+            if self.chat_thread.is_alive():
+                self.chat_thread.join(timeout=5)  # Wait up to 5 seconds
+                if self.chat_thread.is_alive():
+                    logging.warning('[Chat thread did not stop within timeout]')
+                else:
+                    logging.debug('[Chat thread stopped successfully]')
+            
+            logging.debug('[Prefrontal Cortex stopped]')
             return True
         except Exception as e:
-            logging.debug(e)
+            logging.error(f'[Shutdown error: {e}]')
             return False

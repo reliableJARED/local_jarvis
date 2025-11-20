@@ -14,7 +14,7 @@ import logging
 
 from brocasArea import BrocasArea
 
-logging.basicConfig(level=logging.INFO) #ignore everything use (level=logging.CRITICAL + 1)
+logging.basicConfig(level=logging.DEBUG) #ignore everything use (level=logging.CRITICAL + 1)
 
 
 #Dict Struct on the audio_cortex.nerve_from_input_to_cortex
@@ -343,7 +343,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         'is_locked_speaker': False,
                         'unlock_speaker':False
                     }
-                    
+                   
+
                     try:
                         # Get transcription and voice recognition if available
                         stt_output = nerve_from_stt_to_cortex.get_nowait()
@@ -351,6 +352,10 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
 
                         voice_match_id = cortex_output.get('voice_id', None)
                         transcription = cortex_output.get('transcription', '').lower().strip()
+
+                        #print(f"\n\nXYZ:{breakword.lower().replace('.', '').replace(',', '')}\n\n")
+                        #print(f"{transcription}")
+                        #print((breakword.lower().replace('.', '').replace(',', '') in transcription))
 
                         # Determine if this is speech from our locked speaker
                         if voice_match_id == locked_speaker_id:
@@ -365,7 +370,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             logging.debug(f"Detected my own voice: '{transcription}' ")
 
                         #Check for the breakword interruption phrase in the transcript
-                        if breakword.lower().replace('.', '').replace(',', '') in transcription.lower() and system_actively_speaking:
+                        if breakword.lower().replace('.', '').replace(',', '') in transcription.replace('.', '').replace(',', '') and system_actively_speaking:
                             #Check if system actually in playback
                             if external_brocas_state_dict.get('is_playing',True):
                                 #system is playing AND we have an interruption breakword detected

@@ -12,15 +12,13 @@ from PIL import Image
 import torch
 import gc
 import threading
-from typing import Dict, List, Tuple, Optional, Union, Any, Generator
 import logging
 import sqlite3
-from voicerecognition import VoiceRecognitionSystem
+
 from audiocortex import AuditoryCortex
 from prefrontal_cortex import PrefrontalCortex
-from kokoro import KPipeline
-import os
-import platform
+
+
 import sounddevice as sd
 import soundfile as sf
 from brocasArea import BrocasArea
@@ -2326,6 +2324,7 @@ def signal_handler(sig, frame):
     """Handle shutdown signals"""
     print("\nShutting down...")
     success = prefrontal_cortex.shutdown()
+    print(f"Prefrontal Cortex Shutdown {'completed successfully' if success else 'completed with failures'}")
     success = temporal_lobe.shutdown_all()
     print(f"Shutdown {'completed successfully' if success else 'completed with failures'}")
     sys.exit(0)
