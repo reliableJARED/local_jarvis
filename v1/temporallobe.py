@@ -310,4 +310,74 @@ class TemporalLobe:
     def get_last_unified_state(self):
         """Get the last created unified state without creating a new one"""
         return self.last_unified_state
+
+
+if __name__ == "__main__":
+    import multiprocessing as mp
+    from visualcortex import VisualCortex  
+    from audiocortex import AuditoryCortex  
     
+    # Create multiprocessing manager
+    manager = mp.Manager()
+    
+    # Initialize AuditoryCortex
+    ac = AuditoryCortex(
+        mpm=manager,
+        wakeword_name='jarvis',
+        database_path=":memory:",
+        gpu_device=0
+    )
+    
+    # Initialize VisualCortex
+    vc = VisualCortex(mpm=manager, device_index=0)
+    
+    # Initialize TemporalLobe
+    tl = TemporalLobe(
+        visual_cortex=vc,
+        auditory_cortex=ac,
+        mpm=manager,
+        database_path=":memory:"
+    )
+    
+    try:
+        # Start the systems
+        logging.info("initialize visual nerve")
+        tl.start_visual_nerve(device_index=0)
+        logging.info("initialize audio nerve")
+        tl.start_audio_nerve(device_index=0)
+        logging.info("Starting TemporalLobe data collection...")
+        tl.start_collection()
+        
+        logging.info("TemporalLobe running. Press Ctrl+C to stop.")
+        logging.info("Monitoring data on the external_temporallobe_to_prefrontalcortex queue...\n")
+        
+        # Display feed from the queue
+        while True:
+            try:
+                unified_state = tl.external_temporallobe_to_prefrontalcortex.get_nowait()
+                logging.info(f"\n{'='*60}")
+                logging.info(f"Unified State at {unified_state['formatted_time']}:")
+                logging.info(f"{'='*60}")
+                
+                # Display relevant fields
+                if unified_state.get('transcription'):
+                    logging.info(f"Transcription: {unified_state['transcription']}")
+                if unified_state.get('user_text_input'):
+                    logging.info(f"User Input: {unified_state['user_text_input']}")
+                if unified_state.get('caption'):
+                    logging.info(f"Caption: {unified_state['caption']}")
+                if unified_state.get('person_detected'):
+                    logging.info(f"Person Detected: {unified_state['person_match']} (prob: {unified_state['person_match_probability']:.2f})")
+                
+                logging.info(f"{'='*60}\n")
+                
+            except queue.Empty:
+                time.sleep(0.01)#sleep to help CPU overuse
+                continue
+            except Exception as e:
+                logging.error(f"Error retrieving data on external_temporallobe_to_prefrontalcortex queue: {e}")   
+                
+    except KeyboardInterrupt:
+        logging.info("\nCtrl+C detected. Shutting down...")
+        tl.shutdown_all()
+        logging.info("Shutdown complete.")
