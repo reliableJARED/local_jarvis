@@ -131,6 +131,8 @@ class TemporalLobe:
                                     
                 except queue.Empty:
                     pass
+            else:
+                logging.error("Can't Collect visual data, No visual cortex available in Temporal Lobe")
             
             # Collect audio frames  
             if self.auditory_cortex:
@@ -141,6 +143,8 @@ class TemporalLobe:
                     
                 except queue.Empty:
                     pass
+            else:
+                logging.error("Can't Collect auditory data, No auditory cortex available in Temporal Lobe")
 
             # collect User Inputs from UI
             try:

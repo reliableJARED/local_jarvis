@@ -765,3 +765,82 @@ class VisualCortex():
 
         
 
+if __name__ == "__main__":
+    # Ensure safe multiprocessing on different OSs
+    try:
+        mp.set_start_method('spawn')
+    except RuntimeError:
+        pass
+
+    print("Initializing System...")
+    
+    # 1. Create the Multiprocessing Manager
+    manager = mp.Manager()
+
+    # 2. Initialize the Visual Cortex (starts the Core and VLM processes automatically)
+    # Note: Ensure your 'yolo_.py' and 'moondream_.py' files are accessible
+    vc = VisualCortex(mpm=manager, device_index=0)
+
+    # 3. Start the Nerve (Camera)
+    # Defaulting to camera index 0
+    print("Starting Optic Nerve...")
+    vc.start_nerve(device_index=0)
+
+    print("\nSystem Running. Press Ctrl+C to stop.\n")
+
+    try:
+        while True:
+            # --- HANDLE IMAGE FEED ---
+            try:
+                # Get the latest frame from the queue (non-blocking)
+                img_data = vc.external_img_queue.get_nowait()
+                
+                frame = img_data.get('frame')
+                if frame is not None:
+                    cv2.imshow("Visual Cortex Feed", frame)
+
+            except queue.Empty:
+                pass
+
+            # --- HANDLE CORTEX TEXT OUTPUT ---
+            try:
+                # Get the latest analysis data from the queue
+                cortex_data = vc.external_cortex_queue.get_nowait()
+                
+                # Print the data to terminal
+                # Formatting specifically to show the most relevant parts cleanly
+                timestamp = cortex_data.get('formatted_time', 'N/A')
+                detected = cortex_data.get('person_detected', False)
+                caption = cortex_data.get('caption', '')
+                
+                #person recognition is real time, only show when we have a new caption to limit output spam
+                if caption:
+                    output_str = f"[{timestamp}] Person: {detected}"
+                    output_str += f" | Caption: {caption}"
+                    
+                    print("*"*50)
+                    print(output_str)
+                    print("="*50)
+                    print(cortex_data)  # Full data for debugging
+                    print("="*50)
+
+            except queue.Empty:
+                pass
+
+            # --- OPENCV GUI  ---
+            # Required for cv2.imshow to draw. waitKey(1) waits 1ms.
+            # checks if 'q' is pressed as an alternative exit method
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                raise KeyboardInterrupt
+
+    except KeyboardInterrupt:
+        print("\nCtrl+C detected. Initiating shutdown sequence...")
+
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
+    finally:
+        # Cleanup
+        vc.shutdown()
+        cv2.destroyAllWindows()
+        print("System shutdown complete.")
