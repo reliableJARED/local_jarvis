@@ -193,25 +193,32 @@ def BrocasArea_playback(internal_play_queue, stop_dict, shutdown_event, status_d
 
 
 class BrocasArea():
-    def __init__(self,brocas_area_interrupt_dict) -> None:
+    def __init__(self,brocas_area_interrupt_dict,lang_code = 'a',voice='af_sky,af_jessica') -> None:
         # Check for internet connection
         _ = self.check_internet()
         self.KPipeline = KPipeline
 
         # Voice definitions reference
         # https://github.com/hexgrad/kokoro/tree/main/kokoro.js/voices
-        VOICES_FEMALE: list[str] = [
+        a_VOICES_FEMALE: list[str] = [
             "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", 
             "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky"
         ]
-        
-        VOICES_MALE: list[str] = [
+        a_VOICES_MALE: list[str] = [
             "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", 
             "am_michael", "am_onyx", "am_puck", "am_santa"
         ]
 
-        self.lang_code: str = 'a'  # 'a' for American English 'b' is brittish english
-        self.voice: str = 'af_sky,af_jessica'  # Single voice can be requested (e.g. 'af_sky') or multiple voices (e.g. 'af_bella,af_jessica'). If multiple voices are requested, they are averaged.
+        b_VOICES_FEMALE: list[str] = [
+            'bf_alice','bf_emma','bf_isabella','bf_lily'
+        ]
+        b_VOICES_MALE: list[str] = [
+            'bm_daniel','bm_fable','bm_george','bm_lewis'
+        ]
+        
+
+        self.lang_code: str = lang_code  # 'a' for American English 'b' is brittish english
+        self.voice: str = voice  # Single voice can be requested (e.g. 'af_sky') or multiple voices (e.g. 'af_bella,af_jessica'). If multiple voices are requested, they are averaged.
         self.speech_speed: float = 1.0  # Normal speed
 
         self.pipeline = None
@@ -270,7 +277,8 @@ class BrocasArea():
             logging.debug(f"Failed to initialize Kokoro pipeline: {e}")
             raise
 
-    def synthesize_speech(self, text: str, auto_play: bool = False) -> Optional[dict]:
+
+    def synthesize_speech(self, text: str, auto_play: bool = False, voice: str = None) -> Optional[dict]:
         """Synthesize speech from text and optionally play it.
         
         Args:
@@ -286,9 +294,13 @@ class BrocasArea():
                 'num_channels': int
             }
         """
+        if voice is None:
+            voice = self.voice
+
         # Generate audio
+        #https://github.com/hexgrad/kokoro/blob/main/kokoro/pipeline.py#L361
         generator: Generator[Tuple[Any, Any, Optional[np.ndarray]], None, None] = self.pipeline(
-            text, voice=self.voice, speed=self.speech_speed
+            text, voice=voice, speed=self.speech_speed
         )
             
         # Process audio
@@ -415,6 +427,7 @@ if __name__ == "__main__":
     tts = BrocasArea(stop_dict)
     time.sleep(7)
     print("✓ Initialization complete\n")
+
     
     try:
         # Demo 1: Auto-play a short sentence
@@ -470,9 +483,9 @@ if __name__ == "__main__":
         audio_template = tts.synthesize_speech(text3, auto_play=False)
         
         if audio_template:
-            print(f"✓ Generated audio: {len(audio_template.audio_data)} samples")
-            print(f"  Samplerate: {audio_template.samplerate} Hz")
-            print(f"  Duration: {len(audio_template.audio_data) / audio_template.samplerate:.2f} seconds")
+            print(f"✓ Generated audio: {len(audio_template['audio_data'])} samples")
+            print(f"  Samplerate: {audio_template['samplerate']} Hz")
+            print(f"  Duration: {len(audio_template['audio_data']) / audio_template['samplerate']:.2f} seconds")
             
             print("\nNow playing the pre-generated audio...")
             tts.play_audio(audio_template)
@@ -532,14 +545,14 @@ if __name__ == "__main__":
         
         if audio_template:
             output_filename = "brocas_output.wav"
-            print(f"✓ Generated {len(audio_template.audio_data)} samples")
-            print(f"  Duration: {len(audio_template.audio_data) / audio_template.samplerate:.2f} seconds")
+            print(f"✓ Generated {len(audio_template['audio_data'])} samples")
+            print(f"  Duration: {len(audio_template['audio_data']) / audio_template['samplerate']:.2f} seconds")
             
             # Save to WAV file
             sf.write(
                 output_filename,
-                audio_template.audio_data,
-                audio_template.samplerate,
+                audio_template['audio_data'],
+                audio_template['samplerate'],
                 subtype='PCM_16'
             )
             
@@ -554,6 +567,23 @@ if __name__ == "__main__":
             
             print("✓ Playback verification complete\n")
         
+        a_VOICES_FEMALE: list[str] = [
+            "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", 
+            "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky"
+        ]
+        a_VOICES_MALE: list[str] = [
+                "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", 
+                "am_michael", "am_onyx", "am_puck", "am_santa"
+            ]
+        #Demo 7: Voices
+        print("=" * 60)
+        for voice in a_VOICES_FEMALE:
+            print(f"Voice: {voice}")
+            #up to 15 speech synth calls can be queued, there are only 11 voices so no risk of overflow here
+            tts.synthesize_speech(f"This is a test of the {voice} voice.", auto_play=True, voice=voice)
+            time.sleep(5)  # brief pause between voices to let it finish
+            
+            
     except KeyboardInterrupt:
         print("\n\n[Interrupted by user]")
     except Exception as e:
@@ -567,3 +597,6 @@ if __name__ == "__main__":
         print("=" * 60)
         tts.shutdown()
         print("\n✓ Demo complete!")
+
+    
+    
