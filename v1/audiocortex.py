@@ -745,7 +745,7 @@ class AuditoryCortex():
     with sound input device 0
     """
     def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,ba=BrocasArea,mpm=False,wakeword_name='jarvis',breakword="enough jarvis",exitword="goodbye jarvis",database_path=":memory:",gpu_device=0):
-        logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,stt)")
+        logging.info("Starting Auditory Cortex. This will run at separte processes via multiprocess (nerve,cortex,stt,vr)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
         #processes
@@ -1027,7 +1027,8 @@ if __name__ == "__main__":
     logging.info("="*50 + "\n")
     
     try:
-        tic = 0
+        # Initialize the timer with the current time
+        last_speech_time = time.time()
         while True:
             # Check if there's data in the cortex queue - populated when text is being transcribed
             if not cortex.external_cortex_queue.empty():
@@ -1036,7 +1037,11 @@ if __name__ == "__main__":
                     _  = cortex.state_of_cortex_speakerID_wakeword.get()
                 except:
                     pass"""
-                
+                #Do we hear the locked speaker speaking?
+                if cortex_data['is_locked_speaker']: 
+                    print("Speaker is locked?",cortex_data['voice_id'] == cortex.state_of_cortex_speakerID_wakeword['spoken_by'])
+                    print("Locked Speaker is talking")
+
                 # Display the transcription
                 if cortex_data['transcription']:
                     status = "FINAL" if cortex_data['final_transcript'] else "INTERIM"
@@ -1058,16 +1063,25 @@ if __name__ == "__main__":
                     cortex.brocas_area.stop_playback()
                         
             else:
-                # Small sleep to prevent busy-waiting
+                # Small sleep to prevent CPU overuse
                 time.sleep(0.01)
-            tic += 1
 
-            #10 Second Loop
-            if (tic % 1000) == 0:
-                print("10 seconds")
+ 
+            current_time = time.time()
+            # Check if 20 seconds have passed since the last speech
+            if current_time - last_speech_time >= 20:
+                print("10 seconds passed")
                 logging.info("Speech to Text Test...")
-                cortex.brocas_area.synthesize_speech("This is me talking for a little while so that you can try and interrupt me. If you say enough and then my name I should stop talking. if you say nothing I'll just finish this rant.",auto_play=True)
-        
+                
+                cortex.brocas_area.synthesize_speech(
+                    "This is me talking for a little while so that you can try and interrupt me. "
+                    "If you say enough and then my name I should stop talking. "
+                    "if you say nothing I'll just finish talking.",
+                    auto_play=True
+                )
+                
+                # Reset the timer
+                last_speech_time = current_time
                 
     except KeyboardInterrupt:
         logging.info("\n\nShutting down Auditory Cortex...")
