@@ -130,9 +130,9 @@ class TemporalLobe:
                     visual_data['collection_timestamp'] = current_time
                     #if we have visual data results store it - not everything has as caption
                     if visual_data['caption'] != "":
-                        print("Visual data received in Temporal Lobe\n")
-                        print(visual_data)
-                        print("\n","="*50,"\n")
+                        logging.debug("Visual data received in Temporal Lobe\n")
+                        #logging.debug(visual_data)
+                        #logging.debug("\n","="*50,"\n")
                         self.visual_data = visual_data
                                     
                 except queue.Empty:
@@ -149,8 +149,9 @@ class TemporalLobe:
                     audio_data['collection_timestamp'] = current_time
                     #If Auditory Data was final transcript, we prioritize collecting
                     if audio_data.get('final_transcript',False):
-                        print("Audio data received in Temporal Lobe\n")
-                        print(audio_data)
+                        logging.debug("Audio data received in Temporal Lobe\n")
+                        logging.debug(audio_data)
+                        logging.debug("\n","+"*50,"\n")
                         #Create unified state
                         unified_state = self._create_empty_unified_state()
                         #flag we have user transcription input
@@ -169,14 +170,15 @@ class TemporalLobe:
             try:
                 user_text = self.user_input_dict.get('text',"")
                 #If we have user text input and no unified state yet, create one
-                if unified_state is None:
+                if unified_state is None and user_text.strip() != "":
                     #we only add user text input if we don't already have final transcript data. Audio takes priority
                     unified_state = self._create_empty_unified_state()
                     unified_state['user_text_input'] = user_text.strip()
-                #Clear after reading
-                if user_text != "":
+
+                    #Clear after setting
                     user_text_input = True
                     self.user_input_dict.update({'text':""}) 
+
             except Exception as e:
                 logging.error(f"Error reading user input dict: {e}")
                 pass
@@ -194,22 +196,29 @@ class TemporalLobe:
                 unified_state['timestamp'] = current_time
                 unified_state['formatted_time'] = datetime.now().strftime('%H:%M:%S')
                 
-                #Send to real-time queue
+                # Send to real-time queue
                 try:
                     self.external_temporallobe_to_prefrontalcortex.put_nowait(unified_state)
-                    #Store last unified state
                     self.last_unified_state = unified_state
                 except queue.Full:
-                    while not self.external_temporallobe_to_prefrontalcortex.empty():
-                        discarded = self.external_temporallobe_to_prefrontalcortex.get_nowait()#remove oldest
-                    #populate most recent data
-                    self.external_temporallobe_to_prefrontalcortex.put_nowait(unified_state)
-                    #Store last unified state
-                    self.last_unified_state = unified_state
-
+                    # --- QUEUE FULL HANDLER ---
+                    try:
+                        # Remove ONLY the oldest item to make room for the new one
+                        self.external_temporallobe_to_prefrontalcortex.get_nowait()
+                    except queue.Empty:
+                        pass # Queue was emptied by consumer just now
                     
-            # Small delay to prevent excessive CPU usage
-            time.sleep(0.001)
+                    # Try inserting again
+                    #this is the only source of adding unified state to the queue so should be safe
+                    try:
+                        self.external_temporallobe_to_prefrontalcortex.put_nowait(unified_state)
+                        self.last_unified_state = unified_state
+                    except queue.Full:
+                        pass # Still full (shouldn't be possible), skip this frame
+
+            # Small delay to prevent excessive CPU usage if we didn't create unified state data this iteration
+            if unified_state is None:
+                time.sleep(0.005)
         
         logging.info("TemporalLobe frame collection stopped")
 
@@ -325,16 +334,15 @@ class TemporalLobe:
         """Get the last created unified state without creating a new one"""
         return self.last_unified_state
 
-
 if __name__ == "__main__":
     import multiprocessing as mp
     import cv2
-    from visualcortex import VisualCortex  
-    from audiocortex import AuditoryCortex  
-    
+    from visualcortex import VisualCortex
+    from audiocortex import AuditoryCortex
+
     # Create multiprocessing manager
     manager = mp.Manager()
-    
+
     # Initialize AuditoryCortex
     ac = AuditoryCortex(
         mpm=manager,
@@ -342,10 +350,10 @@ if __name__ == "__main__":
         database_path=":memory:",
         gpu_device=0
     )
-    
+
     # Initialize VisualCortex
     vc = VisualCortex(mpm=manager, device_index=0)
-    
+
     # Initialize TemporalLobe
     tl = TemporalLobe(
         visual_cortex=vc,
@@ -353,7 +361,7 @@ if __name__ == "__main__":
         mpm=manager,
         database_path=":memory:"
     )
-    
+
     try:
         # Start the systems
         logging.info("initialize visual nerve")
@@ -362,12 +370,16 @@ if __name__ == "__main__":
         tl.start_audio_nerve(device_index=0)
         logging.info("Starting TemporalLobe data collection...")
         tl.start_collection()
-        
+
         logging.info("TemporalLobe running. Press Ctrl+C to stop.")
         logging.info("Monitoring data on the external_temporallobe_to_prefrontalcortex queue...\n")
-        
+
         # Display feed from the queue
+        # Initialize the timer with the current time for User Input testing
+        last_user_input_time = time.time()
         while True:
+            has_activity = False # Flag to track if we did work this iteration
+
             # --- HANDLE IMAGE FEED ---
             try:
                 # Get the latest frame from the queue (non-blocking)
@@ -375,22 +387,25 @@ if __name__ == "__main__":
                 frame = img_data.get('frame')
                 if frame is not None:
                     cv2.imshow("Visual Cortex Feed", frame)
-
+                    has_activity = True
             except queue.Empty:
                 pass
-            
-            # --- OPENCV GUI  ---
-            # Required for cv2.imshow to draw. waitKey(1) waits 1ms.
-            # checks if 'q' is pressed as an alternative exit method
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                raise KeyboardInterrupt
-            
+
+            # --- HANDLE UNIFIED STATE FEED ---
             try:
                 unified_state = tl.external_temporallobe_to_prefrontalcortex.get_nowait()
+                has_activity = True # We found data
 
                 # Display relevant fields
-                if unified_state.get('is_locked_speaker', False) or unified_state.get('user_text_input') != "":
-                    print("-"*50)
+                # Check if we have specific data to show to reduce console spam
+                #either a final transcript from audio or user text input
+                has_content = (
+                    (unified_state.get('final_transcript', False) and unified_state.get('is_locked_speaker',False)) or 
+                    unified_state.get('user_text_input') != "" 
+                )
+
+                if has_content:
+                    print("-" * 50)
                     if unified_state.get('transcription'):
                         logging.info(f"Speech Detected: {unified_state['speech_detected']}")
                         logging.info(f"Transcription: {unified_state['transcription']}")
@@ -404,15 +419,35 @@ if __name__ == "__main__":
                     if unified_state.get('person_detected'):
                         logging.info(f"Person Detected: {unified_state['person_detected']}")
                         logging.info(f"Person Match: {unified_state['person_match']} (prob: {unified_state['person_match_probability']:.2f})")
-                    print("-"*50)
-                
+                    print("-" * 50)
+
             except queue.Empty:
-                time.sleep(0.01)#sleep to help CPU overuse
-                continue
+                # Do NOT sleep here blindly, or you slow down the video feed processing
+                pass
             except Exception as e:
-                logging.error(f"Error retrieving data on external_temporallobe_to_prefrontalcortex queue: {e}")   
-                
+                logging.error(f"Error retrieving data: {e}")
+
+            # --- OPENCV GUI & TIMING ---
+            # cv2.waitKey(1) handles GUI events, MUST have this to work right
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                raise KeyboardInterrupt
+
+            # Only sleep if NEITHER queue had data, to prevent CPU spinning at 100%
+            if not has_activity:
+                time.sleep(0.005)
+
+            # --- USER INPUT TESTING ---
+            current_time = time.time()
+            # Check if 15 seconds have passed since the last speech
+            if current_time - last_user_input_time >= 15:
+                last_user_input_time = time.time()#reset timer
+                #create test user input
+                tl.user_input_dict.update({'text':"THIS IS TEST INPUT FROM THE UI"})  
+
     except KeyboardInterrupt:
         logging.info("\nCtrl+C detected. Shutting down...")
         tl.shutdown_all()
+        # Ensure opencv windows close
+        cv2.destroyAllWindows() 
         logging.info("Shutdown complete.")
