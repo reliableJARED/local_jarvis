@@ -1073,3 +1073,122 @@ class PrefrontalCortex:
         except Exception as e:
             logging.error(f'[Shutdown error: {e}]')
             return False
+
+
+if __name__ == "__main__":
+    import multiprocessing as mp
+    import sys
+    
+    # 1. Create Multiprocessing Manager
+    # Note: If getting CUDA errors on start, you might need: mp.set_start_method('spawn')
+    manager = mp.Manager()
+    
+    # 2. Create the Queue expected by PrefrontalCortex
+    temporal_lobe_queue = manager.Queue()
+    
+    # 3. Create the Status Dictionary
+    status_dict = manager.dict()
+
+    # 4. Initialize AuditoryCortex
+    # We wrap this in a try/except to create a Mock if the actual 'audiocortex' file 
+    # isn't present in this specific directory, allowing the test to run regardless.
+    try:
+        from audiocortex import AuditoryCortex
+        print("Initializing Auditory Cortex...")
+        ac = AuditoryCortex(
+            mpm=manager,
+            wakeword_name='jarvis',
+            database_path=":memory:",
+            gpu_device=0
+        )
+    except ImportError:
+        print("Warning: 'audiocortex' module not found. Fix before testing.")
+       
+
+    # 5. Initialize PrefrontalCortex
+    print("Initializing Prefrontal Cortex...")
+    pfc = PrefrontalCortex(
+        model_name="Qwen/Qwen2.5-Coder-7B-Instruct", # Or your preferred model
+        external_temporallobe_to_prefrontalcortex=temporal_lobe_queue,
+        audio_cortex=ac,
+        wakeword_name='jarvis',
+        status_dict=status_dict
+    )
+
+    # Helper function to generate the struct
+    def get_data_struct():
+        return {
+            # Timing
+            'timestamp': time.time(),
+            'formatted_time': datetime.now().strftime('%H:%M:%S'),
+            
+            # Visual data
+            'person_detected': False,
+            'person_match': False,
+            'person_match_probability': 0.0,
+            'caption': "",
+            'vlm_timestamp': None,
+            'visual_camera_index': None,
+            
+            # Audio data  
+            'speech_detected': False,
+            'transcription': "",
+            'final_transcript': False,
+            'voice_id': False,
+            'voice_probability': 0.0,
+            'audio_device_index': None,
+            'transcription_timestamp': None,
+            'audio_capture_timestamp': None,
+            
+            # Active speaker tracking
+            'locked_speaker_id': None,
+            'locked_speaker_timestamp': None,
+            'is_locked_speaker': False,
+
+            # Speech Output
+            'actively_speaking': False,
+            
+            # UI Inputs
+            'user_text_input': ""
+        }
+
+    # Give the model a moment to load
+    print("\nWaiting for model to load (5s)...")
+    time.sleep(5)
+
+    # --- TEST 1: Audio Transcription Input ---
+    print("\n" + "="*50)
+    print("TEST 1: Sending Audio Transcription: 'Tell me a joke'")
+    print("="*50)
+    
+    data_packet_1 = get_data_struct()
+    data_packet_1['transcription'] = "Tell me a joke about Python programming."
+    data_packet_1['speech_detected'] = True
+    
+    temporal_lobe_queue.put(data_packet_1)
+
+    # Wait for processing to happen (adjust based on GPU speed)
+    # The chat_streaming loop runs in a separate thread, so we sleep main thread
+    time.sleep(20) 
+
+    # --- TEST 2: User Text Input ---
+    print("\n" + "="*50)
+    print("TEST 2: Sending Text Input: 'Tell me another joke'")
+    print("="*50)
+    
+    data_packet_2 = get_data_struct()
+    data_packet_2['user_text_input'] = "Tell me another joke, but make it sarcastic."
+    
+    temporal_lobe_queue.put(data_packet_2)
+
+    # Wait for processing
+    time.sleep(20)
+
+    # Shutdown
+    print("\nTest complete. Shutting down...")
+    pfc.shutdown()
+    ac.shutdown()
+
+
+
+
