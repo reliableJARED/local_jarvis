@@ -258,6 +258,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         # Get transcription and voice recognition results if available
                         stt_output = nerve_from_stt_to_cortex.get_nowait()
                         cortex_output.update(stt_output)
+                        if cortex_output['final_transcript']:
+                            logging.debug("Received final transcript in cortex core\n")
 
                         voice_match_id = cortex_output.get('voice_id', None)
                         transcription = cortex_output.get('transcription', '').lower().strip()
@@ -266,6 +268,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         # Determine if this is speech from our current locked speaker
                         if voice_match_id == locked_speaker_id:
                             cortex_output['is_locked_speaker'] = True
+                            logging.debug("LOCKED SPEAKER:", transcription)
                             #Our locked speaker is speaking
                             locked_speaker_speaking = True
                         
@@ -277,7 +280,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         #Check for the breakword interruption phrase in the transcript
                         if breakword.lower().replace('.', '').replace(',', '') in transcription.replace('.', '').replace(',', '') and system_actively_speaking:
                             #placeholder to a User feedback audio sound like a beep. just play sys sound for now
-                            print('\a')
+                            logging.debug('\a')
                             
                             #Check if system actually in playback
                             if external_brocas_state_dict.get('is_playing',True):
@@ -304,7 +307,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         # Check for wake word and if we should lock on to new voice
                         if wakeword_name.lower() in transcription.lower():
                                 if transcription.lower().startswith(wakeword_name.lower()):
-                                    print(f"\n\nWake word detected: {transcription}\n\n")
+                                    logging.debug(f"\n\nWake word detected: {transcription}\n\n")
                                     logging.debug("INTERRUPTION - set False 2")
                                     #brocas_area_interrupt_dict.update({'interrupt':False})
                                     # Lock to this speaker
@@ -323,11 +326,12 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         #Handle ignore non-locked speaker still talking causing VAD speech detection true    
                         if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:
                                 #we want to ignore this speech since it's not the voice we are locked on to
-                                print("\nI hear speech, but not from a voice I am locked on to.. Ignoring\n")
-                                print(cortex_output['transcription'])
-                                print("\n")
+                                logging.debug("\nI hear speech, but not from a voice I am locked on to.. Ignoring\n")
+                                logging.debug(cortex_output['transcription'])
+                                logging.debug("\n")
                                 #If a non-locked speaker is speaking in the background VAD will still feed speech, need to flag our locked speaker is done speaking so even though VAD still true, indicate final transcript for locked speaker
                                 if locked_speaker_speaking:
+                                    logging.debug("locked speaker was speaking, but stopped. There is still talking from others though - will ignore\n")
                                     #our locked speaker WAS speaking, but no longer is
                                     locked_speaker_speaking = False
                                     cortex_output['final_transcript'] = True
@@ -343,6 +347,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         
                     # Put processed audio in output queue
                     try:
+                        if cortex_output['final_transcript']:
+                            logging.debug("Final transcript sent to external cortex queue\n")
                         external_cortex_queue.put_nowait(cortex_output)
                         #If our speaker said the exitword, reset
                         if cortex_output['unlock_speaker']:
@@ -351,7 +357,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         logging.debug("external_cortex_queue FULL - CRITICAL ERROR")
 
                 except Exception as vad_error:
-                    print(f"VAD processing error: {vad_error}")
+                    logging.debug(f"VAD processing error: {vad_error}")
                     continue
                 
                 # Calculate stats
@@ -619,6 +625,7 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
                         
                         # Prepare and send transcript data
                         analysis_timestamp = time.time()
+                        logging.debug("FINAL TRANSCRIPT:" if not more_speech_coming else "INTERIM TRANSCRIPT:", working_transcript)
                         transcript_data = {
                             'transcription': working_transcript,
                             'final_transcript': not more_speech_coming,
@@ -701,9 +708,9 @@ def auditory_cortex_worker_voiceRecognition(nerve_from_stt_to_vr,nerve_from_vr_t
         if voice_data is not None:
             
             human_id, similarity = vr.recognize_speaker(voice_data)
-            print(f"VR Similarity: {similarity}")
-            print(f"VR Expect My Voice: {is_my_voice_id}")
-            print(f"human_id recalled: {human_id}")
+            logging.debug(f"VR Similarity: {similarity}")
+            logging.debug(f"VR Expect My Voice: {is_my_voice_id}")
+            logging.debug(f"human_id recalled: {human_id}")
             
                 
             new_person = False
@@ -986,9 +993,7 @@ class AuditoryCortex():
 
 if __name__ == "__main__":
 
-    import soundfile as sf
 
-    
     # Set up logging
     logging.basicConfig(
         level=logging.INFO,
@@ -1056,7 +1061,7 @@ if __name__ == "__main__":
                     
                     # Add extra newline for final transcripts for readability
                     if cortex_data['final_transcript']:
-                        print()
+                        print("Final Transcript Received\n")
                 
                 #Interrupt
                 if cortex_data['is_interrupt_attempt']:
