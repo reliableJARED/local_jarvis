@@ -255,13 +255,17 @@ flowchart LR
         Q_RawAudio[(nerve_from_input_to_cortex)]
         AudioCore{Auditory Cortex Core - VAD / Wake Word}
         Q_ToSTT[(nerve_from_cortex_to_stt)]
-        STT_Worker(STT & Voice ID Worker)
+        STT_Worker(Speech to Text Worker)
+        VR_Worker(Voice ID Worker)
         
         Mic --> AudioNerve
         AudioNerve --> Q_RawAudio
         Q_RawAudio --> AudioCore
         AudioCore --> Q_ToSTT
         Q_ToSTT --> STT_Worker
+        STT_Worker --> AudioCore
+        STT_Worker -- "nerve_from_stt_to_vr" --> VR_Worker
+        VR_Worker -- "nerve_from_vr_to_stt" --> STT_Worker
     end
 
     %% Subgraph for Visual Processing
@@ -301,15 +305,18 @@ flowchart LR
     end
 
     %% Connections - Visual Output
-    VisualCore -- "Object/Person Data" --> Q_ExtVisual[(external_cortex_queue)]
+    VisualCore -- "VLM Data/Captions" --> Q_ExtVisual[(external_cortex_queue)]
     Q_ExtVisual --> TempLobe
+
     
+    %% Connections - Raw Image Feed
+    VisualCore  -- "Raw Image Frames" --> Q_ImgFeed[(external_image_feed_queue)] 
+    Q_ImgFeed[(external_image_feed_queue)]  --> UI_Input
+
     %% Connections - Audio Output
-    STT_Worker -- "Final Transcript" --> Q_ExtAudio[(external_cortex_queue)]
+    AudioCore -- "Audio Data/Transcript" --> Q_ExtAudio[(external_cortex_queue)]
     Q_ExtAudio --> TempLobe
 
-    %% Connections - UI Input
-    UI_Input -- "User Text" --> TempLobe
     
     %% Connections - Temporal to PFC
     TempLobe -- "Unified State" --> Q_Main[(external_temporallobe_to_prefrontalcortex)]
@@ -319,19 +326,19 @@ flowchart LR
     PFC -- "Call Tool" --> Tools
     Tools -- "Result" --> PFC
     PFC -- "Streaming Text" --> BrocasMain
+    PFC -- "UI Output" --> UI_Input
 
     %% Connections - Speech Synthesis
     BrocasMain -- "Audio Data" --> Q_Play
     Q_Play --> PlaybackProc
     PlaybackProc --> Speaker
 
-    %% Connections - Video Feed to UI
-    VisualCore -- "Annotated Frames" --> Q_ImgFeed[(external_img_queue)]
-    Q_ImgFeed --> UI_Input
+    
 
     %% Interruption Logic
-    AudioCore -. "Interrupt Flag" .-> PFC
+    AudioCore -. "Interrupt Flag" .-> TempLobe
     AudioCore -. "Interrupt Flag" .-> BrocasMain
+    TempLobe -. "Interrupt Flag" .-> PFC
 
     %% Styling
     classDef queue fill:#232b2b,stroke:#d19a66,stroke-width:2px;
