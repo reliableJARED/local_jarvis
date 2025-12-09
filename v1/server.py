@@ -1,137 +1,141 @@
-from flask import Flask, render_template, Response, jsonify, request
-import time
 import logging
-from collections import deque
+from flask import Flask, render_template, Response, jsonify, request
 from cerebrum import Cerebrum
 
 # Initialize Flask
 app = Flask(__name__)
 
-
+# 1. Define brain as None globally so routes can reference the variable name.
+# It will be instantiated in the __main__ block below.
+brain = None
 
 @app.route('/')
 def index():
+    if brain is None:
+        return "System Initializing... Please refresh in a moment.", 503
     return render_template('index.html')
 
 @app.route('/state')
 def stats():
-    """
-    The heartbeat of the UI. Returns the unified state JSON.
-    Also updates local history buffers if new data is detected.
-    """
-    global last_transcript_id, last_caption_ts
-
-    state = brain.ui_get_unified_state()
-    sensory = state.get('sensory', {})
-    
-    # Update Transcript History
-    # We check if the current transcription is 'final' and different from the last processed one
-    curr_trans = sensory.get('transcription', '')
-    is_final = sensory.get('final_transcript', False)
-    ts = sensory.get('timestamp', 0)
-    
-    # Simple logic to prevent duplicates in history
-    if is_final and curr_trans and curr_trans != last_transcript_id:
-        transcript_history.appendleft({
-            'time': sensory.get('formatted_time'),
-            'text': curr_trans,
-            'speaker': sensory.get('voice_id', 'Unknown')
-        })
-        last_transcript_id = curr_trans
-
-    # Update Caption History
-    curr_caption = sensory.get('caption', '')
-    cap_ts = sensory.get('vlm_timestamp', 0)
-    
-    if curr_caption and cap_ts != last_caption_ts:
-        caption_history.appendleft({
-            'time': sensory.get('formatted_time'),
-            'text': curr_caption
-        })
-        last_caption_ts = cap_ts
-
-    # Inject history into the response
-    state['history'] = {
-        'transcripts': list(transcript_history),
-        'captions': list(caption_history)
-    }
-
-    return jsonify(state)
-
-### Visual System Routes ###
+    if brain is None:
+        return jsonify({"status": "initializing"})
+    if not brain.active:
+        return jsonify({"status": "offline"})
+    return jsonify(brain.ui_get_unified_state())
 
 @app.route('/vlm_recent_captions/<int:camera_index>')
 def recent_captions(camera_index):
-    # Returns just the caption history, distinct from the full state if needed separate
-    return jsonify(list(caption_history))
+    if brain is None: return jsonify({})
+    state = brain.ui_get_unified_state()
+    caption = state.get('sensory', {}).get('caption', "")
+    return jsonify({"camera_index": camera_index, "caption": caption})
 
 @app.route('/start_camera/<int:camera_index>')
 def start_camera(camera_index):
-    brain.ui_toggle_camera(active=True, device_index=camera_index)
-    return jsonify({"status": "Camera Started", "index": camera_index})
+    """
+    Directly commands the Visual Cortex to start the optic nerve.
+    """
+    if brain is None: return "Error", 500
+    
+    if brain.temporal_lobe.visual_cortex:
+        print(f"Server: Commanding Visual Cortex to start Camera {camera_index}...")
+        brain.temporal_lobe.visual_cortex.start_nerve(camera_index)
+        return jsonify({"status": "camera_started", "index": camera_index})
+    
+    return jsonify({"status": "error", "message": "Visual Cortex not available"}), 404
 
 @app.route('/stop_camera/<int:camera_index>')
 def stop_camera(camera_index):
-    brain.ui_toggle_camera(active=False, device_index=camera_index)
-    return jsonify({"status": "Camera Stopped", "index": camera_index})
+    if brain is None: return "Error", 500
+    
+    if brain.temporal_lobe.visual_cortex:
+        print(f"Server: Stopping Camera {camera_index}...")
+        brain.temporal_lobe.visual_cortex.stop_nerve(camera_index)
+        return jsonify({"status": "camera_stopped", "index": camera_index})
+        
+    return jsonify({"status": "error"}), 404
 
 @app.route('/video_feed/<int:camera_index>')
 def video_feed(camera_index):
     """
-    Video streaming route. Put this in the src attribute of an img tag.
+    Generates the multipart MJPEG stream.
     """
-    if not brain.visual_cortex:
-        return "Visual Cortex Not Available"
+    if brain is None or not brain.temporal_lobe.visual_cortex:
+        return "Visual Cortex Offline", 404
         
     return Response(
-        brain.visual_cortex.generate_img_frames(camera_index),
+        brain.temporal_lobe.visual_cortex.generate_img_frames(camera_index),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
-### Audio System Routes ###
-
 @app.route('/start_audio/<int:device_index>')
 def start_audio_device(device_index):
+    if brain is None: return "Error", 500
     brain.ui_toggle_microphone(active=True, device_index=device_index)
-    return jsonify({"status": "Audio Started", "index": device_index})
+    return jsonify({"status": "audio_started", "index": device_index})
 
 @app.route('/stop_audio/<int:device_index>')
 def stop_audio_device(device_index):
+    if brain is None: return "Error", 500
     brain.ui_toggle_microphone(active=False, device_index=device_index)
-    return jsonify({"status": "Audio Stopped", "index": device_index})
+    return jsonify({"status": "audio_stopped", "index": device_index})
 
 @app.route('/recent_transcripts')
 def recent_transcripts():
-    return jsonify(list(transcript_history))
-
-### Interaction Routes ###
+    if brain is None: return jsonify({})
+    state = brain.ui_get_unified_state()
+    transcript = state.get('sensory', {}).get('transcription', "")
+    return jsonify({"transcript": transcript})
 
 @app.route('/ui_input', methods=['POST'])
 def ui_input():
-    # Handles text input from the web form
+    if brain is None: return "Error", 500
     data = request.json
-    text = data.get('input', '')
-    if text:
-        brain.ui_send_text_input(text)
-        return jsonify({"status": "sent", "content": text})
-    return jsonify({"status": "empty"})
+    user_text = data.get('text', '')
+    if user_text:
+        brain.ui_send_text_input(user_text)
+        return jsonify({"status": "input_received", "text": user_text})
+    return jsonify({"status": "empty_input"}), 400
 
 @app.route('/stop_all')
 def stop_all():
-    brain.stop_systems()
-    return jsonify({"status": "System Shutdown Initiated"})
+    if brain:
+        brain.stop_systems()
+    return jsonify({"status": "system_shutdown_initiated"})
 
-if __name__ == '__main__':
-    # Initialize the AI Brain
-    # We start it immediately so it's ready when the UI loads
-    brain = Cerebrum(wakeword='jarvis')
-    brain.start_systems(start_mic=False, start_cam=False)
+# ==============================================================================
+# ENTRY POINT
+# ==============================================================================
+if __name__ == "__main__":
+    # Instantiate the brain HERE, protected by the __main__ check.
+    # This prevents child processes from trying to create their own 'brain' instance
+    # which causes the infinite recursion/RuntimeError.
+    
+    print("----------------------------------------------------------------")
+    print(" INITIALIZING CEREBRUM... ")
+    print("----------------------------------------------------------------")
+    
+    brain = Cerebrum(
+        wakeword='jarvis', 
+        model_name="Qwen/Qwen2.5-Coder-7B-Instruct", 
+        db_path=":memory:"
+    )
 
-    # History Buffers (To track history on the UI side)
-    transcript_history = deque(maxlen=5)
-    caption_history = deque(maxlen=3)
-    last_transcript_id = None
-    last_caption_ts = None
-
-    # Run threaded to allow the Brain loops and Flask loops to coexist
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    # Start systems (Mic on, Cam off)
+    brain.start_systems(start_mic=True, start_cam=False)
+    
+    # Disable Flask generic logging to keep console clean
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+    
+    print("----------------------------------------------------------------")
+    print(" CEREBRUM UI SERVER ONLINE ")
+    print(" Access at http://localhost:5000 ")
+    print("----------------------------------------------------------------")
+    
+    try:
+        # use_reloader=False is important here to avoid duplicate initialization
+        app.run(host='0.0.0.0', port=5000, threaded=True, use_reloader=False)
+    except KeyboardInterrupt:
+        if brain:
+            brain.stop_systems()

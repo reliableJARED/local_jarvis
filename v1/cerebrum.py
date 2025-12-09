@@ -75,7 +75,6 @@ class Cerebrum:
             sys.exit(1)
 
         # 3. Initialize Visual Cortex
-        self.visual_cortex = None
         if VisualCortex:
             logger.info("Spinning up Visual Cortex...")
             visual_cortex = VisualCortex(mpm=self.manager)
@@ -129,7 +128,7 @@ class Cerebrum:
         if start_mic:
             self.temporal_lobe.auditory_cortex.start_nerve(device_index=0)
         
-        if self.visual_cortex and start_cam:
+        if start_cam:
             self.temporal_lobe.visual_cortex.start_nerve(device_index=0)
 
         # Start Temporal Lobe Aggregation Loop
@@ -166,7 +165,7 @@ class Cerebrum:
         Useful for polling via AJAX in the Flask UI.
         """
         # Get current sensory state from Temporal Lobe
-        tl_state = self.temporal_lobe.get_status()['last_unified_state']#don't need all the visual/auditory data here only the unified state
+        tl_state = self.temporal_lobe.get_status()
         """
         tl_state = {
             # Timing
@@ -220,11 +219,15 @@ class Cerebrum:
         
         # Combine them
         combined_state = {
-            "sensory": tl_state,
+            "sensory": tl_state['last_unified_state'],#don't need all the visual/auditory data here only the unified state,
             "cognitive": pfc_state,
             "system": {
                 "state": self.active,
-                "name": self.wakeword
+                "name": self.wakeword,
+                "locked_speaker_id": tl_state['locked_speaker_id'],
+                "speech_detected": tl_state['speech_detected'],
+                "actively_speaking": tl_state['actively_speaking'],#this is the system outputting speech audio
+                "person_detected": tl_state['person_detected']
             }
         }
         return combined_state
@@ -246,9 +249,7 @@ class Cerebrum:
 
     def ui_toggle_camera(self, active: bool, device_index=0):
         """Turn camera processing on/off"""
-        if not self.visual_cortex:
-            return False
-            
+
         if active:
             self.temporal_lobe.start_visual_nerve(device_index)
         else:

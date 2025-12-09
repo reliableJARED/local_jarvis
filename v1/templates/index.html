@@ -3,389 +3,448 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CEREBRUM INTERFACE</title>
+    <title>CEREBRUM // INTERFACE</title>
     <style>
         :root {
+            --primary-color: #00f3ff;
+            --alert-color: #ff3c00;
             --bg-color: #050505;
-            --panel-bg: #0a0f0a;
-            --text-main: #00ff41; /* Hacker Green */
-            --text-dim: #008f11;
-            --alert-color: #ff3333;
-            --highlight: #00ccff;
-            --border: 1px solid #1a331a;
+            --panel-bg: rgba(0, 20, 30, 0.8);
+            --font-main: 'Courier New', Courier, monospace;
         }
 
         body {
             background-color: var(--bg-color);
-            color: var(--text-main);
-            font-family: 'Courier New', Courier, monospace;
+            color: var(--primary-color);
+            font-family: var(--font-main);
             margin: 0;
-            padding: 10px;
+            padding: 20px;
+            overflow: hidden;
             height: 100vh;
-            box-sizing: border-box;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        /* HEADER */
-        header {
-            display: flex;
-            justify-content: space-between;
-            border-bottom: 2px solid var(--text-main);
-            padding-bottom: 5px;
-            margin-bottom: 10px;
-            align-items: center;
-            flex-shrink: 0; /* Prevent header from shrinking */
-        }
-        
-        h1 { margin: 0; font-size: 20px; letter-spacing: 2px; }
-        .sys-status { font-weight: bold; font-size: 14px; }
-        .running { color: var(--text-main); text-shadow: 0 0 5px var(--text-main); }
-        .stopped { color: var(--alert-color); }
-
-        /* GRID LAYOUT */
-        .main-grid {
             display: grid;
-            grid-template-columns: 1fr 1.5fr 1fr; /* Visual, Cortex/State, Audio */
-            gap: 10px;
-            flex-grow: 1;
-            overflow: hidden; /* Ensure logs scroll inside panels, not the whole page */
-            min-height: 0; /* Crucial for nested flex scrolling */
+            grid-template-columns: 1fr 2fr 1fr;
+            grid-template-rows: auto 1fr auto;
+            gap: 20px;
+            box-sizing: border-box;
         }
 
+        /* Scanline Overlay */
+        body::after {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 10;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+
+        /* Panels */
         .panel {
-            background-color: var(--panel-bg);
-            border: var(--border);
-            padding: 10px;
+            border: 1px solid var(--primary-color);
+            background: var(--panel-bg);
+            padding: 15px;
+            box-shadow: 0 0 10px rgba(0, 243, 255, 0.2);
+            position: relative;
             display: flex;
             flex-direction: column;
-            overflow: hidden;
-            position: relative;
         }
 
         .panel-header {
-            background: #112211;
-            padding: 5px 10px;
-            margin: -10px -10px 10px -10px;
-            border-bottom: var(--border);
             font-weight: bold;
+            border-bottom: 1px solid var(--primary-color);
+            padding-bottom: 5px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
             display: flex;
             justify-content: space-between;
-            font-size: 14px;
-            flex-shrink: 0;
         }
 
-        /* VISUAL FEED */
-        .video-container {
-            width: 100%;
-            height: 200px; /* Reduced from 300px */
-            background: #000;
+        /* Header Area */
+        header {
+            grid-column: 1 / 4;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid var(--primary-color);
+            padding-bottom: 10px;
+        }
+
+        h1 { margin: 0; font-size: 2rem; text-shadow: 0 0 10px var(--primary-color); }
+        .status-badge {
+            background: var(--primary-color);
+            color: #000;
+            padding: 2px 10px;
+            font-weight: bold;
+        }
+        .status-badge.offline { background: var(--alert-color); color: white; }
+
+        /* Main Visual Cortex (Center) */
+        #visual-cortex {
+            grid-column: 2;
+            grid-row: 2;
             display: flex;
             align-items: center;
             justify-content: center;
-            border: 1px dashed var(--text-dim);
-            margin-bottom: 10px;
-            flex-shrink: 0;
+            background: #000;
+            border: 2px solid var(--primary-color);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Orb Animation */
+        #eye-animation {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            background: radial-gradient(circle, var(--primary-color) 20%, transparent 70%);
+            box-shadow: 0 0 50px var(--primary-color);
+            animation: pulse 4s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.8; }
+            50% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 0.8; }
+        }
+
+        /* Logs / Transcript */
+        #log-panel {
+            grid-column: 1;
+            grid-row: 2;
+            overflow-y: auto;
+            font-size: 0.9rem;
+        }
+        .log-entry { margin-bottom: 8px; opacity: 0.8; }
+        .log-entry.system { color: #888; font-style: italic; }
+        .log-entry.user { color: #fff; font-weight: bold; }
+        .log-entry.ai { color: var(--primary-color); }
+
+        /* Stats / Controls */
+        #control-panel {
+            grid-column: 3;
+            grid-row: 2;
+            overflow-y: auto; 
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.8rem;
+            white-space: nowrap;
         }
         
-        img#video-feed {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
+        /* Stats values that might truncate */
+        .stat-value {
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 120px;
         }
 
-        /* LOGS & LISTS */
-        .log-list {
-            overflow-y: auto;
-            flex-grow: 1; /* Take remaining height */
-            font-size: 12px;
-            border-top: 1px solid #112211;
-            padding-top: 5px;
-        }
-        .log-item {
-            margin-bottom: 6px;
-            border-bottom: 1px solid #0e1a0e;
-            padding-bottom: 2px;
-            word-wrap: break-word;
-        }
-        .log-time { color: var(--highlight); margin-right: 5px; font-size: 10px; }
-
-        /* CORTEX CENTER */
-        .state-display {
-            font-size: 13px;
-            line-height: 1.5;
-            flex-shrink: 0;
-        }
-        .state-row { display: flex; justify-content: space-between; border-bottom: 1px dashed #222; }
-        .state-label { color: var(--text-dim); }
-        .state-val { font-weight: bold; }
-
-        .ai-output-box {
-            margin-top: 10px;
-            border: 1px solid var(--highlight);
-            padding: 8px;
-            min-height: 60px; /* Reduced from 100px */
-            flex-grow: 1; /* Allow this to grow if there is space, or scroll */
-            color: var(--highlight);
-            overflow-y: auto;
-            font-size: 14px;
-        }
-
-        /* INDICATORS */
-        .indicator {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #333;
-            margin-right: 5px;
-        }
-        .indicator.active { background: var(--alert-color); box-shadow: 0 0 8px var(--alert-color); }
-        .indicator.locked { background: var(--highlight); box-shadow: 0 0 8px var(--highlight); }
-
-        /* FOOTER INPUT */
-        footer {
-            margin-top: 10px;
-            display: flex;
-            gap: 10px;
-            flex-shrink: 0;
-            height: 40px;
-        }
-        input[type="text"] {
-            flex-grow: 1;
+        /* Mini Camera Feed in Right Panel */
+        #cam-container {
+            margin-top: 15px;
+            margin-bottom: 15px;
+            border: 1px solid var(--primary-color);
+            min-height: 100px;
             background: #000;
-            border: 1px solid var(--text-main);
-            color: var(--text-main);
-            padding: 0 10px;
-            font-family: inherit;
-            font-size: 16px;
+            position: relative;
+            display: none; /* Hidden by default */
         }
+
+        #camera-feed {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
         button {
-            background: #112211;
-            border: 1px solid var(--text-main);
-            color: var(--text-main);
-            padding: 0 15px;
+            background: transparent;
+            border: 1px solid var(--primary-color);
+            color: var(--primary-color);
+            padding: 10px;
+            margin-top: 5px;
+            width: 100%;
             cursor: pointer;
-            transition: 0.2s;
-            font-size: 14px;
+            text-transform: uppercase;
+            font-family: var(--font-main);
+            transition: all 0.3s;
         }
-        button:hover { background: var(--text-main); color: #000; }
+
+        button:hover { background: var(--primary-color); color: #000; }
         button.danger { border-color: var(--alert-color); color: var(--alert-color); }
         button.danger:hover { background: var(--alert-color); color: #fff; }
 
-        /* Controls */
-        #cam-controls button, #mic-controls button {
-            padding: 0 5px;
-            font-size: 10px;
-            height: 20px;
+        /* Footer / Input */
+        footer {
+            grid-column: 1 / 4;
+            grid-row: 3;
+            display: flex;
+            gap: 10px;
         }
 
-        /* Scrollbar styling */
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: #000; }
-        ::-webkit-scrollbar-thumb { background: #333; }
+        input[type="text"] {
+            flex-grow: 1;
+            background: #000;
+            border: 1px solid var(--primary-color);
+            color: var(--primary-color);
+            padding: 10px;
+            font-family: var(--font-main);
+            outline: none;
+        }
+
+        /* Overlay text for Video */
+        .video-overlay {
+            position: absolute;
+            bottom: 5px;
+            left: 5px;
+            background: rgba(0,0,0,0.7);
+            padding: 3px;
+            font-size: 0.7rem;
+            pointer-events: none;
+            max-width: 90%;
+        }
+
     </style>
 </head>
 <body>
 
-<header>
-    <div style="display:flex; align-items:center;">
-        <div id="sys-pulse" class="indicator running"></div>
-        <h1>CEREBRUM V1.0</h1>
-    </div>
-    <div class="sys-status">
-        WAKE: <span id="wakeword-disp">...</span> | 
-        SYS: <span id="run-status">INIT</span>
-    </div>
-    <button class="danger" style="height: 30px;" onclick="stopAll()">STOP</button>
-</header>
-
-<div class="main-grid">
-
-    <!-- VISUAL CORTEX -->
-    <div class="panel">
-        <div class="panel-header">
-            <span>VISUAL CORTEX</span>
-            <div id="cam-controls">
-                <button onclick="toggleCam(true)">ON</button>
-                <button onclick="toggleCam(false)">OFF</button>
-            </div>
+    <header>
+        <div>
+            <h1>CEREBRUM</h1>
+            <small>ARTIFICIAL GENERAL INTELLIGENCE PROTOTYPE</small>
         </div>
-        <div class="video-container">
-            <img id="video-feed" src="/video_feed/0" alt="Video Feed" onerror="this.style.display='none'">
-            <span id="no-signal" style="display:none">NO SIGNAL</span>
-        </div>
-        <div class="panel-header" style="margin-top:5px; border:none; background:none; padding-left:0;">VLM OBSERVATIONS</div>
-        <div class="log-list" id="visual-logs">
-            <!-- VLM Captions go here -->
+        <div id="system-status" class="status-badge">INITIALIZING</div>
+    </header>
+
+    <div class="panel" id="log-panel">
+        <div class="panel-header">Comm Log</div>
+        <div id="logs">
+            <!-- Logs go here -->
         </div>
     </div>
 
-    <!-- PREFRONTAL / TEMPORAL -->
-    <div class="panel">
-        <div class="panel-header">PREFRONTAL CORTEX (THOUGHT)</div>
-        <div class="state-display" id="state-table">
-            <div class="state-row"><span class="state-label">Thinking:</span> <span class="state-val" id="st-thinking">False</span></div>
-            <div class="state-row"><span class="state-label">Interrupt:</span> <span class="state-val" id="st-interrupt">False</span></div>
-            <div class="state-row"><span class="state-label">Voice Lock:</span> <span class="state-val" id="st-lock">None</span></div>
-            <div class="state-row"><span class="state-label">Detection:</span> <span class="state-val" id="st-person">None</span></div>
+    <!-- Middle Column: Eye Animation ONLY -->
+    <div class="panel" id="visual-cortex">
+        <!-- Fallback Animation -->
+        <div id="eye-animation"></div>
+    </div>
+
+    <!-- Right Column: Metrics, Video Feed, Overrides -->
+    <div class="panel" id="control-panel">
+        <div class="panel-header">System Metrics</div>
+        
+        <div class="stat-row"><span>COGNITION:</span> <span id="stat-thinking">IDLE</span></div>
+        <div class="stat-row"><span>MODEL:</span> <span id="stat-model">LOADING...</span></div>
+        <div class="stat-row"><span>SPEAKER ID:</span> <span id="stat-speaker" class="stat-value">NONE</span></div>
+        <div class="stat-row"><span>AUDIO IN:</span> <span id="stat-audio-in">ACTIVE</span></div>
+        
+        <!-- New Metrics -->
+        <div class="stat-row"><span>USER INPUT:</span> <span id="stat-user-input" class="stat-value">...</span></div>
+        <div class="stat-row"><span>SYS OUTPUT:</span> <span id="stat-system-output" class="stat-value">...</span></div>
+
+        <!-- Camera Feed Container (Right side) -->
+        <div id="cam-container">
+            <img id="camera-feed" src="" alt="Live Feed">
+            <div class="video-overlay" id="caption-overlay">AWAITING VISUAL DATA...</div>
         </div>
         
-        <div style="margin-top:10px; font-weight:bold; color:var(--highlight); font-size:12px;">AI RESPONSE:</div>
-        <div class="ai-output-box" id="ai-response">
-            Waiting for input...
-        </div>
+        <br>
+        <div class="panel-header">Overrides</div>
+        <button onclick="toggleCamera()" id="btn-cam">Start Camera</button>
+        <button onclick="toggleAudio()" id="btn-mic">Stop Audio</button>
+        <button onclick="stopAll()" class="danger">EMERGENCY SHUTDOWN</button>
     </div>
 
-    <!-- AUDIO CORTEX -->
-    <div class="panel">
-        <div class="panel-header">
-            <span>AUDITORY CORTEX</span>
-            <div id="mic-controls">
-                <button onclick="toggleMic(true)">ON</button>
-                <button onclick="toggleMic(false)">OFF</button>
-            </div>
-        </div>
-        
-        <div style="margin-bottom: 5px; font-size: 12px;">
-            <span class="indicator" id="ind-speech"></span> Speech Detected
-            <span class="indicator" id="ind-lock"></span> Voice Lock
-        </div>
+    <footer>
+        <span style="padding: 10px; background: var(--primary-color); color:black; font-weight:bold;">></span>
+        <input type="text" id="ui-input" placeholder="Enter command or speak..." onkeydown="handleInput(event)">
+        <button style="width: auto; margin:0;" onclick="submitInput()">SEND</button>
+    </footer>
 
-        <div class="state-display">
-            <div class="state-row"><span class="state-label">Speaker:</span> <span class="state-val" id="curr-speaker">None</span></div>
-        </div>
+    <script>
+        // Configuration
+        const CAM_INDEX = 0;
+        const MIC_INDEX = 0;
+        let isCameraOn = false;
+        let isAudioOn = true;
 
-        <div class="panel-header" style="margin-top:10px; border:none; background:none; padding-left:0;">TRANSCRIPTS</div>
-        <div class="log-list" id="audio-logs">
-            <!-- Transcripts go here -->
-        </div>
-    </div>
-</div>
+        const cameraFeed = document.getElementById('camera-feed');
+        const camContainer = document.getElementById('cam-container');
+        const eyeAnim = document.getElementById('eye-animation');
+        const logContainer = document.getElementById('logs');
+        const captionOverlay = document.getElementById('caption-overlay');
 
-<footer>
-    <input type="text" id="user-input" placeholder="Inject text input directly to Temporal Lobe..." onkeydown="if(event.key==='Enter') sendInput()">
-    <button onclick="sendInput()">SEND</button>
-</footer>
-
-<script>
-    const updateInterval = 500; // ms
-
-    function updateState() {
-        fetch('/state')
-            .then(response => response.json())
-            .then(data => {
-                const s = data.sensory;
-                const c = data.cognitive;
-
-                // Update Header
-                document.getElementById('wakeword-disp').innerText = data.system.wakeword;
-                document.getElementById('run-status').innerText = data.system.running ? "RUNNING" : "STOPPED";
-                document.getElementById('sys-pulse').className = data.system.running ? "indicator active" : "indicator";
-
-                // Update Central State
-                document.getElementById('st-thinking').innerText = c.thinking;
-                document.getElementById('st-interrupt').innerText = s.is_interrupt_attempt;
-                document.getElementById('st-lock').innerText = s.is_locked_speaker ? "LOCKED" : "UNLOCKED";
-                document.getElementById('st-person').innerText = s.person_detected ? "YES" : "NO";
-                
-                // Indicators
-                document.getElementById('st-interrupt').style.color = s.is_interrupt_attempt ? "red" : "inherit";
-                document.getElementById('ind-speech').className = s.speech_detected ? "indicator active" : "indicator";
-                document.getElementById('ind-lock').className = s.is_locked_speaker ? "indicator locked" : "indicator";
-
-                // Update Speakers
-                let speakerTxt = s.voice_id ? s.voice_id : "Unknown";
-                if(s.voice_probability > 0) speakerTxt += ` (${(s.voice_probability*100).toFixed(0)}%)`;
-                document.getElementById('curr-speaker').innerText = speakerTxt;
-
-                // Update AI Output
-                if(c.last_response) {
-                    document.getElementById('ai-response').innerText = c.last_response;
-                }
-
-                // Update Transcript History
-                const audioLogs = document.getElementById('audio-logs');
-                audioLogs.innerHTML = "";
-                data.history.transcripts.forEach(t => {
-                    const div = document.createElement('div');
-                    div.className = "log-item";
-                    div.innerHTML = `<span class="log-time">[${t.time}]</span> <strong>${t.speaker}:</strong> ${t.text}`;
-                    audioLogs.appendChild(div);
-                });
-
-                // Update Visual History
-                const visualLogs = document.getElementById('visual-logs');
-                visualLogs.innerHTML = "";
-                data.history.captions.forEach(c => {
-                    const div = document.createElement('div');
-                    div.className = "log-item";
-                    div.innerHTML = `<span class="log-time">[${c.time}]</span> ${c.text}`;
-                    visualLogs.appendChild(div);
-                });
-
-                // Current partial transcript (Interim)
-                if(s.transcription && !s.final_transcript) {
-                    const div = document.createElement('div');
-                    div.className = "log-item";
-                    div.style.color = "#777";
-                    div.innerHTML = `<em>... ${s.transcription} ...</em>`;
-                    audioLogs.prepend(div);
-                }
-
-            })
-            .catch(err => console.error("Connection lost", err));
-    }
-
-    // Input Handling
-    function sendInput() {
-        const input = document.getElementById('user-input');
-        const text = input.value;
-        if(!text) return;
-        
-        fetch('/ui_input', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({input: text})
-        }).then(() => {
-            input.value = "";
-        });
-    }
-
-    // Device Controls
-    function toggleCam(active) {
-        const route = active ? '/start_camera/0' : '/stop_camera/0';
-        fetch(route).then(() => {
-            const img = document.getElementById('video-feed');
-            const noSig = document.getElementById('no-signal');
-            if(active) {
-                img.style.display = 'block';
-                img.src = "/video_feed/0?" + new Date().getTime(); // reload
-                noSig.style.display = 'none';
-            } else {
-                img.style.display = 'none';
-                noSig.style.display = 'block';
-            }
-        });
-    }
-
-    function toggleMic(active) {
-        const route = active ? '/start_audio/0' : '/stop_audio/0';
-        fetch(route);
-    }
-
-    function stopAll() {
-        if(confirm("Are you sure you want to kill all systems?")) {
-            fetch('/stop_all');
-            alert("System Shutdown Signal Sent.");
+        function addLog(text, type='system') {
+            const div = document.createElement('div');
+            div.className = `log-entry ${type}`;
+            const time = new Date().toLocaleTimeString();
+            div.innerText = `[${time}] ${text}`;
+            logContainer.appendChild(div);
+            logContainer.scrollTop = logContainer.scrollHeight;
         }
-    }
 
-    // Start Polling
-    setInterval(updateState, updateInterval);
+        function truncate(str, max) {
+            if (!str) return "NONE";
+            if (str.length > max) {
+                return str.substring(0, max) + "...";
+            }
+            return str;
+        }
 
-</script>
+        // --- API CALLS ---
 
+        function toggleCamera() {
+            if (!isCameraOn) {
+                fetch(`/start_camera/${CAM_INDEX}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        addLog("Visual Cortex Activated", "system");
+                        isCameraOn = true;
+                        document.getElementById('btn-cam').innerText = "Stop Camera";
+                        // Set image src to stream
+                        cameraFeed.src = `/video_feed/${CAM_INDEX}`;
+                        // Show container
+                        camContainer.style.display = 'block';
+                    });
+            } else {
+                fetch(`/stop_camera/${CAM_INDEX}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        addLog("Visual Cortex Deactivated", "system");
+                        isCameraOn = false;
+                        document.getElementById('btn-cam').innerText = "Start Camera";
+                        cameraFeed.src = "";
+                        // Hide container
+                        camContainer.style.display = 'none';
+                    });
+            }
+        }
+
+        function toggleAudio() {
+            if (!isAudioOn) {
+                fetch(`/start_audio/${MIC_INDEX}`).then(() => {
+                    isAudioOn = true;
+                    document.getElementById('btn-mic').innerText = "Stop Audio";
+                    addLog("Audio Sensors Online", "system");
+                });
+            } else {
+                fetch(`/stop_audio/${MIC_INDEX}`).then(() => {
+                    isAudioOn = false;
+                    document.getElementById('btn-mic').innerText = "Start Audio";
+                    addLog("Audio Sensors Offline", "system");
+                });
+            }
+        }
+
+        function stopAll() {
+            if(confirm("Are you sure you want to shut down the Cerebrum?")) {
+                fetch('/stop_all').then(() => {
+                    document.body.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%'>SYSTEM TERMINATED</h1>";
+                });
+            }
+        }
+
+        function handleInput(e) {
+            if (e.key === 'Enter') submitInput();
+        }
+
+        function submitInput() {
+            const input = document.getElementById('ui-input');
+            const text = input.value;
+            if (!text) return;
+
+            fetch('/ui_input', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text: text})
+            }).then(r => r.json()).then(data => {
+                addLog(`USER: ${text}`, "user");
+                input.value = '';
+            });
+        }
+
+        // --- POLLING LOOP ---
+
+        let lastTranscript = "";
+
+        async function updateState() {
+            try {
+                const response = await fetch('/state');
+                const data = await response.json();
+
+                if (data.status === "offline") {
+                    document.getElementById('system-status').innerText = "OFFLINE";
+                    document.getElementById('system-status').classList.add('offline');
+                    return;
+                }
+
+                document.getElementById('system-status').innerText = "ONLINE";
+                
+                // Cognitive Stats
+                const thinking = data.cognitive.thinking;
+                const statThinking = document.getElementById('stat-thinking');
+                statThinking.innerText = thinking ? "PROCESSING" : "IDLE";
+                statThinking.style.color = thinking ? "#ffff00" : "var(--primary-color)";
+                
+                document.getElementById('stat-model').innerText = data.cognitive.model || "UNKNOWN";
+
+                // New Metrics: Input/Output (Truncated)
+                document.getElementById('stat-user-input').innerText = truncate(data.cognitive.last_input, 20);
+                document.getElementById('stat-system-output').innerText = truncate(data.cognitive.last_response, 20);
+
+                // Audio Stats & Speaker ID
+                const speechDetected = data.system.speech_detected;
+                const activeSpeaker = data.system.actively_speaking; // AI speaking
+                
+                // Update Speaker ID
+                document.getElementById('stat-speaker').innerText = truncate(data.system.locked_speaker_id, 20);
+
+                if (activeSpeaker) {
+                      eyeAnim.style.boxShadow = "0 0 80px #c39bde"; // Pulse light purplse when AI talks
+                      eyeAnim.style.background = "radial-gradient(circle, #fff 20%, transparent 70%)";
+                } else if (speechDetected) {
+                      eyeAnim.style.boxShadow = "0 0 50px #00ff00"; // Pulse green when listening
+                      eyeAnim.style.background = "radial-gradient(circle, #00ff00 20%, transparent 70%)";
+                      document.getElementById('stat-audio-in').innerText = "RECEIVING";
+                      document.getElementById('stat-audio-in').style.color = "#00ff00";
+                } else {
+                      // Default Blue
+                      eyeAnim.style.boxShadow = "0 0 50px var(--primary-color)";
+                      eyeAnim.style.background = "radial-gradient(circle, var(--primary-color) 20%, transparent 70%)";
+                      document.getElementById('stat-audio-in').innerText = "LISTENING";
+                      document.getElementById('stat-audio-in').style.color = "var(--primary-color)";
+                }
+
+                // Transcript (Logging only on change)
+                const currentTranscript = data.sensory.transcription || "";
+                if (currentTranscript !== lastTranscript && currentTranscript.length > 0) {
+                    document.title = `CEREBRUM // ${currentTranscript.substring(0,20)}`;
+                    lastTranscript = currentTranscript;
+                }
+
+                // Visual Stats (Overlay inside the mini feed)
+                if (isCameraOn) {
+                    const caption = data.sensory.caption;
+                    if (caption) captionOverlay.innerText = caption;
+                }
+
+            } catch (e) {
+                console.error("Connection lost", e);
+            }
+        }
+
+        // Start polling
+        setInterval(updateState, 1000);
+        addLog("System initialized. Welcome.", "system");
+
+    </script>
 </body>
 </html>

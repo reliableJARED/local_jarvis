@@ -61,9 +61,10 @@ class TemporalLobe:
         #status dict for UI monitoring
         self.status_dict = status_dict
         self.status_dict.update({"running":self.running,
-                                 "visual_data":None,
-                                 "auditory_data":None,
-                                 "user_input_text":self.user_input_dict.get('text',""),
+                                 "speech_detected":False,
+                                 "person_detected":False,
+                                 "locked_speaker_id":None,
+                                 "actively_speaking":False,
                                  "last_unified_state":self.last_unified_state,
                                  })
 
@@ -139,6 +140,7 @@ class TemporalLobe:
             received_audio_transcript = False
             # Collect VISUAL Data
             if self.visual_cortex:
+                person_detected_state = self.status_dict.get('person_detected',False)
                 try:
                     visual_data = self.visual_cortex.external_cortex_queue.get_nowait()
                     visual_data['collection_timestamp'] = current_time
@@ -148,6 +150,12 @@ class TemporalLobe:
                         #logging.debug(visual_data)
                         #logging.debug("\n","="*50,"\n")
                         self.visual_data = visual_data
+                        us = self.status_dict['last_unified_state']
+                        us['caption'] = visual_data['caption']
+                        self.status_dict['last_unified_state'] = us
+                    #check if person detected state changed
+                    if person_detected_state != visual_data.get('person_detected',False):
+                        self.status_dict.update({"person_detected":visual_data.get('person_detected',False)})
                                     
                 except queue.Empty:
                     pass
@@ -156,6 +164,9 @@ class TemporalLobe:
             
             # Collect AUDIO Data  
             if self.auditory_cortex:
+                locked_speaker_id_state = self.status_dict.get('locked_speaker_id',None)
+                speech_detected_state = self.status_dict.get('speech_detected',False)
+                activly_speaking_state = self.status_dict.get('actively_speaking',False)
                 try:
                     audio_data = self.auditory_cortex.external_cortex_queue.get_nowait()
                     self.auditory_data = audio_data
@@ -166,6 +177,18 @@ class TemporalLobe:
                         #Set interrupt flag for Prefrontal Cortex
                         self.prefrontal_cortex_interrupt_dict.update({'interrupt':True})
                         logging.debug("Interruption attempt detected from Auditory Cortex - setting interrupt flag for Prefrontal Cortex")
+
+                    #check if speech detected state changed
+                    if speech_detected_state != audio_data.get('speech_detected',False):
+                        self.status_dict.update({"speech_detected":audio_data.get('speech_detected',False)})
+                    
+                    #check if locked speaker changed
+                    if locked_speaker_id_state != audio_data.get('voice_id',None) and audio_data.get('is_locked_speaker',False):
+                        self.status_dict.update({"locked_speaker_id":audio_data.get('voice_id',None)})
+                    
+                    #check if actively speaking state changed
+                    if activly_speaking_state != audio_data.get('hear_self_speaking',False):
+                        self.status_dict.update({"actively_speaking":audio_data.get('hear_self_speaking',False)})
 
                     #If Auditory Data was final transcript from our locked speaker, we prioritize collecting over User Text Input
                     if audio_data.get('final_transcript',False) and audio_data.get('is_locked_speaker',False):
@@ -223,9 +246,6 @@ class TemporalLobe:
                     self.external_temporallobe_to_prefrontalcortex.put_nowait(unified_state)
                     self.last_unified_state = unified_state
                     self.status_dict.update({
-                                 "visual_data":self.visual_data,
-                                 "auditory_data":self.auditory_data,
-                                 "user_input_text":self.user_input_dict.get('text',""),
                                  "last_unified_state":self.last_unified_state,
                                  })
                 except queue.Full:
@@ -242,10 +262,7 @@ class TemporalLobe:
                         self.external_temporallobe_to_prefrontalcortex.put_nowait(unified_state)
                         self.last_unified_state = unified_state
                         self.status_dict.update({
-                                 "visual_data":self.visual_data,
-                                 "auditory_data":self.auditory_data,
-                                 "user_input_text":self.user_input_dict.get('text',""),
-                                 "last_unified_state":self.last_unified_state,
+                                 "last_unified_state":self.last_unified_state
                                  })
                     except queue.Full:
                         pass # Still full (shouldn't be possible), skip this frame

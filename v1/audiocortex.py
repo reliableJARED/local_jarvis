@@ -247,7 +247,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         'audio_data': None,# NOT adding data here - design is only passing data if activly listening 
                         'sample_rate': sample_rate,
                         'duration': duration,
-                        'hear_self_speaking': False,
+                        'hear_self_speaking': system_actively_speaking,
                         'is_interrupt_attempt':False,
                         'is_locked_speaker': False,
                         'unlock_speaker':False
@@ -902,8 +902,6 @@ class AuditoryCortex():
         )
         vr_worker.start()
         self.auditory_processes['vr'] = vr_worker
-
-
 
     def start_nerve(self,device_index=0):
         #I/O raw audio data capture

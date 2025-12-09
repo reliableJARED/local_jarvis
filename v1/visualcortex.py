@@ -705,7 +705,7 @@ class VisualCortex():
                     # Send a placeholder frame if no frames available
                     placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
                     cam_text = f"Camera {camera_index}" if camera_index is not None else "All Cameras"
-                    cv2.putText(placeholder, f"No Signal - {cam_text}", (150, 240), 
+                    cv2.putText(placeholder, f"No Signal Yet - {cam_text}", (150, 240), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
                     ret, buffer = cv2.imencode('.jpg', placeholder)
                     if ret:

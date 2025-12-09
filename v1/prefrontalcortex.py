@@ -1166,7 +1166,7 @@ if __name__ == "__main__":
 
     # --- TEST 1: Audio Transcription Input ---
     print("\n" + "="*50)
-    print("TEST 1: Sending Audio Transcription: 'Tell me a joke'")
+    print("TEST 1: Sending Audio Transcription: 'Tell me a joke about Python programming.'")
     print("="*50)
     
     data_packet_1 = get_data_struct()
@@ -1181,7 +1181,7 @@ if __name__ == "__main__":
 
     # --- TEST 2: User Text Input ---
     print("\n" + "="*50)
-    print("TEST 2: Sending Text Input: 'Tell me another joke'")
+    print("TEST 2: Sending Text Input: 'Tell me another joke, but make it sarcastic.'")
     print("="*50)
     
     data_packet_2 = get_data_struct()
