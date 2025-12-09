@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CEREBRUM // INTERFACE</title>
+    <title>ORENDA // INTERFACE</title>
     <style>
         :root {
             --primary-color: #00f3ff;
@@ -218,7 +218,7 @@
 
     <header>
         <div>
-            <h1>CEREBRUM</h1>
+            <h1>ORENDA</h1>
             <small>ARTIFICIAL GENERAL INTELLIGENCE PROTOTYPE</small>
         </div>
         <div id="system-status" class="status-badge">INITIALIZING</div>
@@ -426,7 +426,7 @@
                 // Transcript (Logging only on change)
                 const currentTranscript = data.sensory.transcription || "";
                 if (currentTranscript !== lastTranscript && currentTranscript.length > 0) {
-                    document.title = `CEREBRUM // ${currentTranscript.substring(0,20)}`;
+                    document.title = `ORENDA // ${currentTranscript.substring(0,20)}`;
                     lastTranscript = currentTranscript;
                 }
 

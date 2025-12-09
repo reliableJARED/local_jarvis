@@ -4,7 +4,7 @@ import torch
 import socket
 import re
 import gc
-from mxbai_txt_embed import MxBaiEmbedder
+from llm_tool_libs.mxbai_txt_embed import MxBaiEmbedder
 import logging
 logging.basicConfig(level=logging.INFO)
 

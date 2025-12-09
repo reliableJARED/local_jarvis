@@ -10,7 +10,7 @@ import random
 import threading
 
 
-from bart_lg import TextSummarizer
+from llm_tool_libs.bart_lg import TextSummarizer
 
 class WebSearch:
     def __init__(self):
