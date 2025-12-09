@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cerebrum Local AI Architecture Tour</title>
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+    </script>
+    <style>
+        body { background-color: #1a1a1a; color: #ffffff; font-family: sans-serif; padding: 20px; }
+        .diagram-container { background-color: #252525; padding: 20px; border-radius: 10px; overflow-x: auto;}
+        h1 { color: #61dafb; }
+        h3 { border-bottom: 1px solid #444; padding-bottom: 10px; margin-top: 30px;}
+        .legend { font-size: 0.9em; color: #aaa; margin-bottom: 20px; }
+        code { color: #ff7b72; background: #333; padding: 2px 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<h1>Cerebrum Architecture Tour</h1>
+<div class="legend">
+    <p><strong>Graph Key:</strong></p>
+    <ul>
+        <li><strong>Rectangles:</strong> Python Processes or Heavy Logical Units.</li>
+        <li><strong>Cylinders:</strong> Data Queues (The "Nerves" connecting the system).</li>
+        <li><strong>Rhombus:</strong> Decision/Logic points.</li>
+        <li><strong>Blue Arrows:</strong> Main Data Flow.</li>
+        <li><strong>Red Dotted Arrows:</strong> Interruption Signals.</li>
+    </ul>
+</div>
+
+<div class="diagram-container">
+<pre class="mermaid">
+flowchart LR
+    %% Subgraph for Sensory Inputs
+    subgraph Senses [Sensory Input Devices]
+        Mic[Microphone Hardware]
+        Cam[Camera Hardware]
+        UI_Input[Flask Web UI]
+    end
+
+    %% Subgraph for Auditory Processing
+    subgraph AudioSys [audiocortex.py]
+        direction TB
+        AudioNerve(Auditory Nerve Process)
+        Q_RawAudio[(nerve_from_input_to_cortex)]
+        AudioCore{Auditory Cortex Core - VAD / Wake Word}
+        Q_ToSTT[(nerve_from_cortex_to_stt)]
+        STT_Worker(STT & Voice ID Worker)
+        
+        Mic --> AudioNerve
+        AudioNerve --> Q_RawAudio
+        Q_RawAudio --> AudioCore
+        AudioCore --> Q_ToSTT
+        Q_ToSTT --> STT_Worker
+    end
+
+    %% Subgraph for Visual Processing
+    subgraph VisualSys [visualcortex.py]
+        direction TB
+        OpticNerve(Optic Nerve Process)
+        Q_RawImg[(internal_nerve_queue)]
+        VisualCore{Visual Cortex Core - YOLO}
+        Q_ToVLM[(internal_to_vlm_queue)]
+        VLM_Worker(VLM / Moondream)
+        
+        Cam --> OpticNerve
+        OpticNerve --> Q_RawImg
+        Q_RawImg --> VisualCore
+        VisualCore --> Q_ToVLM
+        Q_ToVLM --> VLM_Worker
+        VLM_Worker --> VisualCore
+    end
+
+    %% The Bridge
+    subgraph Bridge [temporallobe.py]
+        TempLobe{Temporal Lobe - State Aggregator}
+    end
+
+    %% The Brain
+    subgraph Brain [prefrontalcortex.py]
+        PFC(Prefrontal Cortex - Qwen LLM / Logic)
+        Tools[[Tools / Internet Search]]
+    end
+
+    %% Speech Output
+    subgraph SpeechOut [brocasArea.py]
+        BrocasMain(Brocas Area Main)
+        Q_Play[(internal_play_queue)]
+        PlaybackProc(Playback Process)
+        Speaker((Speaker))
+    end
+
+    %% Connections - Visual Output
+    VisualCore -- "Object/Person Data" --> Q_ExtVisual[(external_cortex_queue)]
+    Q_ExtVisual --> TempLobe
+    
+    %% Connections - Audio Output
+    STT_Worker -- "Final Transcript" --> Q_ExtAudio[(external_cortex_queue)]
+    Q_ExtAudio --> TempLobe
+
+    %% Connections - UI Input
+    UI_Input -- "User Text" --> TempLobe
+    
+    %% Connections - Temporal to PFC
+    TempLobe -- "Unified State" --> Q_Main[(external_temporallobe_to_prefrontalcortex)]
+    Q_Main --> PFC
+
+    %% Connections - PFC Logic
+    PFC -- "Call Tool" --> Tools
+    Tools -- "Result" --> PFC
+    PFC -- "Streaming Text" --> BrocasMain
+
+    %% Connections - Speech Synthesis
+    BrocasMain -- "Audio Data" --> Q_Play
+    Q_Play --> PlaybackProc
+    PlaybackProc --> Speaker
+
+    %% Connections - Video Feed to UI
+    VisualCore -- "Annotated Frames" --> Q_ImgFeed[(external_img_queue)]
+    Q_ImgFeed --> UI_Input
+
+    %% Interruption Logic
+    AudioCore -. "Interrupt Flag" .-> PFC
+    AudioCore -. "Interrupt Flag" .-> BrocasMain
+
+    %% Styling
+    classDef queue fill:#232b2b,stroke:#d19a66,stroke-width:2px;
+    classDef process fill:#2d3748,stroke:#61dafb,stroke-width:2px;
+    classDef hardware fill:#4a5568,stroke:#fff,stroke-width:1px;
+    
+    class Q_RawAudio,Q_ToSTT,Q_RawImg,Q_ToVLM,Q_ExtVisual,Q_ExtAudio,Q_Main,Q_Play,Q_ImgFeed queue;
+    class AudioNerve,AudioCore,STT_Worker,OpticNerve,VisualCore,VLM_Worker,TempLobe,PFC,BrocasMain,PlaybackProc process;
+    class Mic,Cam,Speaker,UI_Input hardware;
+</pre>
+</div>
+
+<h3>Key Workflow Description</h3>
+<ol>
+    <li><strong>Sensation:</strong> The <code>AudioNerve</code> and <code>OpticNerve</code> capture raw data and push it into internal queues.</li>
+    <li><strong>Perception:</strong> 
+        <ul>
+            <li>The <code>AudioCore</code> filters for silence (VAD). If speech is found, it sends it to the <code>STT_Worker</code>.</li>
+            <li>The <code>VisualCore</code> runs YOLO object detection constantly. If configured, it sends frames to the <code>VLM_Worker</code> for detailed captioning.</li>
+        </ul>
+    </li>
+    <li><strong>Integration:</strong> The <code>TemporalLobe</code> sits in a loop, pulling results from both cortexes. It waits for a "trigger" event (like a finished sentence or user typing) to package the visual and audio context into a single "Unified State".</li>
+    <li><strong>Cognition:</strong> The <code>PrefrontalCortex</code> receives the Unified State. It constructs a prompt for the Qwen LLM. It may execute tools (like Google Search). It generates a text response.</li>
+    <li><strong>Expression:</strong> As the LLM streams text tokens, they are sent to <code>BrocasArea</code>. This module runs Kokoro TTS and places the resulting audio into a playback queue for the <code>PlaybackProc</code> to articulate via the speakers.</li>
+</ol>
+
+</body>
+</html>

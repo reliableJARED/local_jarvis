@@ -1,4 +1,8 @@
-# Local AI Cerebrum Architecture
+## Demo Video
+
+[![UI Demo](https://img.youtube.com/vi/lYOiwAHL3XE/0.jpg)](https://youtu.be/lYOiwAHL3XE)
+
+# Local AI Architecture
 
 A fully local, offline, multimodal AI system designed with a biomimetic architecture that mimics the human brain's structure by separating functionalities into specific "cortices" (processes) that communicate via a central nervous system.
 
@@ -222,3 +226,137 @@ The system is designed to run completely offline:
 - **Modular Design**: Easy to upgrade individual components without affecting others
 - **Scalable**: Add new cortices or modify existing ones without restructuring the entire system
 - **Biomimetic**: Natural separation of concerns mirrors biological information processing that also helps navigate the code to find specific features
+
+
+# DIAGRAM
+# Cerebrum Architecture
+
+## System Overview
+
+**Graph Key:**
+- **Rectangles:** Python Processes or Heavy Logical Units
+- **Cylinders:** Data Queues (The "Nerves" connecting the system)
+- **Rhombus:** Decision/Logic points
+- **Blue Arrows:** Main Data Flow
+- **Red Dotted Arrows:** Interruption Signals
+```mermaid
+flowchart LR
+    %% Subgraph for Sensory Inputs
+    subgraph Senses [Sensory Input Devices]
+        Mic[Microphone Hardware]
+        Cam[Camera Hardware]
+        UI_Input[Flask Web UI]
+    end
+
+    %% Subgraph for Auditory Processing
+    subgraph AudioSys [audiocortex.py]
+        direction TB
+        AudioNerve(Auditory Nerve Process)
+        Q_RawAudio[(nerve_from_input_to_cortex)]
+        AudioCore{Auditory Cortex Core - VAD / Wake Word}
+        Q_ToSTT[(nerve_from_cortex_to_stt)]
+        STT_Worker(STT & Voice ID Worker)
+        
+        Mic --> AudioNerve
+        AudioNerve --> Q_RawAudio
+        Q_RawAudio --> AudioCore
+        AudioCore --> Q_ToSTT
+        Q_ToSTT --> STT_Worker
+    end
+
+    %% Subgraph for Visual Processing
+    subgraph VisualSys [visualcortex.py]
+        direction TB
+        OpticNerve(Optic Nerve Process)
+        Q_RawImg[(internal_nerve_queue)]
+        VisualCore{Visual Cortex Core - YOLO}
+        Q_ToVLM[(internal_to_vlm_queue)]
+        VLM_Worker(VLM / Moondream)
+        
+        Cam --> OpticNerve
+        OpticNerve --> Q_RawImg
+        Q_RawImg --> VisualCore
+        VisualCore --> Q_ToVLM
+        Q_ToVLM --> VLM_Worker
+        VLM_Worker --> VisualCore
+    end
+
+    %% The Bridge
+    subgraph Bridge [temporallobe.py]
+        TempLobe{Temporal Lobe - State Aggregator}
+    end
+
+    %% The Brain
+    subgraph Brain [prefrontalcortex.py]
+        PFC(Prefrontal Cortex - Qwen LLM / Logic)
+        Tools[[Tools / Internet Search]]
+    end
+
+    %% Speech Output
+    subgraph SpeechOut [brocasArea.py]
+        BrocasMain(Brocas Area Main)
+        Q_Play[(internal_play_queue)]
+        PlaybackProc(Playback Process)
+        Speaker((Speaker))
+    end
+
+    %% Connections - Visual Output
+    VisualCore -- "Object/Person Data" --> Q_ExtVisual[(external_cortex_queue)]
+    Q_ExtVisual --> TempLobe
+    
+    %% Connections - Audio Output
+    STT_Worker -- "Final Transcript" --> Q_ExtAudio[(external_cortex_queue)]
+    Q_ExtAudio --> TempLobe
+
+    %% Connections - UI Input
+    UI_Input -- "User Text" --> TempLobe
+    
+    %% Connections - Temporal to PFC
+    TempLobe -- "Unified State" --> Q_Main[(external_temporallobe_to_prefrontalcortex)]
+    Q_Main --> PFC
+
+    %% Connections - PFC Logic
+    PFC -- "Call Tool" --> Tools
+    Tools -- "Result" --> PFC
+    PFC -- "Streaming Text" --> BrocasMain
+
+    %% Connections - Speech Synthesis
+    BrocasMain -- "Audio Data" --> Q_Play
+    Q_Play --> PlaybackProc
+    PlaybackProc --> Speaker
+
+    %% Connections - Video Feed to UI
+    VisualCore -- "Annotated Frames" --> Q_ImgFeed[(external_img_queue)]
+    Q_ImgFeed --> UI_Input
+
+    %% Interruption Logic
+    AudioCore -. "Interrupt Flag" .-> PFC
+    AudioCore -. "Interrupt Flag" .-> BrocasMain
+
+    %% Styling
+    classDef queue fill:#232b2b,stroke:#d19a66,stroke-width:2px;
+    classDef process fill:#2d3748,stroke:#61dafb,stroke-width:2px;
+    classDef hardware fill:#4a5568,stroke:#fff,stroke-width:1px;
+    
+    class Q_RawAudio,Q_ToSTT,Q_RawImg,Q_ToVLM,Q_ExtVisual,Q_ExtAudio,Q_Main,Q_Play,Q_ImgFeed queue;
+    class AudioNerve,AudioCore,STT_Worker,OpticNerve,VisualCore,VLM_Worker,TempLobe,PFC,BrocasMain,PlaybackProc process;
+    class Mic,Cam,Speaker,UI_Input hardware;
+```
+
+## Key Workflow Description
+
+### Sensation
+The `AudioNerve` and `OpticNerve` capture raw data and push it into internal queues.
+
+### Perception
+- The `AudioCore` filters for silence (VAD). If speech is found, it sends it to the `STT_Worker`.
+- The `VisualCore` runs YOLO object detection constantly. If configured, it sends frames to the `VLM_Worker` for detailed captioning.
+
+### Integration
+The `TemporalLobe` sits in a loop, pulling results from both cortexes. It waits for a "trigger" event (like a finished sentence or user typing) to package the visual and audio context into a single "Unified State".
+
+### Cognition
+The `PrefrontalCortex` receives the Unified State. It constructs a prompt for the Qwen LLM. It may execute tools (like Google Search). It generates a text response.
+
+### Expression
+As the LLM streams text tokens, they are sent to `BrocasArea`. This module runs Kokoro TTS and places the resulting audio into a playback queue for the `PlaybackProc` to articulate via the speakers.
