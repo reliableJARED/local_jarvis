@@ -156,7 +156,7 @@ The PrefrontalCortex:
 - Determines if it was Audio(STT) or Text (UI) input
 - Runs the LLM (Qwen) to generate tokens
 - **Tool Use**: Parses output for XML/JSON tags, pauses to run Python functions (like `internet_search`), injects results, continues generating
-- **Streaming Speech**: Sends completed sentences to BrocasArea for immediate synthesis. Chunks output so that complete sentences are queued/played 
+- **Streaming Speech**: Sends completed sentences to `self.audio_cortex.brocas_area` for immediate speech synthesis so that audio playback runs parallel with additional token generation
 
 ## Key Features
 
