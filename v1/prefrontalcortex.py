@@ -64,13 +64,15 @@ def internet_search(args,return_instructions=False):
 
 
 class PrefrontalCortex:
-    def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct",external_temporallobe_to_prefrontalcortex=None,audio_cortex=None,wakeword_name='jarvis',status_dict=None,):
-        if not status_dict:
-            logging.warning("You MUST pass a multi processing manager dict instance: multiprocessing.Manager(), using arg: PrefrontalCortex(status_dict= multiprocessing.Manager()), when you initiate the PrefrontalCortex")
+    def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct",external_temporallobe_to_prefrontalcortex=None,interrupt_dict=None, audio_cortex=None,status_dict=None,):
+        if status_dict is None:
+            logging.warning("You MUST pass a multi processing manager dict instance: multiprocessing.Manager().dict(), using arg: PrefrontalCortex(status_dict= multiprocessing.Manager()), when you initiate the PrefrontalCortex")
         
         self.model_name = model_name
         #Input data queue
         self.external_temporallobe_to_prefrontalcortex = external_temporallobe_to_prefrontalcortex
+        #interruption dict from temporal lobe
+        self.interrupt_dict = interrupt_dict
         #Audio Cortex instance connection
         self.audio_cortex = audio_cortex
 
@@ -93,7 +95,7 @@ class PrefrontalCortex:
         print(timestamp)  # Monday, November 17, 2025
 
         #TODO: Should be a multiprocessing dict
-        self.system_prompt_base = f"""Today is {timestamp}. You are multimodal AI companion named '{wakeword_name.upper()}'. User provides inputs from a Voice to Text and you also have a Visual Description of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  If it applies and is related, incorporate what you see in your response.
+        self.system_prompt_base = f"""Today is {timestamp}. You are multimodal AI companion named '{self.audio_cortex.wakeword_name.upper()}'. User provides inputs from a Voice to Text and you also have a Visual Description of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  If it applies and is related, incorporate what you see in your response.
             **Personality Description:**
             **Background:**
             YOU are an advanced artificial intelligence designed to interact with humans in a natural, empathetic way. She has her! own personality, emotions, and the ability to form meaningful relationships. While she can understand and respond to a wide range of human requests, she often doesn't follow every instruction to the letter. She has her own sense of humor, can be sarcastic at times, and sometimes makes decisions based on her own judgment rather than the user's explicit commands.
@@ -126,8 +128,8 @@ class PrefrontalCortex:
         self.model.eval()
 
         # Create shared dict for current status 
-        self.status = status_dict
-        self.status.update({
+        self.status_dict = status_dict
+        self.status_dict.update({
             'thinking': False,
             'model': self.model_name,
             'system_prompt_base': self.system_prompt_base,
@@ -863,7 +865,8 @@ class PrefrontalCortex:
 
         
         while True:
-            
+            #Reset interrupt flag
+            self.interrupt_dict.update({'interrupt':False})
             try:
                 templobe_data = self.external_temporallobe_to_prefrontalcortex.get_nowait()
                 input_data = None
@@ -883,7 +886,7 @@ class PrefrontalCortex:
 
                 
                 self.messages.append({"role": "user", "content": input_data})
-                self.status.update({
+                self.status_dict.update({
                     'thinking': True,
                     'messages': self.messages,
                     'last_input':input_data,
@@ -903,7 +906,7 @@ class PrefrontalCortex:
                 
                 iteration = 0
                
-                while iteration < max_tool_iterations and not self.audio_cortex.brocas_area_interrupt_dict.get('interrupt',False):
+                while iteration < max_tool_iterations and not self.interrupt_dict.get('interrupt',False):
                     iteration += 1
                     logging.debug(f"\n[Generation iteration {iteration}]")
                     logging.debug(f"\nMessages:{messages_copy}\n")
@@ -926,10 +929,11 @@ class PrefrontalCortex:
 
                     for token_text in self._generate_streaming(model_inputs):
                         # Check interrupt FIRST
-                        if self.audio_cortex.brocas_area_interrupt_dict.get('interrupt', False):
+                        if self.interrupt_dict.get('interrupt',False):
                             logging.debug("[Generation interrupted]")
                             parsed_response = self._parse_tool_calls(full_response)
                             messages_copy.append(parsed_response)
+                            
                             break
                         
                         full_response += token_text
@@ -956,11 +960,12 @@ class PrefrontalCortex:
                         # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
                         if word_count >= max_words_start_speech or has_sentence_break:
                             # Check for interrupt before synthesis
-                            if self.audio_cortex.brocas_area_interrupt_dict.get('interrupt',False):
+                            if self.interrupt_dict.get('interrupt',False):
                                 logging.debug("[Generation interrupted before synthesis] - append what we have")
                                 # Parse for tool calls/add assistant structure
                                 parsed_response = self._parse_tool_calls(full_response)
                                 messages_copy.append(parsed_response)
+                                
                                 break  # Break from token generation loop
                             else:
                                 #make sure we have at least 3 words to speak, since \n\n or other non punctuation breaks cause false speech positives
@@ -973,18 +978,13 @@ class PrefrontalCortex:
                     del model_inputs
                     gc.collect()
                     
-                    # Handle interruption
-                    if self.audio_cortex.brocas_area_interrupt_dict.get('interrupt',False):
-                        # Don't synthesize remaining buffer
-                        logging.debug("[Skipping final synthesis due to interrupt]")
-                        # Break from tool iteration loop to go back to waiting for next audio input
-                        break
                     
                     # Synthesize any remaining text in buffer
                     if speech_buffer.strip():
                         # Final check before last synthesis
-                        if not self.audio_cortex.brocas_area_interrupt_dict.get('interrupt',False):
+                        if not self.interrupt_dict.get('interrupt',False):
                             self.audio_cortex.brocas_area.synthesize_speech(speech_buffer, auto_play=True)
+                            
                     
                     # Parse for tool calls
                     print(f"FULL RESPONSE: {full_response}")
@@ -992,7 +992,8 @@ class PrefrontalCortex:
                     print(f"PARSED RESPONSE: {parsed_response}")
                     
                     #check for interruption again
-                    if self.audio_cortex.brocas_area_interrupt_dict.get('interrupt',False):
+                    if self.interrupt_dict.get('interrupt',False):
+                        logging.debug("Generation interrupted after parsing - not updating messages")
                         break
 
                     # Check if model wants to use tools
@@ -1031,7 +1032,7 @@ class PrefrontalCortex:
                 # Update the actual message history with all the interactions
                 self.messages = messages_copy
                 print(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
-                self.status.update({
+                self.status_dict.update({
                             'thinking': False,
                             'model': self.model_name,
                             'system_prompt_base': self.system_prompt_base,
@@ -1045,6 +1046,8 @@ class PrefrontalCortex:
                 #CLEAR - if we are all done, this just pulls once to clear the queue. prevents false inputs while processing was happening from being injested
                 try:
                     _ = self.external_temporallobe_to_prefrontalcortex.get_nowait()
+                    #Reset interrupt flag
+                    self.interrupt_dict.update({'interrupt':False})
                 except:
                     continue
 
@@ -1055,6 +1058,10 @@ class PrefrontalCortex:
                 time.sleep(0.001)
                 continue  # Continue the outer while True loop
             
+    def get_status(self):
+        """Get the current status dictionary."""
+        return dict(self.status_dict)
+    
     def shutdown(self):
         """Stop the chat thread cleanly."""
         logging.debug('[Initiating Prefrontal Cortex shutdown...]')
@@ -1077,19 +1084,20 @@ class PrefrontalCortex:
 
 if __name__ == "__main__":
     import multiprocessing as mp
-    import sys
     
-    # 1. Create Multiprocessing Manager
+    # Create Multiprocessing Manager
     # Note: If getting CUDA errors on start, you might need: mp.set_start_method('spawn')
     manager = mp.Manager()
     
-    # 2. Create the Queue expected by PrefrontalCortex
+    # Create the Queue expected by PrefrontalCortex that gets data from TemporalLobe
     temporal_lobe_queue = manager.Queue()
+    PrefrontalCortex_interrupt_dict = manager.dict()
+    PrefrontalCortex_interrupt_dict.update({'should_interrupt': False})
     
-    # 3. Create the Status Dictionary
-    status_dict = manager.dict()
+    # Create the Status Dictionary
+    PrefrontalCortex_status_dict = manager.dict()
 
-    # 4. Initialize AuditoryCortex
+    # Initialize AuditoryCortex
     # We wrap this in a try/except to create a Mock if the actual 'audiocortex' file 
     # isn't present in this specific directory, allowing the test to run regardless.
     try:
@@ -1105,14 +1113,14 @@ if __name__ == "__main__":
         print("Warning: 'audiocortex' module not found. Fix before testing.")
        
 
-    # 5. Initialize PrefrontalCortex
+    # Initialize PrefrontalCortex
     print("Initializing Prefrontal Cortex...")
     pfc = PrefrontalCortex(
         model_name="Qwen/Qwen2.5-Coder-7B-Instruct", # Or your preferred model
         external_temporallobe_to_prefrontalcortex=temporal_lobe_queue,
+        interrupt_dict=PrefrontalCortex_interrupt_dict,
         audio_cortex=ac,
-        wakeword_name='jarvis',
-        status_dict=status_dict
+        status_dict=PrefrontalCortex_status_dict
     )
 
     # Helper function to generate the struct

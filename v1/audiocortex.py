@@ -277,18 +277,16 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             cortex_output['hear_self_speaking'] = True
                             logging.debug(f"Detected my own voice: '{transcription}' ")
 
-                        #Check for the breakword interruption phrase in the transcript
+                        #Check for the breakword interruption phrase in the transcript and system is speaking
                         if breakword.lower().replace('.', '').replace(',', '') in transcription.replace('.', '').replace(',', '') and system_actively_speaking:
                             #placeholder to a User feedback audio sound like a beep. just play sys sound for now
                             logging.debug('\a')
                             
-                            #Check if system actually in playback
-                            if external_brocas_state_dict.get('is_playing',True):
-                                #system is playing AND we have an interruption breakword detected
-                                logging.debug("INTERRUPTION - set True 1")
-                                cortex_output['is_interrupt_attempt'] = True
-                                cortex_output['transcription'] = ""
-                                brocas_area_interrupt_dict.update({'interrupt':True})
+                            #system is playing AND we have an interruption breakword detected
+                            logging.debug("INTERRUPTION - set True 1")
+                            cortex_output['is_interrupt_attempt'] = True
+                            cortex_output['transcription'] = ""
+                            brocas_area_interrupt_dict.update({'interrupt':True})
                         
                         #Check for the exitword release locked speaker
                         if exitword.lower().lower().replace('.', '').replace(',', '') in transcription.lower():
@@ -300,28 +298,26 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             locked_speaker_speaking = False
                             cortex_output['audio_data'] = full_speech.copy() #add the audio data
                             logging.debug("INTERRUPTION - set False 1")
-                            #establish that TTS can process system response to user input
-                            #brocas_area_interrupt_dict.update({'interrupt':False})
 
                         # Handle voice lock management
-                        # Check for wake word and if we should lock on to new voice
-                        if wakeword_name.lower() in transcription.lower():
+                        # Check for wake word and if we should lock on to new voice, prevent system from locking on to itself
+                        if wakeword_name.lower() in transcription.lower() and not cortex_output['hear_self_speaking']:
                                 if transcription.lower().startswith(wakeword_name.lower()):
                                     logging.debug(f"\n\nWake word detected: {transcription}\n\n")
                                     logging.debug("INTERRUPTION - set False 2")
                                     #brocas_area_interrupt_dict.update({'interrupt':False})
-                                    # Lock to this speaker
-                                    if voice_match_id:
+                                    # Lock to this speaker - Double prevent system voice locking on to itself
+                                    if voice_match_id and voice_match_id != system_voice_id:
                                         locked_speaker_id = voice_match_id
                                         cortex_output['is_locked_speaker'] = True
                                         cortex_output['audio_data'] = full_speech.copy() #provide the audio data
                                         logging.info(f"Voice lock acquired by speaker: {locked_speaker_id}")
-                                    try:
-                                        state_of_cortex_speakerID_wakeword.update({'spoken_by': voice_match_id})
-                                    except queue.Full:
-                                        logging.error("state_of_cortex_speakerID_wakeword FULL - consume faster")
-                                    except Exception as e:
-                                        logging.error(f"Error: state_of_cortex_speakerID_wakeword: {e}")
+                                        try:
+                                            state_of_cortex_speakerID_wakeword.update({'spoken_by': voice_match_id})
+                                        except queue.Full:
+                                            logging.error("state_of_cortex_speakerID_wakeword FULL - consume faster")
+                                        except Exception as e:
+                                            logging.error(f"Error: state_of_cortex_speakerID_wakeword: {e}")
 
                         #Handle ignore non-locked speaker still talking causing VAD speech detection true    
                         if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:

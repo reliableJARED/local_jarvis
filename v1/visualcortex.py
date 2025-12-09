@@ -524,7 +524,7 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
 
     
 class VisualCortex():
-    def __init__(self,cortex=visual_cortex_core,vlm=visual_cortex_worker_vlm,nerve=optic_nerve_connection,device_index=0,mpm=False,gpu_to_use=0):
+    def __init__(self,cortex=visual_cortex_core,vlm=visual_cortex_worker_vlm,nerve=optic_nerve_connection,mpm=False,gpu_to_use=0):
         logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,vlm)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: VisualCortex(mpm= multiprocessing.Manager()), to initiate the VisualCortex")
@@ -779,7 +779,7 @@ if __name__ == "__main__":
 
     # 2. Initialize the Visual Cortex (starts the Core and VLM processes automatically)
     # Note: Ensure your 'yolo_.py' and 'moondream_.py' files are accessible
-    vc = VisualCortex(mpm=manager, device_index=0)
+    vc = VisualCortex(mpm=manager)
 
     # 3. Start the Nerve (Camera)
     # Defaulting to camera index 0
@@ -817,7 +817,7 @@ if __name__ == "__main__":
                 if caption:
                     output_str = f"[{timestamp}] Person: {detected}"
                     output_str += f" | Caption: {caption}"
-                    
+
                     print("*"*50)
                     print(output_str)
                     print("="*50)

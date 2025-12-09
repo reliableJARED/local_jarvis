@@ -29,7 +29,7 @@ class TemporalLobe:
     non-default values from the most recent to oldest frames.
     """
     
-    def __init__(self, visual_cortex=None, auditory_cortex=None,mpm=None, database_path=":memory:"):
+    def __init__(self, visual_cortex=None, auditory_cortex=None,mpm=None, database_path=":memory:",status_dict=None,PrefrontalCortex_interrupt_dict=None):
         """
         Initialize TemporalLobe with visual and auditory cortex instances.
         
@@ -50,11 +50,22 @@ class TemporalLobe:
         self.auditory_data = None #latest auditory data frame
         #UI INPUTS
         self.user_input_dict = mpm.dict({'text':""}) #latest user text input from UI
+        #INTERUPT DICT
+        self.prefrontal_cortex_interrupt_dict = PrefrontalCortex_interrupt_dict
 
         self.external_temporallobe_to_prefrontalcortex = mpm.Queue(maxsize=30) #real-time unified state queue to Cerebrum
 
         #last unified state
         self.last_unified_state = self._create_empty_unified_state()
+
+        #status dict for UI monitoring
+        self.status_dict = status_dict
+        self.status_dict.update({"running":self.running,
+                                 "visual_data":None,
+                                 "auditory_data":None,
+                                 "user_input_text":self.user_input_dict.get('text',""),
+                                 "last_unified_state":self.last_unified_state,
+                                 })
 
         # Connect to database with sqlite-vec extension
         self.db = sqlite3.connect(database_path)
@@ -96,6 +107,9 @@ class TemporalLobe:
 
             #Speech Output
             'actively_speaking':False,
+
+            #Interruption Attempt
+            'is_interrupt_attempt':False,
             
             # UI Inputs
             'user_text_input': "",#string input from user
@@ -120,10 +134,10 @@ class TemporalLobe:
         
         while self.running:
             current_time = time.time()
-            user_text_input = False
-            user_transcription_input = False
+            #data schema for the unified state
             unified_state = None
-            # Collect visual frames
+            received_audio_transcript = False
+            # Collect VISUAL Data
             if self.visual_cortex:
                 try:
                     visual_data = self.visual_cortex.external_cortex_queue.get_nowait()
@@ -140,22 +154,28 @@ class TemporalLobe:
             else:
                 logging.error("Can't Collect visual data, No visual cortex available in Temporal Lobe")
             
-            # Collect audio frames  
+            # Collect AUDIO Data  
             if self.auditory_cortex:
                 try:
                     audio_data = self.auditory_cortex.external_cortex_queue.get_nowait()
-                    
                     self.auditory_data = audio_data
                     audio_data['collection_timestamp'] = current_time
-                    #If Auditory Data was final transcript, we prioritize collecting
-                    if audio_data.get('final_transcript',False):
+
+                    #check for interruption attempt
+                    if audio_data.get('is_interrupt_attempt',False):
+                        #Set interrupt flag for Prefrontal Cortex
+                        self.prefrontal_cortex_interrupt_dict.update({'interrupt':True})
+                        logging.debug("Interruption attempt detected from Auditory Cortex - setting interrupt flag for Prefrontal Cortex")
+
+                    #If Auditory Data was final transcript from our locked speaker, we prioritize collecting over User Text Input
+                    if audio_data.get('final_transcript',False) and audio_data.get('is_locked_speaker',False):
+                        received_audio_transcript = True
                         logging.debug("Audio data received in Temporal Lobe\n")
                         logging.debug(audio_data)
                         logging.debug("\n","+"*50,"\n")
                         #Create unified state
                         unified_state = self._create_empty_unified_state()
-                        #flag we have user transcription input
-                        user_transcription_input = True
+
                         #Merge auditory data first to prioritize speech
                         for key, value in audio_data.items():
                             if not self._is_default_value(key, value):
@@ -166,18 +186,18 @@ class TemporalLobe:
             else:
                 logging.error("Can't Collect auditory data, No auditory cortex available in Temporal Lobe")
 
-            # collect User Inputs from UI
+            # collect USER INPUT from UI
             try:
-                user_text = self.user_input_dict.get('text',"")
-                #If we have user text input and no unified state yet, create one
-                if unified_state is None and user_text.strip() != "":
-                    #we only add user text input if we don't already have final transcript data. Audio takes priority
-                    unified_state = self._create_empty_unified_state()
-                    unified_state['user_text_input'] = user_text.strip()
+                if not received_audio_transcript:
+                    user_text = self.user_input_dict.get('text',"")
+                    #If we have user text input and no unified state yet, create one
+                    if unified_state is None and user_text.strip() != "":
+                        #we only add user text input if we don't already have final transcript data. Audio takes priority
+                        unified_state = self._create_empty_unified_state()
+                        unified_state['user_text_input'] = user_text.strip()
 
-                    #Clear after setting
-                    user_text_input = True
-                    self.user_input_dict.update({'text':""}) 
+                        #Clear after setting
+                        self.user_input_dict.update({'text':""}) 
 
             except Exception as e:
                 logging.error(f"Error reading user input dict: {e}")
@@ -186,6 +206,7 @@ class TemporalLobe:
 
             #We have unified_state data ready (audio or text), now add visual data if available
             if unified_state is not None:
+                
                 if self.visual_data is not None:
                     #Merge visual data in both cases (we either had final audio transcript or user text input)
                     for key, value in self.visual_data.items():
@@ -195,11 +216,18 @@ class TemporalLobe:
                 #Update timestamp
                 unified_state['timestamp'] = current_time
                 unified_state['formatted_time'] = datetime.now().strftime('%H:%M:%S')
-                
+                #reset
+                received_audio_transcript = False
                 # Send to real-time queue
                 try:
                     self.external_temporallobe_to_prefrontalcortex.put_nowait(unified_state)
                     self.last_unified_state = unified_state
+                    self.status_dict.update({
+                                 "visual_data":self.visual_data,
+                                 "auditory_data":self.auditory_data,
+                                 "user_input_text":self.user_input_dict.get('text',""),
+                                 "last_unified_state":self.last_unified_state,
+                                 })
                 except queue.Full:
                     # --- QUEUE FULL HANDLER ---
                     try:
@@ -213,6 +241,12 @@ class TemporalLobe:
                     try:
                         self.external_temporallobe_to_prefrontalcortex.put_nowait(unified_state)
                         self.last_unified_state = unified_state
+                        self.status_dict.update({
+                                 "visual_data":self.visual_data,
+                                 "auditory_data":self.auditory_data,
+                                 "user_input_text":self.user_input_dict.get('text',""),
+                                 "last_unified_state":self.last_unified_state,
+                                 })
                     except queue.Full:
                         pass # Still full (shouldn't be possible), skip this frame
 
@@ -222,7 +256,14 @@ class TemporalLobe:
         
         logging.info("TemporalLobe frame collection stopped")
 
-
+    def get_last_unified_state(self):
+        """Get the last created unified state without creating a new one"""
+        return self.last_unified_state
+    
+    def get_status(self):
+        """Get the current status dictionary."""
+        return dict(self.status_dict)
+    
     def start_collection(self):
         """Start background frame collection"""
         if self.running:
@@ -330,9 +371,7 @@ class TemporalLobe:
             
         return not had_failure
 
-    def get_last_unified_state(self):
-        """Get the last created unified state without creating a new one"""
-        return self.last_unified_state
+    
 
 if __name__ == "__main__":
     import multiprocessing as mp
@@ -342,6 +381,8 @@ if __name__ == "__main__":
 
     # Create multiprocessing manager
     manager = mp.Manager()
+    # Create the Status Dictionary
+    TemporalLobe_status_dict = manager.dict()
 
     # Initialize AuditoryCortex
     ac = AuditoryCortex(
@@ -352,14 +393,16 @@ if __name__ == "__main__":
     )
 
     # Initialize VisualCortex
-    vc = VisualCortex(mpm=manager, device_index=0)
+    vc = VisualCortex(mpm=manager)
 
     # Initialize TemporalLobe
     tl = TemporalLobe(
         visual_cortex=vc,
         auditory_cortex=ac,
         mpm=manager,
-        database_path=":memory:"
+        database_path=":memory:",
+        status_dict=TemporalLobe_status_dict,
+        PrefrontalCortex_interrupt_dict=manager.dict({'interrupt':False})
     )
 
     try:

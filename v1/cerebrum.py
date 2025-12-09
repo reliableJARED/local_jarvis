@@ -1,7 +1,6 @@
 
 import multiprocessing as mp
 import logging
-import time
 import sys
 
 
@@ -28,7 +27,6 @@ except ImportError:
     logger.error("prefrontalcortex.py not found.")
     PrefrontalCortex = None
 
-# Attempt to import VisualCortex, handle gracefully if missing
 try:
     from visualcortex import VisualCortex
 except ImportError:
@@ -49,15 +47,23 @@ class Cerebrum:
         
         # 1. Initialize Multiprocessing Manager (The central nervous system)
         self.manager = mp.Manager()
-        self.running = False
+        # 3. Create the Status Dictionary
+        self.PrefrontalCortex_status_dict = self.manager.dict()
+        PrefrontalCortex_interrupt_dict = self.manager.dict()
+        PrefrontalCortex_interrupt_dict.update({'should_interrupt': False})
+
+        self.TemporalLobe_status_dict = self.manager.dict()
+
+        self.active = False
         self.wakeword = wakeword
         breakword=f"enough {self.wakeword}"
         exitword=f"goodbye {self.wakeword}"
 
+
         # 2. Initialize Auditory Cortex
         if AuditoryCortex:
             logger.info("Spinning up Auditory Cortex...")
-            self.audio_cortex = AuditoryCortex(
+            audio_cortex = AuditoryCortex(
                 mpm=self.manager,
                 wakeword_name=wakeword,
                 breakword=breakword,
@@ -68,46 +74,48 @@ class Cerebrum:
             logger.critical("Auditory Cortex failed to load.")
             sys.exit(1)
 
-        # 3. Initialize Visual Cortex (Optional/Placeholder)
+        # 3. Initialize Visual Cortex
         self.visual_cortex = None
         if VisualCortex:
             logger.info("Spinning up Visual Cortex...")
-            self.visual_cortex = VisualCortex(mpm=self.manager)
+            visual_cortex = VisualCortex(mpm=self.manager)
         else:
             logger.info("Visual Cortex disabled or missing.")
 
-        # 4. Initialize Temporal Lobe (The Bridge)
+        # 4. Initialize Temporal Lobe (The Bridge to Visual and Auditory)
+        # Connects both Audio and Visual Cortex via
+        # self.temporal_lobe.auditory_cortex and
+        # self.temporal_lobe.visual_cortex
         if TemporalLobe:
             logger.info("Connecting Temporal Lobe...")
             self.temporal_lobe = TemporalLobe(
-                visual_cortex=self.visual_cortex,
-                auditory_cortex=self.audio_cortex,
+                visual_cortex=visual_cortex,
+                auditory_cortex=audio_cortex,
                 mpm=self.manager,
-                database_path=db_path
+                database_path=db_path,
+                status_dict=self.TemporalLobe_status_dict,
+                PrefrontalCortex_interrupt_dict=PrefrontalCortex_interrupt_dict
             )
-            # 5. Initialize Prefrontal Cortex (The Logic/LLM)
-            if PrefrontalCortex:
-                logger.info("Awakening Prefrontal Cortex...")
-                # Create shared status dict for PFC
-                self.pfc_status = self.manager.dict()
-                
-                self.prefrontal_cortex = PrefrontalCortex(
-                    model_name=model_name,
-                    external_temporallobe_to_prefrontalcortex=self.temporal_lobe.external_temporallobe_to_prefrontalcortex,
-                    audio_cortex=self.audio_cortex,
-                    wakeword_name=wakeword,
-                    status_dict=self.pfc_status
-                )
-            else:
-                logger.critical("Prefrontal Cortex failed to load.")
-                sys.exit(1)
-
         else:
             logger.critical("Temporal Lobe failed to load.")
             sys.exit(1)
 
-       
+        # 5. Initialize Prefrontal Cortex (The Logic/LLM Output)
+        if PrefrontalCortex:
+            logger.info("Awakening Prefrontal Cortex...")
+                
+            self.prefrontal_cortex = PrefrontalCortex(
+                    model_name=model_name,
+                    external_temporallobe_to_prefrontalcortex=self.temporal_lobe.external_temporallobe_to_prefrontalcortex,
+                    interrupt_dict=PrefrontalCortex_interrupt_dict,
+                    audio_cortex=audio_cortex,
+                    status_dict=self.PrefrontalCortex_status_dict
+                )
+        else:
+            logger.critical("Prefrontal Cortex failed to load.")
+            sys.exit(1)
 
+        
         logger.info("Cerebrum Initialization Complete.")
 
     def start_systems(self, start_mic=True, start_cam=True):
@@ -115,27 +123,27 @@ class Cerebrum:
         Begins the processing loops for input and data aggregation.
         """
         logger.info("Starting System Processes...")
-        self.running = True
+        self.active = True
 
         # Start Input Nerves
         if start_mic:
-            self.audio_cortex.start_nerve(device_index=0)
+            self.temporal_lobe.auditory_cortex.start_nerve(device_index=0)
         
         if self.visual_cortex and start_cam:
-            self.visual_cortex.start_nerve(device_index=0)
+            self.temporal_lobe.visual_cortex.start_nerve(device_index=0)
 
         # Start Temporal Lobe Aggregation Loop
         self.temporal_lobe.start_collection()
 
         # Play startup sound/greeting
-        self.audio_cortex.brocas_area.synthesize_speech(f"Systems online. I am now is listening for my name.", auto_play=True)
+        self.temporal_lobe.speak(f"Hello, my name is {self.wakeword}. All my systems are now online.")
 
     def stop_systems(self):
         """
         Graceful shutdown of all subsystems.
         """
         logger.info("Initiating System Shutdown...")
-        self.running = False
+        self.active = False
 
         # Shutdown PFC (Logic)
         if self.prefrontal_cortex:
@@ -145,15 +153,8 @@ class Cerebrum:
         if self.temporal_lobe:
             self.temporal_lobe.shutdown_all()
         
-        # Shutdown Audio/Visual (Sensors) handled by temporal lobe shutdown usually, 
-        # but calling explicit shutdowns to be safe
-        if self.audio_cortex:
-            self.audio_cortex.shutdown()
-        
-        if self.visual_cortex:
-            self.visual_cortex.shutdown()
 
-        logger.info("System Shutdown Complete.")
+        logger.info("System Shutting down.")
 
     # ============================================
     # UI CONTROLLER METHODS (For Flask App)
@@ -164,19 +165,66 @@ class Cerebrum:
         Returns a dictionary containing the real-time state of the entire system.
         Useful for polling via AJAX in the Flask UI.
         """
-        # Get immediate sensory state from Temporal Lobe
-        tl_state = self.temporal_lobe.get_last_unified_state()
+        # Get current sensory state from Temporal Lobe
+        tl_state = self.temporal_lobe.get_status()['last_unified_state']#don't need all the visual/auditory data here only the unified state
+        """
+        tl_state = {
+            # Timing
+            'timestamp': time.time(),
+            'formatted_time': datetime.now().strftime('%H:%M:%S'),
+            
+            # Visual data
+            'person_detected': False,
+            'person_match': False,
+            'person_match_probability': 0.0,
+            'caption': "",
+            'vlm_timestamp': None,
+            'visual_camera_index': None,
+            
+            # Audio data  
+            'speech_detected': False,
+            'transcription': "",
+            'final_transcript': False,
+            'voice_id': False,
+            'voice_probability': 0.0,
+            'audio_device_index': None,
+            'transcription_timestamp': None,
+            'audio_capture_timestamp': None,
+            
+            # Active speaker tracking
+            'locked_speaker_id': None,
+            'locked_speaker_timestamp': None,
+            'is_locked_speaker': False,
+
+            #Speech Output
+            'actively_speaking':False,
+            
+            # UI Inputs
+            'user_text_input': ""}
+            """
         
         # Get cognitive state from Prefrontal Cortex (Thinking status, current response)
-        pfc_state = dict(self.pfc_status)
+        pfc_state = self.prefrontal_cortex.get_status()
+        """
+        pfc_state = {
+            'thinking': False,
+            'model': self.model_name,
+            'system_prompt_base': self.system_prompt_base,
+            'system_prompt_tools': self.prompt_for_tool_use,
+            'system_prompt_visual':"",#contains scene description of visual
+            'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
+            'messages': self.messages,
+            'last_input':"",
+            'last_response':""}
+        """
         
         # Combine them
         combined_state = {
             "sensory": tl_state,
             "cognitive": pfc_state,
             "system": {
-                "running": self.running,
-                "wakeword": self.wakeword
+                "state": self.active,
+                "name": self.wakeword
             }
         }
         return combined_state
@@ -187,7 +235,7 @@ class Cerebrum:
         bypassing the microphone.
         """
         logger.info(f"UI Input Received: {text_input}")
-        self.temporal_lobe.user_input_dict['text'] = text_input
+        self.temporal_lobe.user_input_dict.update({'text':text_input})  
 
     def ui_toggle_microphone(self, active: bool, device_index=0):
         """Turn microphone processing on/off"""
@@ -208,19 +256,18 @@ class Cerebrum:
 
 
 if __name__ == "__main__":
-    # Example standalone usage (if not running via Flask)
-    brain = Cerebrum(wakeword="Computer")
-    
-    try:
-        brain.start_systems()
-        
-        print("\n *** BRAIN RUNNING. Press Ctrl+C to stop. *** \n")
-        
-        while True:
-            # Simulate a "keep-alive" loop or debug print
-            time.sleep(5)
-            # state = brain.ui_get_unified_state()
-            # print(f"Thinking: {state['cognitive'].get('thinking')} | Last Input: {state['cognitive'].get('last_input')}")
+    import time
+    brain = Cerebrum(
+        wakeword='jarvis',
+        model_name="Qwen/Qwen2.5-Coder-7B-Instruct",
+        db_path=":memory:"
+    )
+    brain.start_systems(start_mic=True, start_cam=False)
 
-    except KeyboardInterrupt:
-        brain.stop_systems()
+    while True:
+        try:
+            time.sleep(10)
+            print(brain.ui_get_unified_state())
+        except KeyboardInterrupt:
+            brain.stop_systems()
+            break
