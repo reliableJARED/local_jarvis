@@ -54,10 +54,42 @@ The TemporalLobe runs a background thread `_temporalLobe_State_Loop` that:
 
 ```json
 {
-  "transcription": "Hello Jarvis",
-  "visual_context": "I see a person",
-  "timestamp": 123456789
-}
+            # Timing
+            'timestamp': time.time(),
+            'formatted_time': datetime.now().strftime('%H:%M:%S'),
+            
+            # Visual data
+            'person_detected': False,
+            'person_match': False,
+            'person_match_probability': 0.0,
+            'caption': "",
+            'vlm_timestamp': None,
+            'visual_camera_index': None,
+            
+            # Audio data  
+            'speech_detected': False,
+            'transcription': "",
+            'final_transcript': False,
+            'voice_id': False,
+            'voice_probability': 0.0,
+            'audio_device_index': None,
+            'transcription_timestamp': None,
+            'audio_capture_timestamp': None,
+            
+            # Active speaker tracking
+            'locked_speaker_id': None,
+            'locked_speaker_timestamp': None,
+            'is_locked_speaker': False,
+
+            #Speech Output
+            'actively_speaking':False,
+
+            #Interruption Attempt
+            'is_interrupt_attempt':False,
+            
+            # UI Inputs
+            'user_text_input': ""
+            }
 ```
 
 - Pushes packets to `external_temporallobe_to_prefrontalcortex`
