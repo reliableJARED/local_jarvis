@@ -755,7 +755,9 @@ class AuditoryCortex():
     manage all running audio functions. on init will start the auditory cortex, speech to text processes and default to connection
     with sound input device 0
     """
-    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,ba=BrocasArea,mpm=False,wakeword_name='jarvis',breakword="enough jarvis",exitword="goodbye jarvis",database_path=":memory:",gpu_device=0):
+    def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,ba=BrocasArea,mpm=False,
+                 wakeword_name='jarvis',breakword="enough jarvis",exitword="goodbye jarvis",database_path=":memory:",
+                 nerve_from_input_to_cortex=None,gpu_device=0):
         logging.info("Starting Auditory Cortex. This will run at separte processes via multiprocess (nerve,cortex,stt,vr)")
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
@@ -795,7 +797,15 @@ class AuditoryCortex():
         self.external_stats_queue = mpm.Queue(maxsize=5)
 
         #raw sound capture carried to audio cortex
-        self.nerve_from_input_to_cortex = mpm.Queue(maxsize=20) #holds small buffer because we always want most recent anyway, queue is constantly drained if full
+        if nerve_from_input_to_cortex is None:
+            self.nerve_from_input_to_cortex = mpm.Queue(maxsize=20) #holds small buffer because we always want most recent anyway, queue is constantly drained if full
+        else:
+            if isinstance(nerve_from_input_to_cortex, mp.Queue):
+                logging.warning("a custom nerve_from_input_to_cortex passed to AudioCortex. Make sure it feeds at the correct rates and data struct or there will be errors. use auditory_nerve_connection() as a guide")
+                self.nerve_from_input_to_cortex = nerve_from_input_to_cortex
+            else:
+                logging.error("nerve_from_input_to_cortex passed to AudioCortex must be a multiprocessing queue")
+
         self.nerve_from_input_to_cortex_data_struct = {
                             'device_index': None,  # int: Audio input device identifier, default 0
                             'audio_frame': None,   # np.ndarray: float32 audio samples, shape (n_samples,)
@@ -912,6 +922,7 @@ class AuditoryCortex():
         self.auditory_processes['vr'] = vr_worker
 
     def start_nerve(self,device_index=0):
+        #TODO: in the event a custom nerve_from_input_to_cortex queue is supplied we wouldn't run this. at some point build out flags, switching, etc. to allow external queue data inputs
         #I/O raw audio data capture
         auditory_nerve_process = mp.Process(
             target=self.nerve,
