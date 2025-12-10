@@ -29,7 +29,7 @@ class TemporalLobe:
     non-default values from the most recent to oldest frames.
     """
     
-    def __init__(self, visual_cortex=None, auditory_cortex=None,mpm=None, database_path=":memory:",status_dict=None,PrefrontalCortex_interrupt_dict=None):
+    def __init__(self, visual_cortex=None, auditory_cortex=None,mpm=None, database_path=":memory:",status_dict=None,PrefrontalCortex_interrupt_dict=None,external_sensory_queue=None):
         """
         Initialize TemporalLobe with visual and auditory cortex instances.
         
@@ -37,11 +37,20 @@ class TemporalLobe:
             visual_cortex: VisualCortex instance
             auditory_cortex: AuditoryCortex instance
             mpm: Multiprocessing manager for creating queues
+            database_path: Path to the database file
+            status_dict: Multiprocessing dictionary for status monitoring
+            PrefrontalCortex_interrupt_dict: Multiprocessing dictionary for interrupt signaling to Prefrontal Cortex
+            external_sensory_queue: Multiprocessing queue for sending unified states to Cerebrum
         """
         self.running = False
         self.collection_thread = None
         if not mpm:
             logging.warning("You should pass a multiprocessing.Manager() instance for real-time queues")
+        if not PrefrontalCortex_interrupt_dict:
+            logging.warning("You should pass to PrefrontalCortex_interrupt_dict a multiprocessing.Manager().dict() instance for real-time interrupt signaling")
+        if not external_sensory_queue:
+            logging.warning("You should pass to external_sensory_queue a multiprocessing.Manager().Queue() instance for real-time unified state monitoring")
+
         #VISUAL    
         self.visual_cortex = visual_cortex#running instance of VisualCortex
         self.visual_data = None #latest visual data frame
@@ -52,8 +61,10 @@ class TemporalLobe:
         self.user_input_dict = mpm.dict({'text':""}) #latest user text input from UI
         #INTERUPT DICT
         self.prefrontal_cortex_interrupt_dict = PrefrontalCortex_interrupt_dict
-
-        self.external_temporallobe_to_prefrontalcortex = mpm.Queue(maxsize=30) #real-time unified state queue to Cerebrum
+        #REAL-TIME QUEUE TO PREFRONTAL CORTEX FOR LLM RESPONSES
+        self.external_temporallobe_to_prefrontalcortex = mpm.Queue(maxsize=30) #real-time unified state queue to Prefrontal Cortex
+        #REAL-TIME QUEUE TO CEREBRUM FOR MONITORING
+        self.external_sensory_queue = external_sensory_queue
 
         #last unified state
         self.last_unified_state = self._create_empty_unified_state()
@@ -135,32 +146,21 @@ class TemporalLobe:
         
         while self.running:
             current_time = time.time()
-            #data schema for the unified state
-            unified_state = None
-            received_audio_transcript = False
-            # Collect VISUAL Data
-            if self.visual_cortex:
-                person_detected_state = self.status_dict.get('person_detected',False)
-                try:
-                    visual_data = self.visual_cortex.external_cortex_queue.get_nowait()
-                    visual_data['collection_timestamp'] = current_time
-                    #if we have visual data results store it - not everything has as caption
-                    if visual_data['caption'] != "":
-                        logging.debug("Visual data received in Temporal Lobe\n")
-                        #logging.debug(visual_data)
-                        #logging.debug("\n","="*50,"\n")
-                        self.visual_data = visual_data
-                        us = self.status_dict['last_unified_state']
-                        us['caption'] = visual_data['caption']
-                        self.status_dict['last_unified_state'] = us
-                    #check if person detected state changed
-                    if person_detected_state != visual_data.get('person_detected',False):
-                        self.status_dict.update({"person_detected":visual_data.get('person_detected',False)})
-                                    
-                except queue.Empty:
-                    pass
-            else:
-                logging.error("Can't Collect visual data, No visual cortex available in Temporal Lobe")
+
+            #ONLY CREATE A NEW UNIFIED STATE IF WE HAVE FINAL AUDIO TRANSCRIPT OR USER UI INPUT
+            unified_state = None #reset each loop
+            received_audio_transcript = False #if we have audio final transcript, flag to skip user text input
+            audio_data = None
+            visual_data = None
+            transient_data = {
+                        'timestamp': current_time,
+                        'transcription': "",
+                        'caption': "",
+                        'speech_detected':False,
+                        'person_detected':False,
+                        'audio_data':False,
+                        'visual_data':False
+                    }
             
             # Collect AUDIO Data  
             if self.auditory_cortex:
@@ -170,6 +170,12 @@ class TemporalLobe:
                 try:
                     audio_data = self.auditory_cortex.external_cortex_queue.get_nowait()
                     self.auditory_data = audio_data
+
+                    transient_data['transcription'] = audio_data['transcription']
+                    transient_data['speech_detected'] = audio_data['speech_detected']
+                    transient_data['audio_data'] = True
+
+                    logging.debug("Temporal Lobe: Received audio data:", audio_data, flush=True)
                     audio_data['collection_timestamp'] = current_time
 
                     #check for interruption attempt
@@ -181,7 +187,7 @@ class TemporalLobe:
                     #check if speech detected state changed
                     if speech_detected_state != audio_data.get('speech_detected',False):
                         self.status_dict.update({"speech_detected":audio_data.get('speech_detected',False)})
-                    
+                        
                     #check if locked speaker changed
                     if locked_speaker_id_state != audio_data.get('voice_id',None) and audio_data.get('is_locked_speaker',False):
                         self.status_dict.update({"locked_speaker_id":audio_data.get('voice_id',None)})
@@ -193,7 +199,7 @@ class TemporalLobe:
                     #If Auditory Data was final transcript from our locked speaker, we prioritize collecting over User Text Input
                     if audio_data.get('final_transcript',False) and audio_data.get('is_locked_speaker',False):
                         received_audio_transcript = True
-                        logging.debug("Audio data received in Temporal Lobe\n")
+                        logging.debug("FINAL Audio data transcript received in Temporal Lobe\n")
                         logging.debug(audio_data)
                         logging.debug("\n","+"*50,"\n")
                         #Create unified state
@@ -226,8 +232,35 @@ class TemporalLobe:
                 logging.error(f"Error reading user input dict: {e}")
                 pass
 
+            # Collect VISUAL Data 
+            if self.visual_cortex:
+                try:
+                    visual_data = self.visual_cortex.external_cortex_queue.get_nowait()
+                    visual_data['collection_timestamp'] = current_time
+                    person_detected = visual_data.get('person_detected',False)
+                    caption = visual_data.get('caption',"")
+                    logging.debug("Visual data received in Temporal Lobe\n")
+                    #pack transient visual data
+                    transient_data['caption'] = caption
+                    transient_data['person_detected'] = person_detected
+                    transient_data['visual_data'] = True
+                    #update caption only if blank
+                    if caption != "":
+                        self.visual_data = visual_data
+                        us = self.status_dict.get('last_unified_state')
+                        us['caption'] = caption
+                        self.status_dict['last_unified_state'] = us
+                    #update if person detected state changed
+                    if self.status_dict.get('person_detected',False) != person_detected:
+                        self.status_dict.update({"person_detected":person_detected})
+                                    
+                except queue.Empty:
+                    pass
+            else:
+                logging.error("Can't Collect visual data, No visual cortex available in Temporal Lobe")
 
-            #We have unified_state data ready (audio or text), now add visual data if available
+            #UNIFIED STATE CREATION and SENDING TO QUEUE
+            #We have unified_state data (final audio or text input),add visual data if available, pack and ship to real-time queue
             if unified_state is not None:
                 
                 if self.visual_data is not None:
@@ -266,10 +299,24 @@ class TemporalLobe:
                                  })
                     except queue.Full:
                         pass # Still full (shouldn't be possible), skip this frame
-
-            # Small delay to prevent excessive CPU usage if we didn't create unified state data this iteration
-            if unified_state is None:
-                time.sleep(0.005)
+            
+            #TRANSIENT SENSORY DATA QUEUE
+            if transient_data['audio_data'] or transient_data['visual_data']:
+                #pass through real time data for monitoring, this data does NOT go to prefrontal cortex
+                try:
+                    self.external_sensory_queue.put_nowait(transient_data)
+                except queue.Full:
+                    # Queue is full, pop the oldest item to make room for the fresh one (LIFO behavior)
+                    try:
+                        self.external_sensory_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self.external_sensory_queue.put_nowait(transient_data)
+                    except queue.Full:
+                        pass
+            # Small sleep to prevent CPU spinning
+            time.sleep(0.005)
         
         logging.info("TemporalLobe frame collection stopped")
 
@@ -419,7 +466,8 @@ if __name__ == "__main__":
         mpm=manager,
         database_path=":memory:",
         status_dict=TemporalLobe_status_dict,
-        PrefrontalCortex_interrupt_dict=manager.dict({'interrupt':False})
+        PrefrontalCortex_interrupt_dict=manager.dict({'interrupt':False}),
+        external_sensory_queue=manager.Queue(maxsize=30)
     )
 
     try:
@@ -450,6 +498,20 @@ if __name__ == "__main__":
                     has_activity = True
             except queue.Empty:
                 pass
+
+            # --- HANDLE LIVE TRANSIENT DATA FEED ---
+            try:
+                # Get the latest frame from the queue (non-blocking)
+                trans_data = tl.external_sensory_queue.get_nowait()
+                
+                print("@"*20)
+                print(trans_data)
+                print("-"*20)
+                
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(e)
 
             # --- HANDLE UNIFIED STATE FEED ---
             try:

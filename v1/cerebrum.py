@@ -2,7 +2,8 @@
 import multiprocessing as mp
 import logging
 import sys
-
+import queue
+import time
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -45,12 +46,14 @@ class Cerebrum:
     def __init__(self, wakeword='jarvis', model_name="Qwen/Qwen2.5-Coder-7B-Instruct", db_path=":memory:"):
         logger.info("Initializing Cerebrum...")
         
-        # 1. Initialize Multiprocessing Manager (The central nervous system)
+        # Initialize Multiprocessing Manager (The central nervous system)
         self.manager = mp.Manager()
-        # 3. Create the Status Dictionary
+        # Create the Status Dictionary
         self.PrefrontalCortex_status_dict = self.manager.dict()
         PrefrontalCortex_interrupt_dict = self.manager.dict()
         PrefrontalCortex_interrupt_dict.update({'should_interrupt': False})
+        # create transient data queue
+        self.temporal_lobe_external_sensory_queue = self.manager.Queue(maxsize=30)
 
         self.TemporalLobe_status_dict = self.manager.dict()
 
@@ -60,7 +63,7 @@ class Cerebrum:
         exitword=f"goodbye {self.wakeword}"
 
 
-        # 2. Initialize Auditory Cortex
+        # Initialize Auditory Cortex
         if AuditoryCortex:
             logger.info("Spinning up Auditory Cortex...")
             audio_cortex = AuditoryCortex(
@@ -74,14 +77,14 @@ class Cerebrum:
             logger.critical("Auditory Cortex failed to load.")
             sys.exit(1)
 
-        # 3. Initialize Visual Cortex
+        #  Initialize Visual Cortex
         if VisualCortex:
             logger.info("Spinning up Visual Cortex...")
             visual_cortex = VisualCortex(mpm=self.manager)
         else:
             logger.info("Visual Cortex disabled or missing.")
 
-        # 4. Initialize Temporal Lobe (The Bridge to Visual and Auditory)
+        #  Initialize Temporal Lobe (The Bridge to Visual and Auditory)
         # Connects both Audio and Visual Cortex via
         # self.temporal_lobe.auditory_cortex and
         # self.temporal_lobe.visual_cortex
@@ -93,7 +96,8 @@ class Cerebrum:
                 mpm=self.manager,
                 database_path=db_path,
                 status_dict=self.TemporalLobe_status_dict,
-                PrefrontalCortex_interrupt_dict=PrefrontalCortex_interrupt_dict
+                PrefrontalCortex_interrupt_dict=PrefrontalCortex_interrupt_dict,
+                external_sensory_queue=self.temporal_lobe_external_sensory_queue
             )
         else:
             logger.critical("Temporal Lobe failed to load.")
@@ -158,6 +162,58 @@ class Cerebrum:
     # ============================================
     # UI CONTROLLER METHODS (For Flask App)
     # ============================================
+    def ui_get_transient_sensory_data(self):
+        """
+        Returns a dictionary of the most recent sensory data from the Temporal Lobe.
+        Maintains state to prevent UI flickering for captions and handles streaming text.
+        """
+        #  Initialize persistent state variables
+        if not hasattr(self, '_ui_last_caption'):
+            self._ui_last_caption = ""
+        if not hasattr(self, '_ui_current_transcription'):
+            self._ui_current_transcription = ""
+        if not hasattr(self, '_ui_speech_detected'):
+            self._ui_speech_detected = False
+        if not hasattr(self, '_ui_person_detected'):
+            self._ui_person_detected = False
+
+        #  Drain the queue
+        data_item = False
+        while not self.temporal_lobe_external_sensory_queue.empty():
+
+            try:
+                # We explicitly isolate the fetch operation.
+                # If THIS fails, the queue is likely empty/closed, so we BREAK.
+                data_item = self.temporal_lobe_external_sensory_queue.get_nowait()
+            except Exception:
+                break 
+
+            #  Process the data (Flag Checks)
+            # We do this OUTSIDE the try/except for the queue. 
+            # If there is a logic error here, we technically just skip this item 
+            # naturally and loop again to the next item.
+            if data_item:
+                if data_item.get('visual_data',False):
+                    self._ui_last_caption = data_item.get('caption', "")
+                    self._ui_person_detected = data_item.get('person_detected', False)
+                
+                if data_item.get('audio_data', False):
+                    #blank transcripts with poitive speech are received between transcription chunks
+                    if self.TemporalLobe_status_dict.get("speech_detected",False) and data_item.get('transcription', "") != "":
+                        self._ui_current_transcription = data_item.get('transcription', "")
+                    if not self.TemporalLobe_status_dict.get("speech_detected",False):
+                        #if there is no speech, cant be transcription
+                        self._ui_current_transcription = ""
+
+                    self._ui_speech_detected = data_item.get('speech_detected', False)
+
+        return {
+            'timestamp': time.time(),
+            'transcription': self._ui_current_transcription,
+            'caption': self._ui_last_caption,
+            'speech_detected': self._ui_speech_detected,
+            'person_detected': self._ui_person_detected,
+        }
 
     def ui_get_unified_state(self):
         """
@@ -257,18 +313,30 @@ class Cerebrum:
 
 
 if __name__ == "__main__":
-    import time
+    
     brain = Cerebrum(
         wakeword='jarvis',
         model_name="Qwen/Qwen2.5-Coder-7B-Instruct",
         db_path=":memory:"
     )
-    brain.start_systems(start_mic=True, start_cam=False)
+    brain.start_systems(start_mic=True, start_cam=True)
 
+    last_print = time.time()
     while True:
+        current_time = time.time()
         try:
-            time.sleep(10)
-            print(brain.ui_get_unified_state())
+            if current_time - last_print > 10:
+                last_print = current_time
+                print("-"*40)
+                print(brain.ui_get_unified_state())
+                print("-"*40)
+            trans = brain.ui_get_transient_sensory_data()
+            #if trans['transcription'] != "":
+            #print("#"*40)
+            #print(trans)
+            #print("#"*40)
+
+            time.sleep(0.05)#small delay to reduce print spam
         except KeyboardInterrupt:
             brain.stop_systems()
             break

@@ -23,6 +23,14 @@ def stats():
         return jsonify({"status": "offline"})
     return jsonify(brain.ui_get_unified_state())
 
+@app.route('/transient')
+def transient():
+    if brain is None:
+        return jsonify({"status": "initializing"})
+    if not brain.active:
+        return jsonify({"status": "offline"})
+    return jsonify(brain.ui_get_transient_sensory_data())
+
 @app.route('/vlm_recent_captions/<int:camera_index>')
 def recent_captions(camera_index):
     if brain is None: return jsonify({})

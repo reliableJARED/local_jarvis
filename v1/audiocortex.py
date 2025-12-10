@@ -278,9 +278,9 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             logging.debug(f"Detected my own voice: '{transcription}' ")
 
                         #Check for the breakword interruption phrase in the transcript and system is speaking
-                        if breakword.lower().replace('.', '').replace(',', '') in transcription.replace('.', '').replace(',', '') and system_actively_speaking:
+                        if breakword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip() and system_actively_speaking:
                             #placeholder to a User feedback audio sound like a beep. just play sys sound for now
-                            logging.debug('\a')
+                            print('\a')
                             
                             #system is playing AND we have an interruption breakword detected
                             logging.debug("INTERRUPTION - set True 1")
@@ -289,7 +289,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             brocas_area_interrupt_dict.update({'interrupt':True})
                         
                         #Check for the exitword release locked speaker
-                        if exitword.lower().lower().replace('.', '').replace(',', '') in transcription.lower():
+                        if exitword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip():
                             cortex_output['unlock_speaker'] = True
                         
                         #Flag our locked speaker is done speaking
@@ -343,14 +343,22 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         
                     # Put processed audio in output queue
                     try:
+                        external_cortex_queue.put_nowait(cortex_output)
                         if cortex_output['final_transcript']:
                             logging.debug("Final transcript sent to external cortex queue\n")
-                        external_cortex_queue.put_nowait(cortex_output)
+
                         #If our speaker said the exitword, reset
                         if cortex_output['unlock_speaker']:
                             locked_speaker_id = None
-                    except:
-                        logging.debug("external_cortex_queue FULL - CRITICAL ERROR")
+                    except queue.Full:
+                        logging.debug("external_cortex_queue FULL -  ERROR - consume faster")
+                        try:
+                            _ = external_cortex_queue.get_nowait()
+                            external_cortex_queue.put_nowait(cortex_output)
+                        except queue.Empty:
+                            external_cortex_queue.put_nowait(cortex_output)
+                    except Exception as e:
+                        logging.error(f"Error putting data in audiocortex external_cortex_queue: {e}")
 
                 except Exception as vad_error:
                     logging.debug(f"VAD processing error: {vad_error}")
@@ -475,9 +483,9 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
     last_processed_length = 0  # Track how much of the current speech we've processed
     
     # Parameters (at 16kHz sample rate)
-    min_chunk_size = 64000  # 4 seconds minimum before starting transcription (if no final audio flag received)
-    overlap_samples = 24000  # 1.5 second overlap for word boundary detection
-    incremental_threshold = 48000  # 3 seconds of new audio before processing again
+    min_chunk_size = 32000  # 2 seconds minimum before starting transcription (if no final audio flag received)
+    overlap_samples = 24000  # 1.5 second overlap for word boundary detection (leave large enough to account for nerve_from_cortex_to_stt lag)
+    incremental_threshold = 24000  # 1.5 seconds of new audio before processing again, matching overlap sample worked well in testing
     
     try:
         while True:
@@ -621,7 +629,7 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
                         
                         # Prepare and send transcript data
                         analysis_timestamp = time.time()
-                        logging.debug("FINAL TRANSCRIPT:" if not more_speech_coming else "INTERIM TRANSCRIPT:", working_transcript)
+                        logging.debug("STT WORKER FINAL TRANSCRIPT:" if not more_speech_coming else "STT WORKER INTERIM TRANSCRIPT:", working_transcript)
                         transcript_data = {
                             'transcription': working_transcript,
                             'final_transcript': not more_speech_coming,
