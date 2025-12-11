@@ -88,7 +88,7 @@ flowchart LR
 
     %% The Brain
     subgraph Brain [prefrontalcortex.py]
-        PFC(Prefrontal Cortex - Qwen LLM / Logic)
+        PFC{Prefrontal Cortex - Qwen LLM / Logic}
         Tools[[Tools / Internet Search]]
     end
 
@@ -170,7 +170,7 @@ flowchart LR
     </li>
     <li><strong>Integration:</strong> The <code>TemporalLobe</code> sits in a loop, pulling results from both cortexes. It waits for a "trigger" event (like a finished sentence or user typing) to package the visual and audio context into a single "Unified State".</li>
     <li><strong>Cognition:</strong> The <code>PrefrontalCortex</code> receives the Unified State. It constructs a prompt for the Qwen LLM. It may execute tools (like Google Search). It generates a text response.</li>
-    <li><strong>Expression:</strong> As the LLM streams text tokens, they are sent to <code>BrocasArea</code>. This module runs Kokoro TTS and places the resulting audio into a playback queue for the <code>PlaybackProc</code> to articulate via the speakers.</li>
+    <li><strong>Expression:</strong> As the LLM streams text tokens, they are sent to <code>BrocasArea</code>. This module runs Kokoro TTS and places the resulting audio into a playback queue for the <code>PlaybackProccess</code> to articulate via the speakers.</li>
 </ol>
 
 </body>

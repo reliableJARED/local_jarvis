@@ -298,7 +298,7 @@ flowchart LR
 
     %% The Brain
     subgraph Brain [prefrontalcortex.py]
-        PFC(Prefrontal Cortex - Qwen LLM / Logic)
+        PFC{Prefrontal Cortex - Qwen LLM / Logic}
         Tools[[Tools / Internet Search]]
     end
 
