@@ -204,12 +204,16 @@
             text-transform: uppercase;
         }
 
+        .config-item textarea {
+            min-height: 50px;
+        }
+
         .config-item input, .config-item textarea {
             background: #000;
             border: 1px solid var(--pcb-trace);
             color: var(--pcb-trace);
             font-family: var(--font-main);
-            padding: 5px;
+            padding: 12px 10px;
             font-size: 0.8rem;
             resize: none;
         }
@@ -358,19 +362,19 @@
 
                         <div class="config-item full-width">
                             <label>System Prompt (Base)</label>
-                            <textarea id="conf-base" rows="3"></textarea>
+                            <textarea id="conf-base" rows="6"></textarea>
                         </div>
                         <div class="config-item full-width">
                             <label>System Prompt (Tools)</label>
-                            <textarea id="conf-tools" rows="2"></textarea>
+                            <textarea id="conf-tools" rows="4"></textarea>
                         </div>
                         <div class="config-item full-width">
                             <label>System Prompt (Visual Context)</label>
-                            <textarea id="conf-visual" rows="2"></textarea>
+                            <textarea id="conf-visual" rows="3"></textarea>
                         </div>
                         <div class="config-item full-width">
                             <label>System Prompt (Audio Context)</label>
-                            <textarea id="conf-audio" rows="2"></textarea>
+                            <textarea id="conf-audio" rows="3"></textarea>
                         </div>
                     </div>
 

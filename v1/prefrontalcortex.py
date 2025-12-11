@@ -123,6 +123,7 @@ class PrefrontalCortex:
 
             """
         self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. Use Internet to support answers to subjects you do not have knowledge or extensive knowledge on. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
+        self.system_prompt_visual = ""
         self.messages = [{"role": "system", "content": self.system_prompt_base}]  
         
         self.tools = {}
@@ -140,7 +141,7 @@ class PrefrontalCortex:
             'temperature':0.7,
             'system_prompt_base': self.system_prompt_base,
             'system_prompt_tools': self.prompt_for_tool_use,
-            'system_prompt_visual':"",#contains scene description of visual
+            'system_prompt_visual':self.system_prompt_visual,#contains scene description of visual
             'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
             'messages': self.messages,
             'last_input':"",
@@ -882,15 +883,25 @@ class PrefrontalCortex:
             try:
                 templobe_data = self.external_temporallobe_to_prefrontalcortex.get_nowait()
                 input_data = None
-                #check if we have text input or audio transcription input
-                #AUDIO
+                
+                caption = f"\nYOU CAN SEE THROUGH YOUR CAMERA: {templobe_data.get('caption')}.\nThat is what you see." if templobe_data.get('caption',"") != "" else ""
+
+                #AUDIO Input
                 if templobe_data.get('transcription', "") != "":
+                    #Add visual if there was any (will be if cam is on)
+                    self.status_dict.update({'system_prompt_visual':caption})
+                    self.system_prompt_visual = caption
+
                     #audio transcription input received
                     input_data = templobe_data['transcription']
                     #play audio sound beep. just play sys sound for now indicate processing start
                     print('\a')
-                #TEXT
+                #TEXT Input
                 elif templobe_data.get('user_text_input', "") != "":
+                    #Add visual if there was any (will be if cam is on)
+                    self.status_dict.update({'system_prompt_visual':caption})
+                    self.system_prompt_visual = caption
+
                     #text input received
                     input_data = templobe_data['user_text_input']
                     #play audio sound beep. just play sys sound for now indicate processing start
@@ -1053,7 +1064,7 @@ class PrefrontalCortex:
                             'model': self.model_name,
                             'system_prompt_base': self.system_prompt_base,
                             'system_prompt_tools': self.prompt_for_tool_use,
-                            'system_prompt_visual':"",#contains scene description of visual
+                            'system_prompt_visual':self.system_prompt_visual,#visual scene description at time of inference
                             'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
                             'messages': self.messages,
                             'last_response':self.messages[-1]['content']
