@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import logging
 import queue
-from search import WebSearch
+from llm_tool_libs.search import WebSearch
 import threading
 import sys
 
@@ -157,7 +157,6 @@ class PrefrontalCortex:
         #Start MAIN loop a separate thread 
         self.chat_thread = threading.Thread(target=self.chat_streaming, daemon=True)
         self.chat_thread.start()
-
 
     def check_internet(self):
         """Check if internet connection is available."""
@@ -849,7 +848,6 @@ class PrefrontalCortex:
                 time.sleep(0.001)
                 continue
             
-    
     def chat_streaming(self, file_contents: list = None, max_tool_iterations: int = 5, max_words_start_speech: int = 30, min_words_start_speech: int = 3) -> str:
         """
         Generate streaming response with recursive tool support and periodic speech synthesis.
