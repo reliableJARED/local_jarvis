@@ -242,9 +242,14 @@ The system is designed to run completely offline:
 ```mermaid
 flowchart LR
     %% Subgraph for Sensory Inputs
-    subgraph Senses [Sensory Input Devices]
+    subgraph Senses [Input Devices]
         Mic[Microphone Hardware]
         Cam[Camera Hardware]
+
+    end
+
+    %% Subgraph for Outputs
+    subgraph UI [server.py]
         UI_Input[Flask Web UI]
     end
 
@@ -257,32 +262,32 @@ flowchart LR
         Q_ToSTT[(nerve_from_cortex_to_stt)]
         STT_Worker(Speech to Text Worker)
         VR_Worker(Voice ID Worker)
+        VR_in_queue[(nerve_from_stt_to_vr)]
+        VR_out_queue[(nerve_from_vr_to_stt)]
+        VR_Database([Voice ID Database SQLite])
         
-        Mic --> AudioNerve
+        Mic -- "py sounddevice" -->AudioNerve
         AudioNerve --> Q_RawAudio
         Q_RawAudio --> AudioCore
         AudioCore --> Q_ToSTT
         Q_ToSTT --> STT_Worker
         STT_Worker --> AudioCore
-        STT_Worker -- "nerve_from_stt_to_vr" --> VR_Worker
-        VR_Worker -- "nerve_from_vr_to_stt" --> STT_Worker
+        STT_Worker --> VR_in_queue
+        VR_Worker -- "voice_id_query" --> VR_Database
+        VR_Database -- "voice_id_result" --> VR_Worker 
+        VR_in_queue --> VR_Worker
+        VR_out_queue --> STT_Worker
+        VR_Worker --> VR_out_queue
     end
 
-    %% Subgraph for Visual Processing
-    subgraph VisualSys [visualcortex.py]
-        direction TB
-        OpticNerve(Optic Nerve Process)
-        Q_RawImg[(internal_nerve_queue)]
-        VisualCore{Visual Cortex Core - YOLO}
-        Q_ToVLM[(internal_to_vlm_queue)]
-        VLM_Worker(VLM / Moondream)
-        
-        Cam --> OpticNerve
-        OpticNerve --> Q_RawImg
-        Q_RawImg --> VisualCore
-        VisualCore --> Q_ToVLM
-        Q_ToVLM --> VLM_Worker
-        VLM_Worker --> VisualCore
+    
+
+     %% Speech Output
+    subgraph SpeechOut [brocasArea.py]
+        BrocasMain(Brocas Area Main)
+        Q_Play[(internal_play_queue)]
+        PlaybackProc(Playback Process)
+        Speaker((Speaker))
     end
 
     %% The Bridge
@@ -296,13 +301,24 @@ flowchart LR
         Tools[[Tools / Internet Search]]
     end
 
-    %% Speech Output
-    subgraph SpeechOut [brocasArea.py]
-        BrocasMain(Brocas Area Main)
-        Q_Play[(internal_play_queue)]
-        PlaybackProc(Playback Process)
-        Speaker((Speaker))
+    %% Subgraph for Visual Processing
+    subgraph VisualSys [visualcortex.py]
+        direction TB
+        OpticNerve(Optic Nerve Process)
+        Q_RawImg[(internal_nerve_queue)]
+        VisualCore{Visual Cortex Core - YOLO}
+        Q_ToVLM[(internal_to_vlm_queue)]
+        VLM_Worker(VLM / Moondream)
+        
+        Cam  -- "py cv2"--> OpticNerve
+        OpticNerve --> Q_RawImg
+        Q_RawImg --> VisualCore
+        VisualCore --> Q_ToVLM
+        Q_ToVLM --> VLM_Worker
+        VLM_Worker --> VisualCore
     end
+
+    
 
     %% Connections - Visual Output
     VisualCore -- "VLM Data/Captions" --> Q_ExtVisual[(external_cortex_queue)]
@@ -326,12 +342,13 @@ flowchart LR
     PFC -- "Call Tool" --> Tools
     Tools -- "Result" --> PFC
     PFC -- "Streaming Text" --> BrocasMain
-    PFC -- "UI Output" --> UI_Input
+    PFC -- "LLM Response/UI Output" --> UI_Input
 
     %% Connections - Speech Synthesis
     BrocasMain -- "Audio Data" --> Q_Play
     Q_Play --> PlaybackProc
     PlaybackProc --> Speaker
+    Speaker --> UI_Input
 
     
 
@@ -345,8 +362,8 @@ flowchart LR
     classDef process fill:#2d3748,stroke:#61dafb,stroke-width:2px;
     classDef hardware fill:#4a5568,stroke:#fff,stroke-width:1px;
     
-    class Q_RawAudio,Q_ToSTT,Q_RawImg,Q_ToVLM,Q_ExtVisual,Q_ExtAudio,Q_Main,Q_Play,Q_ImgFeed queue;
-    class AudioNerve,AudioCore,STT_Worker,OpticNerve,VisualCore,VLM_Worker,TempLobe,PFC,BrocasMain,PlaybackProc process;
+    class Q_RawAudio,Q_ToSTT,Q_RawImg,Q_ToVLM,Q_ExtVisual,Q_ExtAudio,Q_Main,Q_Play,Q_ImgFeed,VR_in_queue,VR_out_queue queue;
+    class AudioNerve,AudioCore,STT_Worker,OpticNerve,VisualCore,VLM_Worker,TempLobe,PFC,BrocasMain,PlaybackProc,VR_Worker process;
     class Mic,Cam,Speaker,UI_Input hardware;
 ```
 
