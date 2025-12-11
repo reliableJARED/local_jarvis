@@ -194,6 +194,9 @@ def BrocasArea_playback(internal_play_queue, stop_dict, shutdown_event, status_d
 
 class BrocasArea():
     def __init__(self,brocas_area_interrupt_dict,lang_code = 'a',voice='af_sky,af_jessica') -> None:
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING BROCA'S AREA... ")
+        print("----------------------------------------------------------------")
         # Check for internet connection
         _ = self.check_internet()
         self.KPipeline = KPipeline

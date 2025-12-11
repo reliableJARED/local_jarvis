@@ -10,7 +10,7 @@ import gc
 import random
 import string
 from typing import List, Dict, Any, Callable, Generator
-
+import multiprocessing as mp
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -19,6 +19,7 @@ import logging
 import queue
 from search import WebSearch
 import threading
+import sys
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -65,6 +66,11 @@ def internet_search(args,return_instructions=False):
 
 class PrefrontalCortex:
     def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct",external_temporallobe_to_prefrontalcortex=None,interrupt_dict=None, audio_cortex=None,status_dict=None,):
+        
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING PREFRONTAL CORTEX... ")
+        print("----------------------------------------------------------------")
+
         if status_dict is None:
             logging.warning("You MUST pass a multi processing manager dict instance: multiprocessing.Manager().dict(), using arg: PrefrontalCortex(status_dict= multiprocessing.Manager()), when you initiate the PrefrontalCortex")
         
@@ -93,8 +99,7 @@ class PrefrontalCortex:
         # Get current time
         timestamp = datetime.now().strftime("%A, %B %d, %Y")
         print(timestamp)  # Monday, November 17, 2025
-
-        #TODO: Should be a multiprocessing dict
+        
         self.system_prompt_base = f"""Today is {timestamp}. You are multimodal AI companion named '{self.audio_cortex.wakeword_name.upper()}'. User provides inputs from a Voice to Text and you also have a Visual Description of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  If it applies and is related, incorporate what you see in your response.
             **Personality Description:**
             **Background:**
@@ -118,11 +123,11 @@ class PrefrontalCortex:
 
             """
         self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. Use Internet to support answers to subjects you do not have knowledge or extensive knowledge on. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
-        self.messages = [{"role": "system", "content": self.system_prompt_base}]
+        self.messages = [{"role": "system", "content": self.system_prompt_base}]  
         
         self.tools = {}
         self.available_tools = []
-        self.streaming_tool_break_flag = " BREAK_HERE_TOOLS_WERE_USED "
+        self.streaming_tool_break_flag = " BREAK_HERE_TOOLS_WERE_USED " #this gets inserted after a tool call when streaming detects via string match a 'tool call' token begining
         first_param_dtype = next(self.model.parameters()).dtype
         logging.debug(f"The model's data type is: {first_param_dtype}")
         self.model.eval()
@@ -132,6 +137,7 @@ class PrefrontalCortex:
         self.status_dict.update({
             'thinking': False,
             'model': self.model_name,
+            'temperature':0.7,
             'system_prompt_base': self.system_prompt_base,
             'system_prompt_tools': self.prompt_for_tool_use,
             'system_prompt_visual':"",#contains scene description of visual
@@ -160,6 +166,12 @@ class PrefrontalCortex:
         except (socket.timeout, socket.error, OSError):
             return False
 
+    def get_system_prompt(self):
+        return self.messages[0]
+    
+    def get_messages(self):
+        return self.messages
+    
     def update_system_prompt(self, new_sys_prompt:str):
         """Update the system prompt"""
         #Check if we have tools
@@ -553,7 +565,7 @@ class PrefrontalCortex:
                 **model_inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=True,
-                temperature=0.7,
+                temperature=self.status_dict['temperature'],
                 top_p=0.8
             )
             generation_time = time.time() - start_time
@@ -580,7 +592,6 @@ class PrefrontalCortex:
         """
         Generate tokens one at a time and yield them as strings.
         """
-        input_ids_len = model_inputs.input_ids.shape[1]
         generated_token_ids = []
         
         # Simpler approach: keep track of what we've already output
@@ -621,7 +632,7 @@ class PrefrontalCortex:
                 past_key_values = outputs.past_key_values
                 
                 # Apply temperature scaling with safety check
-                temperature = 0.7
+                temperature = self.status_dict['temperature']
                 logits = logits / max(temperature, 1e-8)
                 
                 # Clip logits to prevent overflow
@@ -837,6 +848,7 @@ class PrefrontalCortex:
                 time.sleep(0.001)
                 continue
             
+    
     def chat_streaming(self, file_contents: list = None, max_tool_iterations: int = 5, max_words_start_speech: int = 30, min_words_start_speech: int = 3) -> str:
         """
         Generate streaming response with recursive tool support and periodic speech synthesis.
@@ -875,10 +887,14 @@ class PrefrontalCortex:
                 if templobe_data.get('transcription', "") != "":
                     #audio transcription input received
                     input_data = templobe_data['transcription']
+                    #play audio sound beep. just play sys sound for now indicate processing start
+                    print('\a')
                 #TEXT
                 elif templobe_data.get('user_text_input', "") != "":
                     #text input received
                     input_data = templobe_data['user_text_input']
+                    #play audio sound beep. just play sys sound for now indicate processing start
+                    print('\a')
                 else:
                     #no valid input, skip
                     logging.debug("No valid input received, skipping.")
@@ -1083,7 +1099,7 @@ class PrefrontalCortex:
 
 
 if __name__ == "__main__":
-    import multiprocessing as mp
+    
     
     # Create Multiprocessing Manager
     # Note: If getting CUDA errors on start, you might need: mp.set_start_method('spawn')

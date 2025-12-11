@@ -105,6 +105,21 @@ def ui_input():
         return jsonify({"status": "input_received", "text": user_text})
     return jsonify({"status": "empty_input"}), 400
 
+@app.route('/get_system_config')
+def get_system_config():
+    if brain is None: return jsonify({})
+    data = brain.ui_get_prefrontal_cortex_config()
+    return jsonify(data)
+    
+
+@app.route('/set_system_config', methods=['POST'])
+def set_system_config():
+    if brain is None: return jsonify({"status": "error", "message": "Brain offline"})
+    data = request.json
+    success = brain.update_prefrontal_cortex_config(data)
+    return jsonify({"success": success})
+    
+
 @app.route('/stop_all')
 def stop_all():
     if brain:
@@ -118,10 +133,6 @@ if __name__ == "__main__":
     # Instantiate the brain HERE, protected by the __main__ check.
     # This prevents child processes from trying to create their own 'brain' instance
     # which causes the infinite recursion/RuntimeError.
-    
-    print("----------------------------------------------------------------")
-    print(" INITIALIZING CEREBRUM... ")
-    print("----------------------------------------------------------------")
     
     brain = Cerebrum(
         wakeword='jarvis', 
@@ -140,6 +151,9 @@ if __name__ == "__main__":
     print(" CEREBRUM UI SERVER ONLINE ")
     print(" Access at http://localhost:5000 ")
     print("----------------------------------------------------------------")
+
+    # Play startup sound/greeting
+    brain.temporal_lobe.speak(f"My interface is now being served on http:// localhost on port 5000")
     
     try:
         # use_reloader=False is important here to avoid duplicate initialization

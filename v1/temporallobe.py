@@ -42,6 +42,10 @@ class TemporalLobe:
             PrefrontalCortex_interrupt_dict: Multiprocessing dictionary for interrupt signaling to Prefrontal Cortex
             external_sensory_queue: Multiprocessing queue for sending unified states to Cerebrum
         """
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING TEMPORAL LOBE... ")
+        print("----------------------------------------------------------------")
+
         self.running = False
         self.collection_thread = None
         if not mpm:
@@ -116,6 +120,7 @@ class TemporalLobe:
             'locked_speaker_id': None,
             'locked_speaker_timestamp': None,
             'is_locked_speaker': False,
+            'unlock_speaker':False,
 
             #Speech Output
             'actively_speaking':False,
@@ -183,7 +188,7 @@ class TemporalLobe:
                         #Set interrupt flag for Prefrontal Cortex
                         self.prefrontal_cortex_interrupt_dict.update({'interrupt':True})
                         logging.debug("Interruption attempt detected from Auditory Cortex - setting interrupt flag for Prefrontal Cortex")
-
+                    
                     #check if speech detected state changed
                     if speech_detected_state != audio_data.get('speech_detected',False):
                         self.status_dict.update({"speech_detected":audio_data.get('speech_detected',False)})
@@ -191,7 +196,7 @@ class TemporalLobe:
                     #check if locked speaker changed
                     if locked_speaker_id_state != audio_data.get('voice_id',None) and audio_data.get('is_locked_speaker',False):
                         self.status_dict.update({"locked_speaker_id":audio_data.get('voice_id',None)})
-                    
+                        
                     #check if actively speaking state changed
                     if activly_speaking_state != audio_data.get('hear_self_speaking',False):
                         self.status_dict.update({"actively_speaking":audio_data.get('hear_self_speaking',False)})
@@ -204,6 +209,10 @@ class TemporalLobe:
                         logging.debug("\n","+"*50,"\n")
                         #Create unified state
                         unified_state = self._create_empty_unified_state()
+                        #check if speaker unlocked
+                        if audio_data.get('unlock_speaker',False):
+                            self.status_dict.update({"locked_speaker_id":None})
+                            audio_data["locked_speaker_id"]=None#Force None, because this will be speaker id EVEN IF unlocking
 
                         #Merge auditory data first to prioritize speech
                         for key, value in audio_data.items():

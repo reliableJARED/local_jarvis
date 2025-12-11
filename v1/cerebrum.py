@@ -44,6 +44,10 @@ class Cerebrum:
     It serves as the backend controller for the Flask UI.
     """
     def __init__(self, wakeword='jarvis', model_name="Qwen/Qwen2.5-Coder-7B-Instruct", db_path=":memory:"):
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING CEREBRUM... ")
+        print("----------------------------------------------------------------")
+
         logger.info("Initializing Cerebrum...")
         
         # Initialize Multiprocessing Manager (The central nervous system)
@@ -223,7 +227,7 @@ class Cerebrum:
         # Get current sensory state from Temporal Lobe
         tl_state = self.temporal_lobe.get_status()
         """
-        tl_state = {
+        tl_state['last_unified_state'] = {
             # Timing
             'timestamp': time.time(),
             'formatted_time': datetime.now().strftime('%H:%M:%S'),
@@ -250,6 +254,7 @@ class Cerebrum:
             'locked_speaker_id': None,
             'locked_speaker_timestamp': None,
             'is_locked_speaker': False,
+            'unlock_speaker':False,
 
             #Speech Output
             'actively_speaking':False,
@@ -275,7 +280,7 @@ class Cerebrum:
         
         # Combine them
         combined_state = {
-            "sensory": tl_state['last_unified_state'],#don't need all the visual/auditory data here only the unified state,
+            "sensory": tl_state['last_unified_state'],#extract the templobe unified state,
             "cognitive": pfc_state,
             "system": {
                 "state": self.active,
@@ -310,7 +315,21 @@ class Cerebrum:
             self.temporal_lobe.start_visual_nerve(device_index)
         else:
             self.temporal_lobe.stop_visual_nerve(device_index)
-
+     
+    def ui_get_prefrontal_cortex_config(self):
+        full_config = self.prefrontal_cortex.status_dict.copy()
+        print(full_config)
+        #must remove messages because not json serializable
+        del full_config['messages']
+        del full_config['last_input']
+        del full_config['last_response']
+        return full_config
+     
+    def update_prefrontal_cortex_config(self,data):
+        print("TODO: Make this update endpoint work")
+        print(data)
+        
+        return True
 
 if __name__ == "__main__":
     

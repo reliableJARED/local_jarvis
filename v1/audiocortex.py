@@ -237,7 +237,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                     cortex_output = {
                         'transcription': "",
                         'final_transcript': False,
-                        'voice_id': None,
+                        'voice_id': None, #locked_speaker_id
                         'voice_probability': 0.0,
                         'device_index': device_index,
                         'speech_detected': speech_active,
@@ -305,7 +305,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                 if transcription.lower().startswith(wakeword_name.lower()):
                                     logging.debug(f"\n\nWake word detected: {transcription}\n\n")
                                     logging.debug("INTERRUPTION - set False 2")
-                                    #brocas_area_interrupt_dict.update({'interrupt':False})
+                                    
                                     # Lock to this speaker - Double prevent system voice locking on to itself
                                     if voice_match_id and voice_match_id != system_voice_id:
                                         locked_speaker_id = voice_match_id
@@ -347,9 +347,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         if cortex_output['final_transcript']:
                             logging.debug("Final transcript sent to external cortex queue\n")
 
-                        #If our speaker said the exitword, reset
-                        if cortex_output['unlock_speaker']:
-                            locked_speaker_id = None
+                        
                     except queue.Full:
                         logging.debug("external_cortex_queue FULL -  ERROR - consume faster")
                         try:
@@ -759,6 +757,11 @@ class AuditoryCortex():
                  wakeword_name='jarvis',breakword="enough jarvis",exitword="goodbye jarvis",database_path=":memory:",
                  nerve_from_input_to_cortex=None,gpu_device=0):
         logging.info("Starting Auditory Cortex. This will run at separte processes via multiprocess (nerve,cortex,stt,vr)")
+        
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING AUDITORY CORTEX... ")
+        print("----------------------------------------------------------------")
+
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: AuditoryCortex(mpm= multiprocessing.Manager()), to initiate the AuditoryCortex")
         #processes

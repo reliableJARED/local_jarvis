@@ -526,6 +526,11 @@ def visual_cortex_worker_vlm(limitedGPUenv,internal_to_vlm_queue,visual_cortex_i
 class VisualCortex():
     def __init__(self,cortex=visual_cortex_core,vlm=visual_cortex_worker_vlm,nerve=optic_nerve_connection,internal_nerve_queue=None,mpm=False,gpu_to_use=0):
         logging.info("Starting Visual Cortex. This will run at minimum 3 separte processes via multiprocess (nerve,cortex,vlm)")
+        
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING VISUAL CORTEX... ")
+        print("----------------------------------------------------------------")
+
         if not mpm:
             logging.warning("You MUST pass a multi processing manager instance: multiprocessing.Manager(), using arg: VisualCortex(mpm= multiprocessing.Manager()), to initiate the VisualCortex")
         #processes
@@ -535,7 +540,7 @@ class VisualCortex():
 
         # Visual queues
         self.external_cortex_queue = mpm.Queue(maxsize=30)
-        
+
         #raw images from camera
         if internal_nerve_queue is None:
             self.internal_nerve_queue = mpm.Queue(maxsize=1)

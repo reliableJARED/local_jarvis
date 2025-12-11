@@ -30,7 +30,6 @@ warnings.filterwarnings(
 # >>>>>> END OF WARNING SUPPRESSION CODE BLOCK <<<<<<
 # =================================================================
 
-
 from speechbrain.inference.speaker import EncoderClassifier
 
 
@@ -58,6 +57,10 @@ class VoiceRecognitionSystem:
             use_gpu: Whether to use GPU for inference (default: False)
             max_samples_per_profile: Maximum voice samples per speaker (default: 10)
         """
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING VOICE RECOGNITION SYSTEM ... ")
+        print("----------------------------------------------------------------")
+
         self.embedding_dim = embedding_dim
         self.recognition_threshold = 0.3
         self.new_profile_threshold = 0.7  # Used to determine if a new sample is actually a voice of existing profile
@@ -267,7 +270,6 @@ class VoiceRecognitionSystem:
             logging.error(f"Error extracting embedding: {e}")
             return None
     
-
     def _calculate_cohesion_score(self, embedding: np.ndarray, cluster: List[np.ndarray]) -> float:
         """
         Calculate how well an embedding fits with a cluster.
