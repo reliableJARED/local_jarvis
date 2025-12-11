@@ -139,6 +139,7 @@ The TemporalLobe runs a background thread `_temporalLobe_State_Loop` that:
             'locked_speaker_id': None,
             'locked_speaker_timestamp': None,
             'is_locked_speaker': False,
+            'unlock_speaker':False,
 
             #Speech Output
             'actively_speaking':False,
