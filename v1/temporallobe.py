@@ -512,10 +512,10 @@ if __name__ == "__main__":
             try:
                 # Get the latest frame from the queue (non-blocking)
                 trans_data = tl.external_sensory_queue.get_nowait()
-                
-                print("@"*20)
-                print(trans_data)
-                print("-"*20)
+                if trans_data.get('transcription',"") != "" or trans_data.get('caption',"") != "":
+                    print(">>Transient Data>>")
+                    print(trans_data)
+                    print("-"*20,"\n")
                 
             except queue.Empty:
                 pass

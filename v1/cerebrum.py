@@ -65,6 +65,7 @@ class Cerebrum:
         self.wakeword = wakeword
         breakword=f"enough {self.wakeword}"
         exitword=f"goodbye {self.wakeword}"
+        
 
 
         # Initialize Auditory Cortex
@@ -180,9 +181,14 @@ class Cerebrum:
             self._ui_speech_detected = False
         if not hasattr(self, '_ui_person_detected'):
             self._ui_person_detected = False
+        if not hasattr(self, 'last_live_transcription_time'):
+            self.last_live_transcription_time = time.time()
+        if not hasattr(self,'transcription_delay_time'):
+            self.transcription_delay_time = 2.0 #seconds to wait before clearing transcription after speech ends
 
-        #  Drain the queue
+        #Used to Drain the queue
         data_item = False
+        
         while not self.temporal_lobe_external_sensory_queue.empty():
 
             try:
@@ -205,11 +211,16 @@ class Cerebrum:
                     #blank transcripts with poitive speech are received between transcription chunks
                     if self.TemporalLobe_status_dict.get("speech_detected",False) and data_item.get('transcription', "") != "":
                         self._ui_current_transcription = data_item.get('transcription', "")
-                    if not self.TemporalLobe_status_dict.get("speech_detected",False):
-                        #if there is no speech, cant be transcription
-                        self._ui_current_transcription = ""
+                        self.last_live_transcription_time = time.time()
 
-                    self._ui_speech_detected = data_item.get('speech_detected', False)
+                self._ui_speech_detected = data_item.get('speech_detected', False)
+
+        # Implement 'sticky' transcription logic
+        if not self._ui_speech_detected:
+            #reset transcription after short delay
+            if time.time() - self.last_live_transcription_time > self.transcription_delay_time:
+                self._ui_current_transcription = ""
+                
 
         return {
             'timestamp': time.time(),

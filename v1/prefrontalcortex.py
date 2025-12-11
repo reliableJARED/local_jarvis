@@ -1034,7 +1034,7 @@ class PrefrontalCortex:
                         
                         tool_results = self._execute_tool_calls(tool_calls)
 
-                        print(f"\nTOOL RESULTS: {tool_results}")
+                        logging.debug(f"\nTOOL RESULTS: {tool_results}")
                         
                         messages_copy.extend(tool_results)
                         
@@ -1056,7 +1056,7 @@ class PrefrontalCortex:
 
                 # Update the actual message history with all the interactions
                 self.messages = messages_copy
-                print(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
+                logging.debug(f"\n\nSYSTEM MESSAGES:\n{self.messages}\n\n")
                 self.status_dict.update({
                             'thinking': False,
                             'model': self.model_name,

@@ -155,6 +155,9 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
     try:
         SAMPLE_SIZE_REQUIREMENT = 512 #DO NOT CHANGE VALUE required for VAD
         while True:
+            #CRITICAL DESIGN CONSIDERATION: This loop must run fast enough to keep up with incoming audio frames to prevent latency buildup. 
+            # If it is not running at around 30fps or higher with 512 sample chunks, audio latency will build up
+
             try:
                 audio_data = nerve_from_input_to_cortex.get_nowait()
                 
@@ -291,6 +294,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         #Check for the exitword release locked speaker
                         if exitword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip():
                             cortex_output['unlock_speaker'] = True
+                            locked_speaker_id = None
                         
                         #Flag our locked speaker is done speaking
                         if cortex_output['final_transcript'] and cortex_output['is_locked_speaker']:
@@ -381,6 +385,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                     
             except queue.Empty:
                 continue
+            
 
             #delay to prevent CPU overload
             time.sleep(0.001)
@@ -483,7 +488,7 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
     # Parameters (at 16kHz sample rate)
     min_chunk_size = 32000  # 2 seconds minimum before starting transcription (if no final audio flag received)
     overlap_samples = 24000  # 1.5 second overlap for word boundary detection (leave large enough to account for nerve_from_cortex_to_stt lag)
-    incremental_threshold = 24000  # 1.5 seconds of new audio before processing again, matching overlap sample worked well in testing
+    incremental_threshold = 16000  # 1 seconds of new audio before processing again, matching overlap sample worked well in testing
     
     try:
         while True:
