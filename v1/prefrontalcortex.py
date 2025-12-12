@@ -757,7 +757,6 @@ class PrefrontalCortex:
         Continues calling tools until model stops requesting them or max iterations reached.
         """
         
-        
         while True:
             try:
                 templobe_data = self.external_temporallobe_to_prefrontalcortex.get_nowait()
