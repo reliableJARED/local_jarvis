@@ -266,6 +266,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
 
                         voice_match_id = cortex_output.get('voice_id', None)
                         transcription = cortex_output.get('transcription', '').lower().strip()
+                        exitword_match = exitword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip()
+                        breakword_match = breakword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip()
 
 
                         # Determine if this is speech from our current locked speaker
@@ -281,7 +283,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             logging.debug(f"Detected my own voice: '{transcription}' ")
 
                         #Check for the breakword interruption phrase in the transcript and system is speaking
-                        if breakword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip() and system_actively_speaking:
+                        if breakword_match and system_actively_speaking:
                             #placeholder to a User feedback audio sound like a beep. just play sys sound for now
                             print('\a')
                             
@@ -292,7 +294,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             brocas_area_interrupt_dict.update({'interrupt':True})
                         
                         #Check for the exitword release locked speaker
-                        if exitword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip():
+                        if exitword_match:
                             cortex_output['unlock_speaker'] = True
                             locked_speaker_id = None
                         
@@ -316,12 +318,35 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                         cortex_output['is_locked_speaker'] = True
                                         cortex_output['audio_data'] = full_speech.copy() #provide the audio data
                                         logging.info(f"Voice lock acquired by speaker: {locked_speaker_id}")
-                                        try:
-                                            state_of_cortex_speakerID_wakeword.update({'spoken_by': voice_match_id})
-                                        except queue.Full:
-                                            logging.error("state_of_cortex_speakerID_wakeword FULL - consume faster")
-                                        except Exception as e:
-                                            logging.error(f"Error: state_of_cortex_speakerID_wakeword: {e}")
+                                        
+                                        state_of_cortex_speakerID_wakeword.update({'spoken_by': voice_match_id})
+                                        
+                                elif locked_speaker_id is None:
+                                    # Wakeword is in transcript but not at start, and no locked speaker
+                                    #make sure this wasn't part of the breakword or exitword
+                                    if not breakword_match and not exitword_match:
+                                        # Split and take everything after wakeword
+                                        logging.debug(f"\n\nWake word detected mid-transcript: {transcription}\n\n")
+                                        wakeword_lower = wakeword_name.lower()
+                                        transcription_lower = transcription.lower()
+                                        wakeword_pos = transcription_lower.find(wakeword_lower)
+                                        
+                                        if wakeword_pos != -1:
+                                            # Extract text after wakeword (preserve original case)
+                                            after_wakeword = transcription[wakeword_pos:].strip()#include wakeword for context
+                                            cortex_output['transcription'] = after_wakeword
+                                            
+                                            # Lock to this speaker
+                                            if voice_match_id and voice_match_id != system_voice_id:
+                                                locked_speaker_id = voice_match_id
+                                                cortex_output['is_locked_speaker'] = True
+                                                cortex_output['audio_data'] = full_speech.copy()
+                                                logging.info(f"Voice lock acquired by speaker: {locked_speaker_id} (mid-transcript)")
+                                                logging.debug(f"Extracted command after wakeword: {after_wakeword}")
+                                                cortex_output['final_transcript'] = True #make final because we are cutting off prior speech
+                                            
+                                                state_of_cortex_speakerID_wakeword.update({'spoken_by': voice_match_id})
+                                            
 
                         #Handle ignore non-locked speaker still talking causing VAD speech detection true    
                         if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:
