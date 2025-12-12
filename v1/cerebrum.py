@@ -235,6 +235,7 @@ class Cerebrum:
         Returns a dictionary containing the real-time state of the entire system.
         Useful for polling via AJAX in the Flask UI.
         """
+        #TODO: CRASHHES IF NON-JSON Serializable DATA in Combined State sent to server for jsonify
         # Get current sensory state from Temporal Lobe
         tl_state = self.temporal_lobe.get_status()
         """

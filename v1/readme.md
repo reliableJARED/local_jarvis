@@ -1,6 +1,6 @@
 ## Demo Video
-- Click will take you to youtube
-[![UI Demo](https://img.youtube.com/vi/lYOiwAHL3XE/0.jpg)](https://youtu.be/lYOiwAHL3XE)
+Clicking will take you to youtube
+[![UI Demo](https://img.youtube.com/vi/lYOiwAHL3XE/0.jpg)](https://youtu.be/p5v9becXZkI)
 
 # Local AI Architecture
 
