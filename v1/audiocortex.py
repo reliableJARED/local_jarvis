@@ -266,8 +266,14 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
 
                         voice_match_id = cortex_output.get('voice_id', None)
                         transcription = cortex_output.get('transcription', '').lower().strip()
-                        exitword_match = exitword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip()
-                        breakword_match = breakword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip()
+                        wakeword_match = False
+                        exitword_match = False
+                        breakword_match = False
+                        # Check for wakeword, exitword, breakword in transcription only if we know wakeword is present
+                        if wakeword_name.lower() in transcription.lower():
+                            wakeword_match = True
+                            exitword_match = exitword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip()
+                            breakword_match = breakword.lower().replace('.', '').replace(',', '').replace(' ','  ').strip() in transcription.replace('.', '').replace(',', '').replace(' ','  ').strip()
 
 
                         # Determine if this is speech from our current locked speaker
@@ -284,7 +290,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
 
                         #Check for the breakword interruption phrase in the transcript and system is speaking
                         if breakword_match and system_actively_speaking:
-                            #placeholder to a User feedback audio sound like a beep. just play sys sound for now
+                            #TODO: Consider moving interruption handling to inside the STT worker to reduce latencys
+                            #a User feedback audio sound beep. just play sys sound for now
                             print('\a')
                             
                             #system is playing AND we have an interruption breakword detected
@@ -307,7 +314,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
 
                         # Handle voice lock management
                         # Check for wake word and if we should lock on to new voice, prevent system from locking on to itself
-                        if wakeword_name.lower() in transcription.lower() and not cortex_output['hear_self_speaking']:
+                        if wakeword_match and not cortex_output['hear_self_speaking']:
                                 if transcription.lower().startswith(wakeword_name.lower()):
                                     logging.debug(f"\n\nWake word detected: {transcription}\n\n")
                                     logging.debug("INTERRUPTION - set False 2")

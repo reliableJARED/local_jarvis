@@ -139,6 +139,8 @@ class PrefrontalCortex:
             'thinking': False,
             'model': self.model_name,
             'temperature':0.7,
+            'max_new_tokens':4500,
+            'current_token_count':0,
             'system_prompt_base': self.system_prompt_base,
             'system_prompt_tools': self.prompt_for_tool_use,
             'system_prompt_visual':self.system_prompt_visual,#contains scene description of visual
