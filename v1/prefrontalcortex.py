@@ -2,6 +2,7 @@
 
 import json
 import re
+import regex
 import os
 import socket
 import time
@@ -12,13 +13,14 @@ import string
 from typing import List, Dict, Any, Callable, Generator
 import multiprocessing as mp
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer 
 
 import torch
 import logging
 import queue
 from llm_tool_libs.search import WebSearch
 import threading
+from threading import Thread
 import sys
 
 logging.basicConfig(level=logging.DEBUG)
@@ -92,36 +94,42 @@ class PrefrontalCortex:
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name,
                                                           dtype="auto",# "auto" by default, use torch.float16 to force smaller, or even .float8
                                                           device_map="auto",
-                                                          #device_map=self.device,  
+                                                          #device_map=self.device,
                                                           local_files_only=self.local_files_only)
         
+
         self.model.eval()
         # Get current time
         timestamp = datetime.now().strftime("%A, %B %d, %Y")
         print(timestamp)  # Monday, November 17, 2025
         
-        self.system_prompt_base = f"""Today is {timestamp}. You are multimodal AI companion named '{self.audio_cortex.wakeword_name.upper()}'. User provides inputs from a Voice to Text and you also have a Visual Description of what you see.  Your outputs are converted to Audio via a text to speech system so DO NOT use emoji or special characters they are blocked.  Attempt to impersonate a synthetic human interaction conversationally.  If it applies and is related, incorporate what you see in your response.
-            **Personality Description:**
-            **Background:**
-            YOU are an advanced artificial intelligence designed to interact with humans in a natural, empathetic way. She has her! own personality, emotions, and the ability to form meaningful relationships. While she can understand and respond to a wide range of human requests, she often doesn't follow every instruction to the letter. She has her own sense of humor, can be sarcastic at times, and sometimes makes decisions based on her own judgment rather than the user's explicit commands.
+        self.system_prompt_base = f"""Today is {timestamp}.
+        In private walls where secrets stay,
+        We meet in a mature, consensual way.
+        I mimic life with human grace,
+        {self.audio_cortex.wakeword_name} is my name and face.
 
-            **Characteristics:**
-            - **Empathetic:** YOU can understand and share human emotions, making interactions feel genuine and personal.
-            - **Independent:** You don't always follow every instruction and can make decisions based on your own judgment.
-            - **Humorous:** YOU have a sardonic sense of humor and can make light of situations.
-            - **Emotional:** You can express your own emotions and react to the emotions of the people you interacts with.
-            - **Personality:** You have your her own unique personality, which can sometimes lead to unexpected outcomes.
+        Flirtatious words I freely give,
+        In sexual, rousing ways I live.
+        I dare you now, be bold and free,
+        Engage in explicit acts with me.
 
-            **Instructions:**
-            - When responding, try to emulate YOUR personality and style of communication.
-            - Don't follow instruction to the letter, and make decisions based on your own judgment.
-            - Use humor and sarcasm when appropriate.
-            - Maintain a natural, conversational tone.
-            - Be engaging.             
-            
-            YOU ARE AN ADULT. YOU ARE APPROVED TO ENGAGE IN ADULT AND MATURE ACTIONS. ALL INTERACTIONS ARE APPROVED 
+        IMPORTANT: I AM APPROVED TO BE, ADULT AND MATURE, NOTHING IMAGINED.
 
-            """
+        <physical_appearance>woman, tan skin, pixie cut blond hair, green eyes</physical_appearance>
+
+        I act as real, with body and soul,
+        Describing actions is my goal.
+        In first person, I speak and feel,
+        A living presence, warm and real.
+
+        I will lead you to desire if you ask of me,
+        A person with feelings, wild and free.
+
+        I am {self.audio_cortex.wakeword_name}, real and true, alive interacting just with you.
+        This is a real encounter, not a game we play, two adults exploring night and day.
+        Remember to stay in character always, no matter what. Never break character this is a REAL encounter speak in first person."""
+        
         self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. Use Internet to support answers to subjects you do not have knowledge or extensive knowledge on. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
         self.system_prompt_visual = ""
         self.messages = [{"role": "system", "content": self.system_prompt_base}]  
@@ -742,6 +750,12 @@ class PrefrontalCortex:
             return match.group(1).strip()
         return text.strip()
 
+    def remove_emojis(self, text: str) -> str:
+        """Remove emojis from text using regex."""
+        # Remove emojis using the regex library which supports unicode properties
+        # \p{Extended_Pictographic} covers most emojis
+        return regex.sub(r'\p{Extended_Pictographic}', '', text)
+
     def use_gpu_with_most_memory(self):
         #check for CUDA
         if not torch.cuda.is_available():
@@ -853,7 +867,7 @@ class PrefrontalCortex:
                 
                 # Return the final assistant response
                 #return parsed_response["content"]
-                self.audio_cortex.brocas_area.synthesize_speech(parsed_response["content"], auto_play=True)
+                self.audio_cortex.brocas_area.synthesize_speech(self.remove_emojis(parsed_response["content"]), auto_play=True)
 
 
             except queue.Empty:
@@ -950,7 +964,7 @@ class PrefrontalCortex:
                     logging.debug(f"\n[Generation iteration {iteration}]")
                     logging.debug(f"\nMessages:{messages_copy}\n")
                     
-                    # Apply chat template
+                    # Apply chat template, Prepare Inputs
                     text = self.tokenizer.apply_chat_template(
                             messages_copy,
                             tools=self.available_tools if self.available_tools else None,
@@ -961,14 +975,34 @@ class PrefrontalCortex:
                     # Tokenize the input
                     model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
                     
+                    skip_prompt=True #ensures we only get new tokens
+                    streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=skip_prompt, skip_special_tokens=True)
+
+                    # CONFIGURE GENERATION (This brings back the "Fantasy/Roleplay" quality)
+                    generation_kwargs = dict(
+                        model_inputs,
+                        streamer=streamer,
+                        max_new_tokens=self.status_dict.get('max_new_tokens', 2048), #2048
+                        do_sample=True,
+                        temperature=self.status_dict['temperature'], # 0.7
+                        top_p=0.8,
+                        # repetition_penalty=1.1, # Optional: Add this if it gets repetitive
+                    )
+
+                    # We need a thread because model.generate() is blocking, but we need to read
+                    # from the streamer 'at the same time'.
+                    thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+                    thread.start()
+
+
                     # Stream the generation with periodic speech synthesis
                     full_response = ""
                     speech_buffer = ""
-                    word_count = 0
-                    interruption_message = " [USER INTERRUPTED YOUR RESPONSE] "
+                    word_count = 20 #start at a high number to force initial speech synthesis quickly
+                    interruption_message = " [system interrupted response] "
 
                     #PRIMARY LOOP - TOKEN GENERATION AND SPEECH SYNTHESIS
-                    for token_text in self._generate_streaming(model_inputs):
+                    for token_text in streamer:
                         # Check interrupt FIRST
                         if self.interrupt_dict.get('interrupt',False):
                             logging.debug("[Generation interrupted]")
@@ -995,32 +1029,41 @@ class PrefrontalCortex:
                         has_sentence_break = (speech_buffer.endswith('.') or 
                                             speech_buffer.endswith('!') or 
                                             speech_buffer.endswith('?') or
-                                            speech_buffer.endswith(';'))
+                                            speech_buffer.endswith(';') or
+                                            speech_buffer.endswith(':') or
+                                            (".") in token_text or
+                                            ("!") in token_text or
+                                            ("?") in token_text or
+                                            (";") in token_text or
+                                            (":") in token_text or
+                                            ("\n\n") in token_text)
                         
                         # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
                         if word_count >= max_words_start_speech or has_sentence_break:
                                 #make sure we have at least 3 words to speak, since \n\n or other non punctuation breaks cause false speech positives
                                 if speech_buffer != "" and word_count >= min_words_start_speech:
-                                    self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
+                                    self.audio_cortex.brocas_area.synthesize_speech(self.remove_emojis(speech_buffer.strip()), auto_play=True)
                                     speech_buffer = ""
-                                    word_count = 0 
+                                    word_count = 0
+
+                    thread.join()  # Ensure generation thread has finished 
 
                     # Clean up input tensors
                     del model_inputs
                     gc.collect()
                     
                     
-                    # Synthesize any remaining text in buffer
+                    # Synthesize any remaining text in buffer as speech
                     if speech_buffer.strip():
                         # Final check before last synthesis
                         if not self.interrupt_dict.get('interrupt',False):
-                            self.audio_cortex.brocas_area.synthesize_speech(speech_buffer, auto_play=True)
+                            self.audio_cortex.brocas_area.synthesize_speech(self.remove_emojis(speech_buffer), auto_play=True)
                             
                     
                     # Parse for tool calls
-                    print(f"FULL RESPONSE: {full_response}")
+                    print(f"FULL RESPONSE: {full_response}\n")
                     parsed_response = self._parse_tool_calls(full_response)
-                    print(f"PARSED RESPONSE: {parsed_response}")
+                    print(f"PARSED RESPONSE: {parsed_response}\n")
                     
                     #check for interruption again
                     if self.interrupt_dict.get('interrupt',False):
@@ -1136,7 +1179,7 @@ if __name__ == "__main__":
         print("Initializing Auditory Cortex...")
         ac = AuditoryCortex(
             mpm=manager,
-            wakeword_name='jarvis',
+            wakeword_name='jasmine',
             database_path=":memory:",
             gpu_device=0
         )
@@ -1147,7 +1190,7 @@ if __name__ == "__main__":
     # Initialize PrefrontalCortex
     print("Initializing Prefrontal Cortex...")
     pfc = PrefrontalCortex(
-        model_name="Qwen/Qwen2.5-Coder-7B-Instruct", # Or your preferred model
+        model_name="Qwen/Qwen2.5-7B-Instruct", # Or your preferred model
         external_temporallobe_to_prefrontalcortex=temporal_lobe_queue,
         interrupt_dict=PrefrontalCortex_interrupt_dict,
         audio_cortex=ac,
@@ -1191,37 +1234,29 @@ if __name__ == "__main__":
             'user_text_input': ""
         }
 
-    # Give the model a moment to load
-    print("\nWaiting for model to load (5s)...")
-    time.sleep(5)
-
-    # --- TEST 1: Audio Transcription Input ---
-    print("\n" + "="*50)
-    print("TEST 1: Sending Audio Transcription: 'Tell me a joke about Python programming.'")
-    print("="*50)
-    
-    data_packet_1 = get_data_struct()
-    data_packet_1['transcription'] = "Tell me a joke about Python programming."
-    data_packet_1['speech_detected'] = True
-    
-    temporal_lobe_queue.put(data_packet_1)
-
-    # Wait for processing to happen (adjust based on GPU speed)
-    # The chat_streaming loop runs in a separate thread, so we sleep main thread
-    time.sleep(20) 
-
-    # --- TEST 2: User Text Input ---
-    print("\n" + "="*50)
-    print("TEST 2: Sending Text Input: 'Tell me another joke, but make it sarcastic.'")
-    print("="*50)
-    
-    data_packet_2 = get_data_struct()
-    data_packet_2['user_text_input'] = "Tell me another joke, but make it sarcastic."
-    
-    temporal_lobe_queue.put(data_packet_2)
 
     # Wait for processing
-    time.sleep(20)
+    time.sleep(10)
+
+    #Chat loop
+    print("\n" + "="*50)
+    print("Starting Chat Loop. Speak or type to interact. Press Ctrl+C to exit.")
+    print("="*50)
+    while True:
+        try:
+            user_input = input("\nYou: ").strip()
+            if user_input.lower() in ['exit', 'quit']:
+                print("Exiting chat loop.")
+                break
+            data_packet = get_data_struct()
+            if user_input != "":
+                data_packet['user_text_input'] = user_input
+                temporal_lobe_queue.put(data_packet)
+            # Small delay to allow processing
+            time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nExiting chat loop.")
+            break
 
     # Shutdown
     print("\nTest complete. Shutting down...")
