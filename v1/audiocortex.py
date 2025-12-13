@@ -304,6 +304,7 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                         if exitword_match:
                             cortex_output['unlock_speaker'] = True
                             locked_speaker_id = None
+                            cortex_output['transcription'] = "" #clear out transcript on exitword - this means model won't say respond to the exitword
                         
                         #Flag our locked speaker is done speaking
                         if cortex_output['final_transcript'] and cortex_output['is_locked_speaker']:
@@ -350,11 +351,11 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                                                 cortex_output['audio_data'] = full_speech.copy()
                                                 logging.info(f"Voice lock acquired by speaker: {locked_speaker_id} (mid-transcript)")
                                                 logging.debug(f"Extracted command after wakeword: {after_wakeword}")
-                                                cortex_output['final_transcript'] = True #make final because we are cutting off prior speech
+                                                
+                                                #cortex_output['final_transcript'] = True
                                             
                                                 state_of_cortex_speakerID_wakeword.update({'spoken_by': voice_match_id})
                                             
-
                         #Handle ignore non-locked speaker still talking causing VAD speech detection true    
                         if locked_speaker_id != voice_match_id and transcription != '' and not system_actively_speaking:
                                 #we want to ignore this speech since it's not the voice we are locked on to

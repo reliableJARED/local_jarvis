@@ -1,6 +1,8 @@
 import logging
 from flask import Flask, render_template, Response, jsonify, request
 from cerebrum import Cerebrum
+import numpy as np
+import json
 
 # Initialize Flask
 app = Flask(__name__)
@@ -8,7 +10,55 @@ app = Flask(__name__)
 # 1. Define brain as None globally so routes can reference the variable name.
 # It will be instantiated in the __main__ block below.
 brain = None
-
+## Helpers
+def make_json_safe(obj, max_depth=10, current_depth=0):
+    """
+    Recursively convert objects to JSON-serializable types.
+    Handles numpy arrays, datetime objects, and other common non-serializable types.
+    """
+    if current_depth > max_depth:
+        return "[Max depth exceeded]"
+    
+    # Handle None, primitives
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    
+    # Handle numpy types
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    
+    # Handle datetime
+    if hasattr(obj, 'isoformat'):
+        return obj.isoformat()
+    
+    # Handle dictionaries
+    if isinstance(obj, dict):
+        return {str(k): make_json_safe(v, max_depth, current_depth + 1) for k, v in obj.items()}
+    
+    # Handle lists, tuples, sets
+    if isinstance(obj, (list, tuple, set)):
+        return [make_json_safe(item, max_depth, current_depth + 1) for item in obj]
+    
+    # Handle multiprocessing proxy objects
+    if hasattr(obj, '_getvalue'):
+        try:
+            return make_json_safe(obj._getvalue(), max_depth, current_depth + 1)
+        except Exception:
+            return str(obj)
+    
+    # For anything else, try to convert to string
+    try:
+        # Try JSON serialization as a test
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError):
+        return str(type(obj).__name__)
+    
+## Routes
 @app.route('/')
 def index():
     if brain is None:
@@ -21,7 +71,9 @@ def stats():
         return jsonify({"status": "initializing"})
     if not brain.active:
         return jsonify({"status": "offline"})
-    return jsonify(brain.ui_get_unified_state())
+    #sanitize data for JSON serialization - the 'messages' field can contain complex objects
+    safe_data = make_json_safe(brain.ui_get_unified_state())
+    return jsonify(safe_data)
 
 @app.route('/transient')
 def transient():
@@ -153,7 +205,7 @@ if __name__ == "__main__":
     print("----------------------------------------------------------------")
 
     # Play startup sound/greeting
-    brain.temporal_lobe.speak(f"My interface is now being served on http:// localhost on port 5000")
+    brain.temporal_lobe.speak(f"My interface is now being served on localhost on port 5000")
     
     try:
         # use_reloader=False is important here to avoid duplicate initialization

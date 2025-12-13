@@ -1,0 +1,11 @@
+FEATURES
+* VLM has to be a tool for the prefrontal cortex so questions or interactions with visual input can be directed. this means need a way to pause, submit img for analysis with query
+* need UI way to interrupt and to unlock speaker
+* need the ability to adjust model and other items in the config FIRST - then there should be a 'boot' system and that will start the AI. don't auto start jarvis on server start
+
+IDEAS
+*right now if you say 'wakeword' mid sentence it only starts listening AFTER its name  so "hello how are you Jarvis, are you ready for the day" will only be "Jarvis are you ready for the day". It's not clear if this is the best 
+
+BUGS
+* prefrontal cortex/brocas area - Sometimes the audio 'hiccups' when playing it seems to happen when an apostrephe is a start token or if there is a delay in token generation also maybe is newline
+* cerebrum/server - sometimes the output from ui_get_unified_state() is not json serializable.  llm output string prob needs json safe check before sending to server

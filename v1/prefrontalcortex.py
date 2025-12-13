@@ -851,6 +851,7 @@ class PrefrontalCortex:
             
     def chat_streaming(self, file_contents: list = None, max_tool_iterations: int = 5, max_words_start_speech: int = 30, min_words_start_speech: int = 3) -> str:
         """
+        THIS FUNCTION RUNS IN A DEDICATED THREAD
         Generate streaming response with recursive tool support and periodic speech synthesis.
         Continues calling tools until model stops requesting them or max iterations reached.
         Synthesizes speech every 8 words or at punctuation breaks.
@@ -944,7 +945,7 @@ class PrefrontalCortex:
                             tokenize=False,
                             add_generation_prompt=True
                         )
-                    print(text)
+                    print(text)#chat template
                     # Tokenize the input
                     model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
                     
@@ -952,14 +953,16 @@ class PrefrontalCortex:
                     full_response = ""
                     speech_buffer = ""
                     word_count = 0
+                    interruption_message = " [USER INTERRUPTED YOUR RESPONSE] "
 
+                    #PRIMARY LOOP - TOKEN GENERATION AND SPEECH SYNTHESIS
                     for token_text in self._generate_streaming(model_inputs):
                         # Check interrupt FIRST
                         if self.interrupt_dict.get('interrupt',False):
                             logging.debug("[Generation interrupted]")
-                            parsed_response = self._parse_tool_calls(full_response)
+                            parsed_response = self._parse_tool_calls(full_response+interruption_message)
                             messages_copy.append(parsed_response)
-                            
+                            # Break from token generation loop
                             break
                         
                         full_response += token_text
@@ -970,7 +973,6 @@ class PrefrontalCortex:
                         #if '<tool' not in speech_buffer and '<function' not in speech_buffer and '{"name' not in speech_buffer:
                             # add to be spoken
                         if not _is_entering_tool_call(full_response):
-                            
                             speech_buffer += token_text
 
                         
@@ -979,24 +981,15 @@ class PrefrontalCortex:
                         word_count = len(words_in_buffer)
                         
                         has_sentence_break = (speech_buffer.endswith('.') or 
-                                            '!' in speech_buffer or 
-                                            '?' in speech_buffer or 
-                                            '\n' in speech_buffer)
+                                            speech_buffer.endswith('!') or 
+                                            speech_buffer.endswith('?') or
+                                            speech_buffer.endswith(';'))
                         
                         # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
                         if word_count >= max_words_start_speech or has_sentence_break:
-                            # Check for interrupt before synthesis
-                            if self.interrupt_dict.get('interrupt',False):
-                                logging.debug("[Generation interrupted before synthesis] - append what we have")
-                                # Parse for tool calls/add assistant structure
-                                parsed_response = self._parse_tool_calls(full_response)
-                                messages_copy.append(parsed_response)
-                                
-                                break  # Break from token generation loop
-                            else:
                                 #make sure we have at least 3 words to speak, since \n\n or other non punctuation breaks cause false speech positives
                                 if speech_buffer != "" and word_count >= min_words_start_speech:
-                                    self.audio_cortex.brocas_area.synthesize_speech(speech_buffer, auto_play=True)
+                                    self.audio_cortex.brocas_area.synthesize_speech(speech_buffer.strip(), auto_play=True)
                                     speech_buffer = ""
                                     word_count = 0 
 
@@ -1019,7 +1012,7 @@ class PrefrontalCortex:
                     
                     #check for interruption again
                     if self.interrupt_dict.get('interrupt',False):
-                        logging.debug("Generation interrupted after parsing - not updating messages")
+                        logging.debug("Generation interrupted after parsing for tool calls- not updating messages")
                         break
 
                     # Check if model wants to use tools

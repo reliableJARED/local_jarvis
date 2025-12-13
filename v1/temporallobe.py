@@ -325,7 +325,7 @@ class TemporalLobe:
                     except queue.Full:
                         pass
             # Small sleep to prevent CPU spinning
-            time.sleep(0.005)
+            time.sleep(0.001)
         
         logging.info("TemporalLobe frame collection stopped")
 
