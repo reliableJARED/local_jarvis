@@ -289,22 +289,26 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             logging.debug(f"Detected my own voice: '{transcription}' ")
 
                         #Check for the breakword interruption phrase in the transcript and system is speaking
-                        if breakword_match and system_actively_speaking:
+                        if (breakword_match or exitword_match):
                             #TODO: Consider moving interruption handling to inside the STT worker to reduce latencys
                             #a User feedback audio sound beep. just play sys sound for now
                             print('\a')
                             
                             #system is playing AND we have an interruption breakword detected
-                            logging.debug("INTERRUPTION - set True 1")
-                            cortex_output['is_interrupt_attempt'] = True
-                            cortex_output['transcription'] = ""
+                            if system_actively_speaking:
+                                logging.debug("INTERRUPTION - set True 1")
+                                cortex_output['is_interrupt_attempt'] = True
+                                cortex_output['transcription'] = ""
+                            
+                            #release locked speaker 
+                            if exitword_match:
+                                cortex_output['unlock_speaker'] = True
+                                locked_speaker_id = None
+                                #consider leaving the transcription when exitword detected to allow for exit commands
+                                cortex_output['transcription'] = transcription.replace(exitword.lower(),'').strip() 
+
+                            #interrupt current speech for break or exitword
                             brocas_area_interrupt_dict.update({'interrupt':True})
-                        
-                        #Check for the exitword release locked speaker
-                        if exitword_match:
-                            cortex_output['unlock_speaker'] = True
-                            locked_speaker_id = None
-                            cortex_output['transcription'] = "" #clear out transcript on exitword - this means model won't say respond to the exitword
                         
                         #Flag our locked speaker is done speaking
                         if cortex_output['final_transcript'] and cortex_output['is_locked_speaker']:
@@ -314,8 +318,8 @@ def auditory_cortex_core(nerve_from_input_to_cortex, external_cortex_queue, exte
                             logging.debug("INTERRUPTION - set False 1")
 
                         # Handle voice lock management
-                        # Check for wake word and if we should lock on to new voice, prevent system from locking on to itself
-                        if wakeword_match and not cortex_output['hear_self_speaking']:
+                        # Check for wake word and if we should lock on to new voice, prevent system from locking on to itself or locking on to the breakword/exitword speaker
+                        if wakeword_match and not cortex_output['hear_self_speaking'] and not cortex_output['unlock_speaker'] and not cortex_output['is_interrupt_attempt']:
                                 if transcription.lower().startswith(wakeword_name.lower()):
                                     logging.debug(f"\n\nWake word detected: {transcription}\n\n")
                                     logging.debug("INTERRUPTION - set False 2")
@@ -519,9 +523,9 @@ def auditory_cortex_worker_speechToText(nerve_from_cortex_to_stt,nerve_from_stt_
     last_processed_length = 0  # Track how much of the current speech we've processed
     
     # Parameters (at 16kHz sample rate)
-    min_chunk_size = 32000  # 2 seconds minimum before starting transcription (if no final audio flag received)
-    overlap_samples = 24000  # 1.5 second overlap for word boundary detection (leave large enough to account for nerve_from_cortex_to_stt lag)
-    incremental_threshold = 16000  # 1 seconds of new audio before processing again, matching overlap sample worked well in testing
+    min_chunk_size = 48000  # 3 seconds minimum before starting transcription (if no final audio flag received)
+    overlap_samples = 16000  # 1 second overlap for word boundary detection (leave large enough to account for nerve_from_cortex_to_stt lag)
+    incremental_threshold = 32000  # 2 seconds of new audio before processing again, matching overlap sample worked well in testing
     
     try:
         while True:

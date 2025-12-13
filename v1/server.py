@@ -187,7 +187,7 @@ if __name__ == "__main__":
     # which causes the infinite recursion/RuntimeError.
     
     brain = Cerebrum(
-        wakeword='jarvis', 
+        wakeword='jasmine', 
         model_name="Qwen/Qwen2.5-Coder-7B-Instruct", 
         db_path=":memory:"
     )

@@ -718,9 +718,21 @@ class PrefrontalCortex:
         
         return full_response
     
-    def token_count(self, text: str) -> int:
-        """Count tokens in text."""
-        tokens = self.tokenizer.encode(text)
+    def token_count(self, text_or_messages) -> int:
+        """Count tokens in text or messages."""
+        if isinstance(text_or_messages, str):
+            # Simple string
+            tokens = self.tokenizer.encode(text_or_messages)
+        else:
+            # Messages list - apply chat template first
+            formatted_text = self.tokenizer.apply_chat_template(
+                text_or_messages,
+                tools=self.available_tools if self.available_tools else None,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            tokens = self.tokenizer.encode(formatted_text)
+        self.status_dict.update({'current_token_count': len(tokens)})
         return len(tokens)
     
     def strip_response_tags(self,text: str) -> str:

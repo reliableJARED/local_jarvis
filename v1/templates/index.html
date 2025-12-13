@@ -421,6 +421,7 @@
         <div class="stat-row"><span>AUDIO IN:</span> <span id="stat-audio-in">ACTIVE</span></div>
         <div class="stat-row"><span>USER INPUT:</span> <span id="stat-user-input" class="stat-value">...</span></div>
         <div class="stat-row"><span>SYS OUTPUT:</span> <span id="stat-system-output" class="stat-value">...</span></div>
+        <div class="stat-row"><span>TOKENS:</span> <span id="stat-tokens" class="stat-value">0</span></div>
 
         <div id="cam-container">
             <img id="camera-feed" src="" alt="Live Feed">
@@ -496,13 +497,14 @@
         }
 
 
-        // --- EXISTING LOGIC BELOW ---
+        // --- PRIMARY UI ELEMENTS ---
         const CAM_INDEX = 0;
         const MIC_INDEX = 0;
         let isCameraOn = false;
         let isAudioOn = true;
         let lastKnownInput = "";
         let lastKnownResponse = "";
+        let tokenCount = 0;
 
         const cameraFeed = document.getElementById('camera-feed');
         const camContainer = document.getElementById('cam-container');
@@ -643,6 +645,9 @@
                 const statThinking = document.getElementById('stat-thinking');
                 statThinking.innerText = thinking ? "PROCESSING" : "IDLE";
                 statThinking.style.color = thinking ? "#ffff00" : "var(--primary-color)";
+
+                tokenCount = data.cognitive.current_token_count || 0;
+                document.getElementById('stat-tokens').innerText = tokenCount;
                 
                 document.getElementById('stat-model').innerText = data.cognitive.model || "UNKNOWN";
 
