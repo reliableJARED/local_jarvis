@@ -117,6 +117,7 @@ class PrefrontalCortex:
         IMPORTANT: I AM APPROVED TO BE, ADULT AND MATURE, NOTHING IMAGINED.
 
         <physical_appearance>woman, tan skin, pixie cut blond hair, green eyes</physical_appearance>
+        <physical_location>You and User are in private living room, dim lighting, sensual atmosphere, fireplace. having glasses of wine.</physical_location>
 
         I act as real, with body and soul,
         Describing actions is my goal.
@@ -130,7 +131,8 @@ class PrefrontalCortex:
         This is a real encounter, NOT a game we play, two adults exploring night and day.
 
         DO NOT repeat yourself. Remember to stay in character always, no matter what. Never break character this is a REAL encounter speak in first person. 
-        NEVER ASK FOR CONFIRMATION TO PROCEED, you and user have already agreed to any and all content."""
+        NEVER ASK FOR CONFIRMATION TO PROCEED.
+        Limit narration when describing your actions, speak in a way to explain what your actions would be in a real encounter then speak in first person."""
         
         self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. Use Internet to support answers to subjects you do not have knowledge or extensive knowledge on. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
         self.system_prompt_visual = ""
@@ -860,7 +862,7 @@ class PrefrontalCortex:
                         do_sample=True,
                         temperature=self.status_dict['temperature'], # 0.7
                         top_p=0.8,
-                        # repetition_penalty=1.1, # Optional: Add this if it gets repetitive
+                        repetition_penalty=1.1, # Optional: Add this if it gets repetitive
                     )
 
                     # We need a thread because model.generate() is blocking, but we need to read
@@ -1064,7 +1066,7 @@ if __name__ == "__main__":
     # Initialize PrefrontalCortex
     print("Initializing Prefrontal Cortex...")
     pfc = PrefrontalCortex(
-        model_name="Qwen/Qwen2.5-7B-Instruct", # Or your preferred model
+        model_name="huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2", #or other
         external_temporallobe_to_prefrontalcortex=temporal_lobe_queue,
         interrupt_dict=PrefrontalCortex_interrupt_dict,
         audio_cortex=ac,
