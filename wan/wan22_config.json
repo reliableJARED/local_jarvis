@@ -1,0 +1,11 @@
+{
+  "model_path": "C:\\Users\\jared\\Documents\\code\\local_jarvis\\Wan2.2-TI2V-5B",
+  "wan_repo_path": "C:\\Users\\jared\\Documents\\code\\local_jarvis\\Wan2.2",
+  "default_settings": {
+    "size": "1280*704",
+    "optimize_for_low_memory": true,
+    "offload_model": true,
+    "convert_model_dtype": true,
+    "t5_cpu": true
+  }
+}

@@ -1,0 +1,442 @@
+# Specialized LoRA Guide for Wan2.2 Video Generation
+
+## Overview
+
+**Yes! Specialized LoRAs work perfectly with this workflow.** You can stack multiple LoRAs to combine:
+- Speed acceleration (LightX2V for 6-step inference)
+- Custom styles (anime, cinematic, Instagram aesthetic)
+- Character consistency (specific people/characters)
+- Motion patterns (camera movements, action types)
+- Quality improvements (reward model LoRAs)
+
+## Types of Specialized LoRAs
+
+### 1. Speed Acceleration LoRAs
+**Purpose**: Reduce inference steps from 40-50 to 4-6 while maintaining quality
+
+**Recommended**:
+- **LightX2V Distilled LoRAs** (Best for Wan2.2)
+  - Repository: `lightx2v/Wan2.2-Distill-Loras`
+  - Files: High noise + Low noise LoRAs
+  - Weight: 1.0 for both
+  - Result: 6 steps, 8-10x faster inference
+
+**Note**: Wan2.1 LightX2V LoRAs also work on Wan2.2 low-noise model due to compatible architecture.
+
+### 2. Style LoRAs
+**Purpose**: Apply consistent artistic styles or aesthetics
+
+**Examples**:
+- **Anime Style**: Converts to anime/manga aesthetic
+- **Cinematic**: Film-grade color grading, composition
+- **Instagram Aesthetic**: Polished, influencer-style visuals
+- **Retro/Vintage**: Old film, VHS, Polaroid effects
+- **Photorealistic**: Enhanced realism and detail
+
+**Usage**:
+```python
+generator.load_specialized_lora(
+    lora_path="path/to/anime_style.safetensors",
+    adapter_name="anime",
+    lora_weight=0.8,  # 0.5-1.2 typical range
+    applies_to="both"
+)
+```
+
+### 3. Character Consistency LoRAs
+**Purpose**: Maintain specific character appearance across videos
+
+**Training Requirements**:
+- 10-20 images of character in different poses/lighting
+- Consistent subject framing
+- Variety in expressions and angles
+- Training time: ~24 hours on A6000
+
+**Use Cases**:
+- Virtual influencers
+- Branded mascots
+- Consistent characters in storytelling
+- Personal avatar videos
+
+**Example Workflow**:
+```python
+# Train character LoRA (separate process)
+# Then use in generation:
+character_config = [{
+    "path": "custom/influencer_character.safetensors",
+    "name": "my_character",
+    "weight": 1.0,
+    "applies_to": "both"
+}]
+
+generator.load_multiple_loras(character_config)
+video = generator.generate_video(
+    image="character_pose.jpg",
+    prompt="[character name] dancing on stage with colorful lights"
+)
+```
+
+### 4. Motion Pattern LoRAs
+**Purpose**: Control camera movement and action dynamics
+
+**Categories**:
+- **Camera Motion**: Pan left/right, zoom in/out, dolly, crane shots
+- **Action Speed**: Slow-motion, time-lapse, normal pace
+- **Stabilization**: Smooth vs handheld camera feel
+- **Drone Footage**: Aerial perspective patterns
+
+**Training Data**: Video clips with consistent motion patterns
+
+### 5. Quality Enhancement LoRAs
+**Purpose**: Improve overall output quality using reward models
+
+**Available Options**:
+- **HPSv2.1 Reward LoRA** (alibaba-pai/Wan2.2-Fun-Reward-LoRAs)
+  - Optimizes for human preference scores
+  - Weight: 0.5 recommended
+  - Applies to: low_noise (detail refinement)
+
+- **MPS Reward LoRA** (alibaba-pai/Wan2.2-Fun-Reward-LoRAs)
+  - Motion and aesthetic quality
+  - Weight: 0.5 recommended
+  - Note: Slower convergence on low-noise model
+
+**Usage**:
+```python
+quality_lora = [{
+    "path": "alibaba-pai/Wan2.2-Fun-Reward-LoRAs",
+    "name": "hpsv2_quality",
+    "weight": 0.5,
+    "applies_to": "low_noise"  # Apply during detail refinement
+}]
+```
+
+### 6. Domain-Specific LoRAs
+**Purpose**: Specialized for particular industries or applications
+
+**Examples**:
+- **Medical/Scientific**: Cell motion, molecular dynamics
+- **Sports**: Specific sports motions, highlight reel styles
+- **Architecture**: Building walkthroughs, fly-overs
+- **Product Demo**: E-commerce product showcases
+- **Nature/Wildlife**: Animal movement patterns
+
+## Stacking Multiple LoRAs
+
+### Best Practices
+
+1. **Layer Order Matters**:
+   - Base: Speed acceleration LoRAs
+   - Middle: Style/aesthetic LoRAs
+   - Top: Quality enhancement LoRAs
+
+2. **Weight Balancing**:
+   - Speed LoRAs: 1.0 (full strength)
+   - Style LoRAs: 0.7-1.0 (adjust for intensity)
+   - Quality LoRAs: 0.3-0.6 (subtle improvement)
+   - Character LoRAs: 0.9-1.2 (strong identity preservation)
+
+3. **VRAM Considerations**:
+   - Each LoRA adds ~100-200MB VRAM
+   - Limit to 3-4 LoRAs on 16GB cards
+   - More LoRAs possible on 24GB+ cards
+
+### Example Stacks
+
+#### Stack 1: Fast Anime Production
+```python
+anime_stack = [
+    # Speed
+    {
+        "path": "lightx2v/Wan2.2-Distill-Loras",
+        "name": "speed_high",
+        "weight": 1.0,
+        "applies_to": "high_noise"
+    },
+    {
+        "path": "lightx2v/Wan2.2-Distill-Loras",
+        "name": "speed_low",
+        "weight": 1.0,
+        "applies_to": "low_noise"
+    },
+    # Style
+    {
+        "path": "custom/anime_style_v2.safetensors",
+        "name": "anime",
+        "weight": 0.9,
+        "applies_to": "both"
+    }
+]
+```
+**Result**: 6-step inference with anime aesthetic
+
+#### Stack 2: Cinematic Character Video
+```python
+cinematic_character_stack = [
+    # Speed
+    {"path": "lightx2v/...", "name": "speed_h", "weight": 1.0, "applies_to": "high_noise"},
+    {"path": "lightx2v/...", "name": "speed_l", "weight": 1.0, "applies_to": "low_noise"},
+    # Character consistency
+    {
+        "path": "custom/main_character.safetensors",
+        "name": "character",
+        "weight": 1.1,
+        "applies_to": "both"
+    },
+    # Cinematic style
+    {
+        "path": "custom/cinematic_grade.safetensors",
+        "name": "cinema",
+        "weight": 0.8,
+        "applies_to": "both"
+    },
+    # Quality boost
+    {
+        "path": "alibaba-pai/Wan2.2-Fun-Reward-LoRAs",
+        "name": "quality",
+        "weight": 0.4,
+        "applies_to": "low_noise"
+    }
+]
+```
+**Result**: Fast, high-quality cinematic video with consistent character
+
+#### Stack 3: Instagram Influencer Content
+```python
+instagram_stack = [
+    # Speed
+    {"path": "lightx2v/...", "name": "speed_h", "weight": 1.0, "applies_to": "high_noise"},
+    {"path": "lightx2v/...", "name": "speed_l", "weight": 1.0, "applies_to": "low_noise"},
+    # Instagram aesthetic (warm tones, soft focus, trendy)
+    {
+        "path": "custom/instagram_aesthetic.safetensors",
+        "name": "insta_style",
+        "weight": 0.85,
+        "applies_to": "both"
+    },
+    # Influencer character
+    {
+        "path": "custom/influencer_face.safetensors",
+        "name": "influencer",
+        "weight": 1.0,
+        "applies_to": "both"
+    }
+]
+```
+
+## Training Your Own LoRAs
+
+### When to Train Custom LoRAs
+
+Train when you need:
+- Consistent brand aesthetic across all videos
+- Specific character/person repeated use
+- Unique motion patterns not in base model
+- Niche domain-specific content (medical, industrial, etc.)
+
+### Training Requirements
+
+**Hardware**:
+- Minimum: 24GB VRAM (RTX 4090, A6000)
+- Recommended: 48GB+ VRAM (A100, H100)
+- Or use cloud GPUs: RunPod, VastAI (~$0.30-1.00/hour)
+
+**Dataset**:
+- Video clips: 10-20 for style, 30-50 for complex motion
+- Length: 5-10 seconds each
+- Quality: 720p minimum, 24+ fps
+- Consistency: Similar aesthetic/subject across clips
+
+**Training Time**:
+- Style LoRA: ~12-24 hours
+- Character LoRA: ~20-30 hours  
+- Motion LoRA: ~30-40 hours
+- Steps: 2000-4000 recommended
+
+**Training Settings** (for diffusion-pipe or similar):
+```toml
+[training]
+learning_rate = 0.0001  # 0.0001-0.0003 range
+network_dim = 64        # 32-128, higher = more capacity
+network_alpha = 32      # network_dim / 2 typically
+batch_size = 1          # 1-2 for 24GB VRAM
+gradient_accumulation = 4
+max_steps = 3000
+```
+
+### Training Process
+
+1. **Prepare Dataset**:
+   ```bash
+   # Organize videos
+   dataset/
+   ├── video_001.mp4
+   ├── video_002.mp4
+   └── captions.txt
+   ```
+
+2. **Install Training Framework**:
+   ```bash
+   git clone https://github.com/tdrussell/diffusion-pipe
+   cd diffusion-pipe
+   pip install -r requirements.txt
+   ```
+
+3. **Configure Training**:
+   - Set model paths (Wan2.2-I2V-A14B)
+   - Adjust learning rate and steps
+   - Define output directory
+
+4. **Start Training**:
+   ```bash
+   python train.py --config config.toml
+   ```
+
+5. **Monitor Progress**:
+   - Check sample outputs every 500 steps
+   - Watch for overfitting (images look identical)
+   - Stop when quality plateaus
+
+6. **Export LoRA**:
+   - High noise LoRA: `output/high_noise_lora.safetensors`
+   - Low noise LoRA: `output/low_noise_lora.safetensors`
+
+### Training Tips
+
+1. **Avoid Overfitting**:
+   - Don't train too long (watch samples)
+   - Use dataset augmentation (flips, crops)
+   - Increase dataset size if possible
+
+2. **Quality vs Speed**:
+   - Higher network_dim = better quality, slower training
+   - More steps = better convergence, longer time
+   - Balance based on your needs
+
+3. **Testing Iterations**:
+   - Test at 1000, 2000, 3000 steps
+   - Compare quality vs training time
+   - Earlier checkpoints often work well
+
+## Finding Pre-Made LoRAs
+
+### Official Sources
+1. **HuggingFace Collections**:
+   - Search: "Wan2.2 LoRA" or "Wan2.1 LoRA"
+   - Filter by downloads and likes
+   - Check model cards for details
+
+2. **Community Repositories**:
+   - CivitAI (video model section)
+   - WanVideo community Discord
+   - Reddit: r/StableDiffusion, r/LocalLLaMA
+
+3. **Specific Collections**:
+   - `lightx2v/Wan2.2-Distill-Loras` (speed)
+   - `alibaba-pai/Wan2.2-Fun-Reward-LoRAs` (quality)
+   - Individual creators on HuggingFace
+
+### Evaluating LoRAs
+
+Before downloading, check:
+- **Model card**: Clear description and examples
+- **Compatibility**: Wan2.1 vs Wan2.2
+- **Sample outputs**: Quality matches your needs
+- **File size**: Typical 100-500MB
+- **Downloads/likes**: Community validation
+- **Update date**: Recent is better
+
+## Troubleshooting LoRA Issues
+
+### LoRA Not Loading
+```python
+# Check file path
+assert Path(lora_path).exists(), f"LoRA not found: {lora_path}"
+
+# Verify format
+# LoRAs should be .safetensors or .pt files
+```
+
+### LoRA Has No Effect
+- **Increase weight**: Try 1.2-1.5
+- **Check applies_to**: Ensure correct noise level
+- **Verify compatibility**: Wan2.1 vs Wan2.2
+- **Test without other LoRAs**: Isolate the issue
+
+### Artifacts/Quality Issues
+- **Reduce weight**: Try 0.5-0.7
+- **Limit stacked LoRAs**: Max 3-4
+- **Check training quality**: Some LoRAs are overtrained
+- **Try different combinations**: Some LoRAs conflict
+
+### VRAM Issues with Multiple LoRAs
+- **Reduce number**: Limit to 2-3 LoRAs
+- **Enable CPU offload**: `pipe.enable_model_cpu_offload()`
+- **Lower resolution**: 720p → 480p
+- **Reduce frames**: 81 → 49
+
+## Advanced LoRA Techniques
+
+### Dynamic LoRA Swapping
+```python
+# Change LoRAs mid-pipeline for different scenes
+for scene in scenes:
+    generator.unload_loras()
+    generator.load_multiple_loras(scene["loras"])
+    generate_video(scene["config"])
+```
+
+### LoRA Strength Scheduling
+```python
+# Start strong, fade out
+# Useful for subtle style transitions
+# (Requires custom pipeline modification)
+```
+
+### LoRA Interpolation
+```python
+# Blend between two styles
+# Weight1 = 0.7, Weight2 = 0.3
+loras = [
+    {"path": "style1.safetensors", "weight": 0.7},
+    {"path": "style2.safetensors", "weight": 0.3}
+]
+```
+
+## Performance Impact
+
+| LoRA Count | VRAM Added | Speed Impact | Quality |
+|------------|------------|--------------|---------|
+| 0 (base) | 0 MB | 100% | Good |
+| 1-2 | ~200 MB | 95-98% | Better |
+| 3-4 | ~400 MB | 90-95% | Best |
+| 5+ | ~600+ MB | 85-90% | Diminishing returns |
+
+## Best Practices Summary
+
+1. ✅ **Start with speed LoRAs** (LightX2V) for baseline
+2. ✅ **Add style LoRAs** at 0.7-0.9 weight
+3. ✅ **Character LoRAs** at 1.0+ for consistency
+4. ✅ **Quality LoRAs** at 0.3-0.5 for subtle boost
+5. ✅ **Test individually** before stacking
+6. ✅ **Limit to 3-4 LoRAs** on 16GB VRAM
+7. ✅ **Save successful combinations** for reuse
+8. ✅ **Document your LoRA stacks** for reproducibility
+
+## Conclusion
+
+Specialized LoRAs are incredibly powerful with Wan2.2. The workflow supports:
+- ✅ Multiple simultaneous LoRAs
+- ✅ Independent high/low noise control
+- ✅ Dynamic loading/unloading
+- ✅ Weight adjustment
+- ✅ Compatible with 16GB VRAM
+
+This enables professional-quality, specialized video generation with:
+- 6-step fast inference (speed LoRAs)
+- Consistent characters (character LoRAs)
+- Unique styles (aesthetic LoRAs)
+- Enhanced quality (reward LoRAs)
+- All on consumer hardware!
+
+Start with speed LoRAs, then experiment with style combinations to find what works for your content.
