@@ -5,7 +5,7 @@ Test script for Wan2.2 Image-to-Video with memory optimization
 import os
 import sys
 import torch
-from wan22_video_i2v import Wan22ImageToVideo
+from wan.wan22_video_i2v import Wan22ImageToVideo
 
 def test_memory_optimization():
     """Test the memory optimization features"""

@@ -9,7 +9,7 @@ Date: August 2025
 import os
 import sys
 from pathlib import Path
-from wan22_video_i2v import Wan22ImageToVideo, generate_video_from_image
+from wan.wan22_video_i2v import Wan22ImageToVideo, generate_video_from_image
 
 def example_basic_usage():
     """Basic example of image-to-video generation"""

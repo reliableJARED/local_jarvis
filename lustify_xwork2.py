@@ -14,7 +14,7 @@ from PIL import Image
 import uuid
 import time
 from diffusers import DiffusionPipeline, AutoPipelineForInpainting, AutoPipelineForImage2Image
-from lustify_xwork import ImageGenerator
+#from lustify_xwork import ImageGenerator
 
 gpu_count = torch.cuda.device_count()
 print(f"Number of GPUs available: {gpu_count}")
@@ -31,7 +31,7 @@ class ImageGenerator:
     """
     
     def __init__(self, 
-                 model_name="TheImposterImposters/LUSTIFY-v2.0",
+                 model_name="TheImposterImposters/LUSTIFY-v2.0",#"UnfilteredAI/NSFW-GEN-ANIME","TheImposterImposters/LUSTIFY-v4.0",#"AI-Porn/pornworks-anime-desire-NSFW-Anime-and-hentai-sdxl-checkpoint",#
                  inpaint_model="andro-flock/LUSTIFY-SDXL-NSFW-checkpoint-v2-0-INPAINTING",
                  cache_dir=None,
                  use_mps=True,
@@ -608,7 +608,8 @@ class ImageGenerator:
 if __name__ == "__main__":
     
     # Initialize the generator
-    #generator = ImageGenerator()
+    generator = ImageGenerator()
+    #MAX PROMPT LENGTH = 77 words/300 CHARACTERS
     #BEST - PROMPT STRUCTURE GUIDE - using a consistent [subject] [important feature], [more details] description will create similar subject"
     "[style of photo] photo of a [subject], [important feature], [more details], [pose or action], [framing], [setting/background], [lighting], [camera angle], "
     style = "photograph, photo of "
@@ -1416,6 +1417,106 @@ if __name__ == "__main__":
         result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
         print(result)
 
+    def aeolus(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="beige"):
+            #defaults
+            style = "photograph, photo of"
+            lighting ="soft lighting"
+
+            pose = {"p1":"wooden chair in midevil room with fireplace and candles,",
+                    "p2":"laying on white fur rug midevil room with fireplace and candle,"}
+            #her legs are spread apart the camera is looking at her from the foot of the bed her vagina is visible and a penis is entering her vagina
+            action = {"a1": "1girl 1 man, her legs in the air, she is holding her legs, his penis penetrates her vagina sex,",
+                    "a2": "1girl, kneeling, arched back, vaginal intercouse sex,",
+                    "a3": "1girl 1 man, his penis pushing into her vagina labia lips,",
+                    "a4": "1girl 1 man, his penis entering her anus, anal sex,",
+                    "a5": "1girl 1 man, hardcore tit fuck, his penis between her breasts,",
+                    "a6": "1girl 1 man, she is kneeling on all fours, his penis in her mouth, deepthroat,",
+                    "a7": "1girl 1man, his penis ejaculates cum on to her stomach,",
+                    "a8": "1girl 1 man,his penis ejaculates cum on to her face,",
+                    "a9": "1girl 1man, his his penis ejaculates cum on to her breasts,",  } 
+            framing ={"f1":"POV, having orgasim,",
+                    "f2":"she is gazing up at viewer, POV,",
+                    "f3":"looking down at her, face orgasim,",
+                    "f4":"view from over her, she is delighed",}
+            clothes = {"c1":f"wearing {fabric} tattered cloth sewn together,",
+                    "c2":"naked"}# 
+            
+
+            combos = ["p1a189f2c1","p2a23456f1c2","p2a23456f1c1","p1a57f2c2","p2a2f4c1"]
+            folder = "aeolus"
+            result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
+            print(result)
+
+    
+    
+    def kenzo(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="yellow"):
+        #generator = ImageGenerator()
+        
+        #defaults
+        style = "Hentai, Image of"
+        lighting ="animation,3D render, high detail graphics"
+
+        pose = {"p1":"on a yacht deck, open ocean, laying on lounge chair,",
+                "p2":"on a yacht deck,kneeling,open ocean,",}
+        action = {"a1":"leg slightly spread apart",
+                  "a2":"touching her breasts",
+                  "a3":"touching her thigh",
+                  "a4":"one knee bent",
+                  "a5":"touching between her legs",
+                  "a6":"lips around shaft of cock,",
+                  "a7":"deepthroating,",
+                  "a8":"stroking and sucking cock,",
+                  "a9":"vaginal sex,",
+                  "a0": "ejaculation in her open mouth, cum on her tounge and on her face,", #x5,
+                  }
+        framing = {"f1":"full body view from the side",
+                   "f2":"full body view from foot of chair",
+                   "f3":"full body view from behind her chair",
+                   "f4":"POV",
+                   "f5":"looking down at her",
+                   "f6":"ejaculation dripping from lips around penis",
+                   "f7":"facial expression orgasim",
+                   "f8":"gagging on penis",
+                   "f9":"POV leg in air",
+                   "f0":"cum dripping from vagina, screaming with pleasure"}
+        clothes = {"c1":f"topless, {fabric} bikini bottom only",
+                   "c2":f"sun bathing nude",
+                   "c3":f"naked"}# or naked, nude
+        combos = ["p1a123f1c1","p1a45f2c1","p1a3f2c2","p2a678f4c3","p1a7f4c3","p1a8f5c3","p1a9f4c3","p2a0f5c3","p2a678f6c3","p1a9f9c3","p1a9f0c3","p2a7f8c1"]
+
+        folder = "kenzo"
+        result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
+        print(result)
+    
+
+    def takeshi(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="white"):
+        #defaults
+        style = "hentai, image of"
+        lighting ="animation,3D render, high detail graphics"
+
+        pose = {"p1":"laying on a bed,",
+                "p2":"laying on a bed topless,"}
+        #her legs are spread apart the camera is looking at her from the foot of the bed her vagina is visible and a penis is entering her vagina
+        action = {"a1": "legs spread apart, man's waist down, erect penis, sex,",
+                  "a2": "missionary sex, intercours,",
+                  "a3": "his penis pushing in to her vagina lips, pubic area,",
+                  "a4": "ejaculation oozing from her vagina, penis entering, sex,",
+                  "a5": "hardcore sexual intercourse,",
+                  "a6": "sodomy, his penis in her anal sex,",
+                   "a7": "his penis ejaculates cum on to her stomach,"  } 
+        framing ={"f1":"POV, having orgasim,",
+                  "f2":"she is gazing up at viewer, POV,",
+                  "f3":"looking down at her, face orgasim,",
+                  "f4":"view from over her, she is delighed",}
+        clothes = {"c1":f"wearing {fabric} lace lingerie,",
+                   "c2":"naked"}# or naked, she is naked nude #wearing the black lace lingerie,
+        
+
+        combos = ["p1a134567f1c1","p1a134567f2c1","p1a134567f1c2","p1a134567f2c2","p1a2f3c1","p2a2f3c2","p2a7f2c1"]
+        folder = "takeshi"
+        result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
+        print(result)
+
     
     def parse_combination(combination_string, pose, action, framing, clothes):
     #def parse_combination():
@@ -1729,6 +1830,36 @@ if __name__ == "__main__":
 
         return subject,skin,hair,face,eyes,attribute,lips,chest, name
     
+    def Masamune ():
+        """ DONE """
+        name ="masamune"
+        
+        subject = "a young woman"
+        skin = "light skin, with high cheek bones"
+        hair = "long straight blond hair with bangs"#"face-framing blond hair"
+        face = "soft facial features"#"dark eyeshadow"
+        eyes = "large eyes"#"blue eys"
+        attribute = "long eyelashes"#glasses, etc
+        lips = "full lips"
+        chest = "small breasts"#"small breasts"#can actually be anything
+
+        return subject,skin,hair,face,eyes,attribute,lips,chest, name
+    
+    def Hestia ():
+            """ DONE """
+            name ="hestia"
+            
+            subject = "voluptuous woman, hourglass figure"
+            skin = "smooth tan skin"
+            hair = "long wavy brunette hair cascading over her shoulders"#"face-framing blond hair"
+            face = "dark eyeshadow"#"dark eyeshadow"
+            eyes = "deep green eyes"#"blue eys"
+            attribute = "long black eyelashes"#glasses, etc
+            lips = "lips"
+            chest = "large breasts"#"small breasts"#can actually be anything
+
+            return subject,skin,hair,face,eyes,attribute,lips,chest, name
+    
    
 
     def photographModel(xmodel,xshoot,fabric=None):
@@ -1779,17 +1910,31 @@ if __name__ == "__main__":
  5. Photo of a [woman with a curvaceous figure], [with a tight, shiny bodysuit], [standing with one leg raised and one hand on her hip], [full body shot], [in a steamy bathroom with fogged mirrors and tiles], [soft and steamy lighting], [low-angle shot]
     """
     ##NEW JUMP HERE
+    #_ = photographModel(Masamune,takeshi,fabric="blue")
     #_ = photographModel(Scarlett,asclepius,fabric="red")
     #_ = photographModel(Margot,asclepius,fabric="white")
     #_ = photographModel(Taylor,asclepius,fabric="silver")
 
-    _ = photographModel(Demetra,hades,fabric="pink")
+    #_ = photographModel(Demetra,hades,fabric="pink")
     #_ = photographModel(Calliope,hades,fabric="blue")
 
 
 
     # ALL MODELS ALL SHOOTS
     def runAll():
+
+        _ = photographModel(Hestia,aeolus,fabric="beige")
+        _ = photographModel(Hestia,poseidon,fabric="beige")
+        _ = photographModel(Hestia,tartarus,fabric="beige")
+        _ = photographModel(Hestia,dionysus,fabric="beige")
+        _ = photographModel(Hestia,apollo,fabric="beige")
+        _ = photographModel(Hestia,athena,fabric="beige")
+        _ = photographModel(Hestia,zeus,fabric="beige")
+        _ = photographModel(Hestia,pontus,fabric="beige")
+        _ = photographModel(Hestia,hera,fabric="beige")
+        _ = photographModel(Hestia,achlys,fabric="beige")
+        _ = photographModel(Hestia,takeshi,fabric="beige")
+        _ = photographModel(Hestia,kenzo,fabric="beige")
         
 
 
@@ -1802,6 +1947,9 @@ if __name__ == "__main__":
         _ = photographModel(Evrynomi,pontus,fabric="gold")
         _ = photographModel(Evrynomi,hera,fabric="gold")
         _ = photographModel(Evrynomi,achlys,fabric="gold")
+        _ = photographModel(Evrynomi,takeshi,fabric="gold")
+        _ = photographModel(Evrynomi,kenzo,fabric="gold")
+        _ = photographModel(Evrynomi,aeolus,fabric="gold")
 
         _ = photographModel(Lefkothea,poseidon,fabric="teal")
         _ = photographModel(Lefkothea,tartarus,fabric="teal")
@@ -1812,6 +1960,9 @@ if __name__ == "__main__":
         _ = photographModel(Lefkothea,pontus,fabric="teal")
         _ = photographModel(Lefkothea,hera,fabric="teal")
         _ = photographModel(Lefkothea,achlys,fabric="teal")
+        _ = photographModel(Lefkothea,takeshi,fabric="teal")
+        _ = photographModel(Lefkothea,kenzo,fabric="teal")
+        _ = photographModel(Lefkothea,aeolus,fabric="teal")
 
         _ = photographModel(Eileithyia,poseidon,fabric="blue")
         _ = photographModel(Eileithyia,tartarus,fabric="blue")
@@ -1822,6 +1973,9 @@ if __name__ == "__main__":
         _ = photographModel(Eileithyia,pontus,fabric="blue")
         _ = photographModel(Eileithyia,hera,fabric="blue")
         _ = photographModel(Eileithyia,achlys,fabric="blue")
+        _ = photographModel(Eileithyia,takeshi,fabric="blue")
+        _ = photographModel(Eileithyia,kenzo,fabric="blue")
+        _ = photographModel(Eileithyia,aeolus,fabric="blue")
 
         _ = photographModel(Phoebe,dionysus,fabric="gold")
         _ = photographModel(Phoebe,hera,fabric="gold")
@@ -1832,6 +1986,9 @@ if __name__ == "__main__":
         _ = photographModel(Phoebe,tartarus,fabric="gold")
         _ = photographModel(Phoebe,achlys,fabric="gold")
         _ = photographModel(Phoebe,poseidon,fabric="gold")
+        _ = photographModel(Phoebe,takeshi,fabric="gold")
+        _ = photographModel(Phoebe,kenzo,fabric="gold")
+        _ = photographModel(Phoebe,aeolus,fabric="gold")
 
         _ = photographModel(Theia,dionysus,fabric="green")
         _ = photographModel(Theia,hera,fabric="green")
@@ -1842,6 +1999,10 @@ if __name__ == "__main__":
         _ = photographModel(Theia,tartarus,fabric="purple")
         _ = photographModel(Theia,achlys,fabric="green")
         _ = photographModel(Theia,poseidon,fabric="green")
+        _ = photographModel(Theia,takeshi,fabric="green")
+        _ = photographModel(Theia,kenzo,fabric="green")
+        _ = photographModel(Theia,aeolus,fabric="green")
+        
         
         _ = photographModel(Rhea,hera)
         _ = photographModel(Rhea,zeus)
@@ -1852,6 +2013,9 @@ if __name__ == "__main__":
         _ = photographModel(Rhea,pontus)
         _ = photographModel(Rhea,achlys)
         _ = photographModel(Rhea,poseidon,fabric="purple")
+        _ = photographModel(Rhea,takeshi,fabric="purple")
+        _ = photographModel(Rhea,kenzo,fabric="purple")
+        _ = photographModel(Rhea,aeolus,fabric="purple")
 
         _ = photographModel(Demetra,hera)
         _ = photographModel(Demetra,zeus)
@@ -1862,6 +2026,9 @@ if __name__ == "__main__":
         _ = photographModel(Demetra,pontus)
         _ = photographModel(Demetra,achlys)
         _ = photographModel(Demetra,poseidon,fabric="yellow")
+        _ = photographModel(Demetra,takeshi,fabric="yellow")
+        _ = photographModel(Demetra,kenzo,fabric="yellow")
+        _ = photographModel(Demetra,aeolus,fabric="yellow")
 
         _ = photographModel(Aphrodite,hera)
         _ = photographModel(Aphrodite,zeus)
@@ -1872,6 +2039,9 @@ if __name__ == "__main__":
         _ = photographModel(Aphrodite,pontus)
         _ = photographModel(Aphrodite,achlys)
         _ = photographModel(Aphrodite,poseidon,fabric="pink")
+        _ = photographModel(Aphrodite,takeshi,fabric="pink")
+        _ = photographModel(Aphrodite,kenzo,fabric="pink")
+        _ = photographModel(Aphrodite,aeolus,fabric="pink")
 
         _ = photographModel(Hesperus,hera)
         _ = photographModel(Hesperus,zeus)
@@ -1882,6 +2052,9 @@ if __name__ == "__main__":
         _ = photographModel(Hesperus,pontus)
         _ = photographModel(Hesperus,achlys)
         _ = photographModel(Hesperus,poseidon,fabric="red")
+        _ = photographModel(Hesperus,takeshi,fabric="red")
+        _ = photographModel(Hesperus,kenzo,fabric="red")
+        _ = photographModel(Hesperus,aeolus,fabric="red")
         
         _ = photographModel(Ares,hera,fabric="gold")
         _ = photographModel(Ares,zeus,fabric="light blue")
@@ -1892,6 +2065,9 @@ if __name__ == "__main__":
         _ = photographModel(Ares,pontus)
         _ = photographModel(Ares,achlys)
         _ = photographModel(Ares,poseidon,fabric="black")
+        _ = photographModel(Ares,takeshi,fabric="black")
+        _ = photographModel(Ares,kenzo,fabric="black")
+        _ = photographModel(Ares,aeolus,fabric="black")
 
         _ = photographModel(Eros,hera)
         _ = photographModel(Eros,zeus)
@@ -1902,6 +2078,9 @@ if __name__ == "__main__":
         _ = photographModel(Eros,pontus)
         _ = photographModel(Eros,achlys)
         _ = photographModel(Eros,poseidon,fabric="white")
+        _ = photographModel(Eros,takeshi,fabric="white")
+        _ = photographModel(Eros,kenzo,fabric="white")
+        _ = photographModel(Eros,aeolus,fabric="white")
 
         _ = photographModel(Nesoi,dionysus)
         _ = photographModel(Nesoi,hera)
@@ -1912,6 +2091,9 @@ if __name__ == "__main__":
         _ = photographModel(Nesoi,tartarus,fabric="silver")
         _ = photographModel(Nesoi,achlys)
         _ = photographModel(Nesoi,poseidon,fabric="silver")
+        _ = photographModel(Nesoi,takeshi,fabric="silver")
+        _ = photographModel(Nesoi,kenzo,fabric="silver")
+        _ = photographModel(Nesoi,aeolus,fabric="silver")
 
         _ = photographModel(Hemera,dionysus)
         _ = photographModel(Hemera,hera)
@@ -1922,6 +2104,9 @@ if __name__ == "__main__":
         _ = photographModel(Hemera,tartarus,fabric="white")
         _ = photographModel(Hemera,achlys)
         _ = photographModel(Hemera,poseidon,fabric="orange")
+        _ = photographModel(Hemera,takeshi,fabric="orange")
+        _ = photographModel(Hemera,kenzo,fabric="orange")
+        _ = photographModel(Hemera,aeolus,fabric="orange")
 
 
         
@@ -1934,6 +2119,9 @@ if __name__ == "__main__":
         _ = photographModel(Thalassa,tartarus,fabric="purple")
         _ = photographModel(Thalassa,achlys)
         _ = photographModel(Thalassa,poseidon,fabric="yellow")
+        _ = photographModel(Thalassa,takeshi,fabric="yellow")
+        _ = photographModel(Thalassa,kenzo,fabric="yellow")
+        _ = photographModel(Thalassa,aeolus,fabric="yellow")
 
 
     def Test():
@@ -1978,7 +2166,9 @@ if __name__ == "__main__":
                 photoshoot(prmpt,"style","lighting","subject","skin","hair","face","eyes","attribute","lips","chest","pose","action","framing","clothes",shoot_folder="demo_shoot",name="demo",test=True)
     #Test()
 
-    #runAll()
+    runAll()
+
+    
 
     """while True:
         runAll()

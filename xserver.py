@@ -14,7 +14,7 @@ app = Flask(__name__)
 # Configuration
 IMAGE_FOLDER = 'xserver'
 FAVORITES_FILE = f'./{IMAGE_FOLDER}/fav.txt'
-ALLOWED_EXTENSIONS = {'.png'}
+ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.webm', '.mov', '.avi', '.mkv'}
 
 """ SERVER STRUCTURE
 xserver/
@@ -699,7 +699,7 @@ INDEX_TEMPLATE = '''
             </div>
         {% else %}
             <div class="no-folders">
-                No image folders found. Add some subfolders to '{{ image_folder }}' with .png files.
+                No media folders found. Add some subfolders to '{{ image_folder }}' with image/video files.
             </div>
         {% endif %}
     </div>
@@ -1400,7 +1400,16 @@ FOLDER_TEMPLATE = '''
             cursor: pointer;
         }
         
-        .image-item:hover img {
+        .image-wrapper video {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            transition: transform 0.2s ease;
+            cursor: pointer;
+        }
+        
+        .image-item:hover img,
+        .image-item:hover video {
             transform: scale(1.05);
         }
         
@@ -1737,10 +1746,20 @@ FOLDER_TEMPLATE = '''
             {% for image in images %}
                 <div class="image-item">
                     <div class="image-wrapper">
+                        {% if image.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')) %}
+                        <video src="/image/{{ folder_path }}/{{ image }}" 
+                               muted
+                               loop
+                               onmouseover="this.play()" 
+                               onmouseout="this.pause(); this.currentTime=0;"
+                               onclick="openModal({{ loop.index0 }})">
+                        </video>
+                        {% else %}
                         <img src="/image/{{ folder_path }}/{{ image }}" 
                              alt="{{ image }}" 
                              loading="lazy"
                              onclick="openModal({{ loop.index0 }})">
+                        {% endif %}
                         <div class="action-buttons">
                             <button class="action-btn favorite-btn {% if favorites[folder_path + '/' + image] %}favorited{% endif %}" 
                                     onclick="toggleFavorite(event, '{{ folder_path }}/{{ image }}', this)"
@@ -1769,6 +1788,7 @@ FOLDER_TEMPLATE = '''
                 <span class="close" onclick="closeModal()">&times;</span>
                 <button class="nav-button prev" onclick="changeImage(-1)">‹</button>
                 <img class="modal-image" id="modalImage" src="" alt="">
+                <video class="modal-image" id="modalVideo" src="" controls style="display:none;"></video>
                 <button class="nav-button next" onclick="changeImage(1)">›</button>
                 <div class="image-counter">
                     <span id="currentImageNum">1</span> / <span id="totalImages">{{ image_count }}</span>
@@ -1789,7 +1809,7 @@ FOLDER_TEMPLATE = '''
         </div>
     {% else %}
         <div class="no-images">
-            No .png images found in this folder.
+            No media files found in this folder.
         </div>
     {% endif %}
     
@@ -1800,7 +1820,8 @@ FOLDER_TEMPLATE = '''
             {
                 src: "/image/{{ folder_path }}/{{ image }}",
                 name: "{{ image }}",
-                path: "{{ folder_path }}/{{ image }}"
+                path: "{{ folder_path }}/{{ image }}",
+                isVideo: {{ 'true' if image.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')) else 'false' }}
             }{% if not loop.last %},{% endif %}
             {% endfor %}
         ];
@@ -1810,6 +1831,7 @@ FOLDER_TEMPLATE = '''
         let pendingDeleteButton = null;
         const modal = document.getElementById('imageModal');
         const modalImage = document.getElementById('modalImage');
+        const modalVideo = document.getElementById('modalVideo');
         const currentImageNum = document.getElementById('currentImageNum');
         const totalImages = document.getElementById('totalImages');
         const confirmDialog = document.getElementById('confirmDialog');
@@ -1824,6 +1846,11 @@ FOLDER_TEMPLATE = '''
         function closeModal() {
             modal.style.display = 'none';
             document.body.style.overflow = 'auto'; // Restore scrolling
+            // Stop video playback when closing modal
+            if (modalVideo) {
+                modalVideo.pause();
+                modalVideo.currentTime = 0;
+            }
         }
         
         function changeImage(direction) {
@@ -1841,9 +1868,22 @@ FOLDER_TEMPLATE = '''
         
         function showImage() {
             if (images.length > 0) {
-                modalImage.src = images[currentImageIndex].src;
-                modalImage.alt = images[currentImageIndex].name;
+                const currentItem = images[currentImageIndex];
                 currentImageNum.textContent = currentImageIndex + 1;
+                
+                // Show video or image based on file type
+                if (currentItem.isVideo) {
+                    modalImage.style.display = 'none';
+                    modalVideo.style.display = 'block';
+                    modalVideo.src = currentItem.src;
+                    modalVideo.play();
+                } else {
+                    modalVideo.style.display = 'none';
+                    modalVideo.pause();
+                    modalImage.style.display = 'block';
+                    modalImage.src = currentItem.src;
+                    modalImage.alt = currentItem.name;
+                }
                 
                 // Update navigation buttons
                 const prevBtn = document.querySelector('.prev');
@@ -2029,7 +2069,7 @@ FOLDER_TEMPLATE = '''
             // If no images left, show no images message
             if (currentCount === 0) {
                 const imageGrid = document.querySelector('.image-grid');
-                imageGrid.innerHTML = '<div class="no-images">No .png images found in this folder.</div>';
+                imageGrid.innerHTML = '<div class="no-images">No media files found in this folder.</div>';
             }
         }
         
@@ -2195,6 +2235,15 @@ FAVORITES_TEMPLATE = '''
             cursor: pointer;
         }
         
+        .image-wrapper video {
+            width: 100%;
+            height: auto;
+            max-width: 1024px;
+            display: block;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
         .favorite-btn {
             position: absolute;
             top: 20px;
@@ -2285,9 +2334,18 @@ FAVORITES_TEMPLATE = '''
             {% for image in favorite_images %}
                 <div class="image-item">
                     <div class="image-wrapper">
+                        {% if image.name.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')) %}
+                        <video src="/image/{{ image.path }}" 
+                               muted
+                               loop
+                               onmouseover="this.play()" 
+                               onmouseout="this.pause(); this.currentTime=0;">
+                        </video>
+                        {% else %}
                         <img src="/image/{{ image.path }}" 
                              alt="{{ image.name }}" 
                              loading="lazy">
+                        {% endif %}
                         <button class="favorite-btn favorited" 
                                 onclick="toggleFavorite(event, '{{ image.path }}', this)"
                                 data-image-path="{{ image.path }}">
@@ -2356,7 +2414,7 @@ if __name__ == '__main__':
     print(f"Image folder: {os.path.abspath(IMAGE_FOLDER)}")
     print(f"Favorites file: {os.path.abspath(FAVORITES_FILE)}")
     print(f"Server will be available at: http://localhost:5000")
-    print(f"Add subfolders with .png files to '{IMAGE_FOLDER}' to see them appear!")
+    print(f"Add subfolders with image/video files to '{IMAGE_FOLDER}' to see them appear!")
     
     app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
 

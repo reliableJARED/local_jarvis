@@ -10,7 +10,7 @@ import numpy as np
 
 # --- Configuration ---
 MODEL_ID = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"#https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers
-LORA_REPO = "lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v" #https://huggingface.co/lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v/tree/main
+LORA_REPO = "lightx2v/Wan2.1-Distill-Loras" #https://huggingface.co/lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v/tree/main
 LORA_FILENAME = "loras/Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors"#https://huggingface.co/lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v/tree/main/loras
 
 class Wan14B_Workstation:

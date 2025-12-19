@@ -156,6 +156,7 @@ class PrefrontalCortex:
             'system_prompt_base': self.system_prompt_base,
             'system_prompt_tools': self.prompt_for_tool_use,
             'system_prompt_visual':self.system_prompt_visual,#contains scene description of visual
+            'use_live_visual_prompt':True,#whether to add visual prompt to system prompt
             'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
             'messages': self.messages,
             'last_input':"",
@@ -196,6 +197,15 @@ class PrefrontalCortex:
         else:
             self.messages[0] = {"role": "system", "content": new_sys_prompt}
             return new_sys_prompt
+        
+    def add_visual_to_system_prompt(self):
+        """insert visual prompt into system prompt"""
+        sp = self.system_prompt_base
+        sp += f"<live_visual_information>{self.system_prompt_visual}</live_visual_information>"
+        if len(self.available_tools) > 0:
+            sp += self.prompt_for_tool_use
+        self.messages[0] = {"role": "system", "content": sp}
+        return sp
         
     def register_tool(self, func: Callable):
         """Register a tool function using D,N,A"""
@@ -785,27 +795,36 @@ class PrefrontalCortex:
             try:
                 templobe_data = self.external_temporallobe_to_prefrontalcortex.get_nowait()
                 input_data = None
+
+                #Visual Input Check
+                if self.status_dict.get('use_live_visual_prompt',True):
+                        self.add_visual_to_system_prompt()
+                else:
+                    #ensure visual is cleared
+                    self.system_prompt_visual = ""
+                    self.update_system_prompt(self.system_prompt_base)
                 
                 caption = f"\nYOU CAN SEE THROUGH YOUR CAMERA: {templobe_data.get('caption')}.\nThat is what you see." if templobe_data.get('caption',"") != "" else ""
+                self.system_prompt_visual = caption
 
                 #AUDIO Input
                 if templobe_data.get('transcription', "") != "":
                     #Add visual if there was any (will be if cam is on)
                     self.status_dict.update({'system_prompt_visual':caption})
-                    self.system_prompt_visual = caption
 
                     #audio transcription input received
                     input_data = templobe_data['transcription']
                     #play audio sound beep. just play sys sound for now indicate processing start
                     print('\a')
+
                 #TEXT Input
                 elif templobe_data.get('user_text_input', "") != "":
                     #Add visual if there was any (will be if cam is on)
                     self.status_dict.update({'system_prompt_visual':caption})
-                    self.system_prompt_visual = caption
-
+                    
                     #text input received
                     input_data = templobe_data['user_text_input']
+
                     #play audio sound beep. just play sys sound for now indicate processing start
                     print('\a')
                 else:
