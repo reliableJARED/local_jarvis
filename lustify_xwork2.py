@@ -1447,8 +1447,6 @@ if __name__ == "__main__":
             result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
             print(result)
 
-    
-    
     def kenzo(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="yellow"):
         #generator = ImageGenerator()
         
@@ -1488,7 +1486,6 @@ if __name__ == "__main__":
         result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
         print(result)
     
-
     def takeshi(subject,skin,hair,face,eyes,attribute,lips,chest,name="demo",fabric="white"):
         #defaults
         style = "hentai, image of"
@@ -1517,7 +1514,6 @@ if __name__ == "__main__":
         result = photoshoot(combos,style,lighting,subject,skin,hair,face,eyes,attribute,lips,chest,pose,action,framing,clothes,shoot_folder=folder,name=name)
         print(result)
 
-    
     def parse_combination(combination_string, pose, action, framing, clothes):
     #def parse_combination():
         import re
