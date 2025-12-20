@@ -30,7 +30,8 @@ logging.basicConfig(level=logging.DEBUG)
 when a smaller allocation is requested. If a free block is larger than 512MB, and a smaller allocation is needed, 
 the allocator will split the block, using only the necessary portion and keeping the remainder available as a smaller free block. 
 This helps to prevent large contiguous blocks of memory from being entirely consumed by small allocations, 
-thus improving the chances of finding large contiguous blocks for future large allocations."""
+thus improving the chances of finding large contiguous blocks for future large allocations.
+"""
 
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:256"
 os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"

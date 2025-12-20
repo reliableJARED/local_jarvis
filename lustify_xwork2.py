@@ -33,7 +33,6 @@ class ImageGenerator:
     def __init__(self, 
                  model_name="TheImposterImposters/LUSTIFY-v2.0",#"UnfilteredAI/NSFW-GEN-ANIME","TheImposterImposters/LUSTIFY-v4.0",#"AI-Porn/pornworks-anime-desire-NSFW-Anime-and-hentai-sdxl-checkpoint",#
                  inpaint_model="andro-flock/LUSTIFY-SDXL-NSFW-checkpoint-v2-0-INPAINTING",
-                 cache_dir=None,
                  use_mps=True,
                  use_cuda=None):
         """
@@ -42,13 +41,11 @@ class ImageGenerator:
         Args:
             model_name (str): Main model for text-to-image and image-to-image
             inpaint_model (str): Model for inpainting tasks
-            cache_dir (str): Cache directory for model storage
             use_mps (bool): Use Metal Performance Shaders on Mac (if available)
             use_cuda (bool): Use CUDA if available (None=auto-detect)
         """
         self.model_name = model_name
         self.inpaint_model = inpaint_model
-        self.cache_dir = cache_dir or self._setup_cache_dir()
         
         # Enhanced device configuration for Mac and CUDA
         self.device = self._get_best_device(use_mps, use_cuda)
@@ -71,7 +68,6 @@ class ImageGenerator:
             print("🚀 Using CUDA GPU acceleration!")
         elif self.is_mps:
             print("🚀 Using Metal Performance Shaders for acceleration!")
-        print(f"Cache directory: {self.cache_dir}")
     
     def _get_best_device(self, use_mps=True, use_cuda=None):
         """Determine the best available device with CUDA priority"""
@@ -141,12 +137,6 @@ class ImageGenerator:
             print("Please run: pip install torch diffusers pillow transformers accelerate")
             sys.exit(1)
     
-    def _setup_cache_dir(self):
-        """Setup cache directory for model storage"""
-        cache_dir = Path.home() / ".cache" / "text_to_image_demo"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir
-    
     def _load_pipeline(self, pipeline_type="text-to-image"):
         """
         Load the appropriate diffusion pipeline
@@ -170,7 +160,6 @@ class ImageGenerator:
         try:
             # Configure model loading parameters with device-specific optimizations
             kwargs = {
-                "cache_dir": self.cache_dir,
                 "use_safetensors": True,
             }
             

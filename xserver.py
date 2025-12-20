@@ -4,6 +4,9 @@ import uuid
 import threading
 from pathlib import Path
 from lustify_xwork import ImageGenerator
+from PIL import Image
+import cv2
+import shutil
 
 app = Flask(__name__)
 #
@@ -13,6 +16,7 @@ app = Flask(__name__)
 
 # Configuration
 IMAGE_FOLDER = 'xserver'
+THUMBNAIL_FOLDER = f'{IMAGE_FOLDER}/thumbnails'
 FAVORITES_FILE = f'./{IMAGE_FOLDER}/fav.txt'
 ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.webm', '.mov', '.avi', '.mkv'}
 
@@ -24,11 +28,14 @@ xserver/
 │   └── shoot_photos/  ← Link appears in header
 │       ├── group1.png     ← Shows on 
 │       └── group2.png     ← Shows on 
+├── thumbnails/            ← Generated thumbnails
 fav.txt                    ← Favorites file
 """
 
 # Ensure the main image folder exists
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
+# Ensure thumbnail folder exists
+os.makedirs(THUMBNAIL_FOLDER, exist_ok=True)
 # Ensure demo folders exist for generated images
 os.makedirs(f"{IMAGE_FOLDER}/demo/demo_shoot", exist_ok=True)
 
@@ -163,6 +170,94 @@ def get_subfolders_in_folder(folder_name):
         return sorted(subfolders)
     except Exception:
         return []
+
+def generate_thumbnail(folder_path, filename):
+    """Generate a thumbnail for an image or video."""
+    try:
+        # Source file path
+        full_folder_path = os.path.join(IMAGE_FOLDER, folder_path)
+        source_path = os.path.join(full_folder_path, filename)
+        
+        # Thumbnail path
+        # Create a mirror structure in thumbnails folder
+        thumb_folder = os.path.join(THUMBNAIL_FOLDER, folder_path)
+        os.makedirs(thumb_folder, exist_ok=True)
+        
+        # Thumbnail filename (always jpg for consistency)
+        thumb_filename = os.path.splitext(filename)[0] + '.jpg'
+        thumb_path = os.path.join(thumb_folder, thumb_filename)
+        
+        # Return existing thumbnail if it exists and is newer than source
+        if os.path.exists(thumb_path):
+            if os.path.getmtime(thumb_path) > os.path.getmtime(source_path):
+                return thumb_folder, thumb_filename
+        
+        # Generate thumbnail
+        size = (400, 400)  # Max size
+        
+        if filename.lower().endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')):
+            # Handle video
+            cam = cv2.VideoCapture(source_path)
+            ret, frame = cam.read()
+            cam.release()
+            
+            if ret:
+                # Convert BGR to RGB
+                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            else:
+                # Failed to read video frame
+                return None, None
+        else:
+            # Handle image
+            try:
+                img = Image.open(source_path)
+                # Convert to RGB if necessary (e.g. for PNG with transparency)
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+            except Exception:
+                return None, None
+        
+        # Resize and save
+        img.thumbnail(size, Image.Resampling.LANCZOS)
+        img.save(thumb_path, 'JPEG', quality=85)
+        
+        return thumb_folder, thumb_filename
+        
+    except Exception as e:
+        print(f"Error generating thumbnail for {filename}: {e}")
+        return None, None
+
+@app.route('/thumbnail/<filename>')
+def serve_root_thumbnail(filename):
+    """Serve a thumbnail for a file in the root folder."""
+    # Security check
+    if '..' in filename:
+        abort(404)
+        
+    thumb_folder, thumb_filename = generate_thumbnail('', filename)
+    
+    if thumb_folder and thumb_filename:
+        return send_from_directory(thumb_folder, thumb_filename)
+    else:
+        return serve_image('', filename)
+
+@app.route('/thumbnail/<path:folder_path>/<filename>')
+def serve_thumbnail(folder_path, filename):
+    """Serve a thumbnail for the given file, generating it if necessary."""
+    # Security check
+    if '..' in folder_path or '..' in filename:
+        abort(404)
+        
+    thumb_folder, thumb_filename = generate_thumbnail(folder_path, filename)
+    
+    if thumb_folder and thumb_filename:
+        return send_from_directory(thumb_folder, thumb_filename)
+    else:
+        # Fallback to full image if thumbnail generation fails
+        # For videos, this might be bad, but better than 404
+        # Or maybe return a generic icon?
+        # For now, fallback to original
+        return serve_image(folder_path, filename)
 
 @app.route('/')
 def index():
@@ -1413,6 +1508,24 @@ FOLDER_TEMPLATE = '''
             transform: scale(1.05);
         }
         
+        .video-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            pointer-events: none;
+            backdrop-filter: blur(2px);
+        }
+        
         .action-buttons {
             position: absolute;
             top: 10px;
@@ -1747,15 +1860,13 @@ FOLDER_TEMPLATE = '''
                 <div class="image-item">
                     <div class="image-wrapper">
                         {% if image.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')) %}
-                        <video src="/image/{{ folder_path }}/{{ image }}" 
-                               muted
-                               loop
-                               onmouseover="this.play()" 
-                               onmouseout="this.pause(); this.currentTime=0;"
-                               onclick="openModal({{ loop.index0 }})">
-                        </video>
+                        <img src="/thumbnail/{{ folder_path }}/{{ image }}" 
+                             alt="{{ image }}"
+                             loading="lazy"
+                             onclick="openModal({{ loop.index0 }})">
+                        <div class="video-indicator">▶</div>
                         {% else %}
-                        <img src="/image/{{ folder_path }}/{{ image }}" 
+                        <img src="/thumbnail/{{ folder_path }}/{{ image }}" 
                              alt="{{ image }}" 
                              loading="lazy"
                              onclick="openModal({{ loop.index0 }})">
@@ -1788,7 +1899,7 @@ FOLDER_TEMPLATE = '''
                 <span class="close" onclick="closeModal()">&times;</span>
                 <button class="nav-button prev" onclick="changeImage(-1)">‹</button>
                 <img class="modal-image" id="modalImage" src="" alt="">
-                <video class="modal-image" id="modalVideo" src="" controls style="display:none;"></video>
+                <video class="modal-image" id="modalVideo" src="" controls loop playsinline style="display:none;"></video>
                 <button class="nav-button next" onclick="changeImage(1)">›</button>
                 <div class="image-counter">
                     <span id="currentImageNum">1</span> / <span id="totalImages">{{ image_count }}</span>
@@ -2244,6 +2355,24 @@ FAVORITES_TEMPLATE = '''
             cursor: pointer;
         }
         
+        .video-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            pointer-events: none;
+            backdrop-filter: blur(2px);
+        }
+
         .favorite-btn {
             position: absolute;
             top: 20px;
@@ -2335,16 +2464,20 @@ FAVORITES_TEMPLATE = '''
                 <div class="image-item">
                     <div class="image-wrapper">
                         {% if image.name.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')) %}
-                        <video src="/image/{{ image.path }}" 
-                               muted
-                               loop
-                               onmouseover="this.play()" 
-                               onmouseout="this.pause(); this.currentTime=0;">
-                        </video>
+                        <a href="/image/{{ image.path }}" target="_blank" style="display: block; width: 100%;">
+                            <img src="/thumbnail/{{ image.folder }}/{{ image.name }}" 
+                                 alt="{{ image.name }}" 
+                                 loading="lazy"
+                                 style="width: 100%; height: auto; display: block;">
+                            <div class="video-indicator">▶</div>
+                        </a>
                         {% else %}
-                        <img src="/image/{{ image.path }}" 
-                             alt="{{ image.name }}" 
-                             loading="lazy">
+                        <a href="/image/{{ image.path }}" target="_blank" style="display: block; width: 100%;">
+                            <img src="/thumbnail/{{ image.folder }}/{{ image.name }}" 
+                                 alt="{{ image.name }}" 
+                                 loading="lazy"
+                                 style="width: 100%; height: auto; display: block;">
+                        </a>
                         {% endif %}
                         <button class="favorite-btn favorited" 
                                 onclick="toggleFavorite(event, '{{ image.path }}', this)"
