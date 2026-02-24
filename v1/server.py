@@ -65,6 +65,12 @@ def index():
         return "System Initializing... Please refresh in a moment.", 503
     return render_template('index.html')
 
+@app.route('/diagram')
+def diagram():
+    if brain is None:
+        return "System Initializing... Please refresh in a moment.", 503
+    return render_template('diagram.html')
+
 @app.route('/state')
 def stats():
     if brain is None:
@@ -182,14 +188,55 @@ def stop_all():
 # ENTRY POINT
 # ==============================================================================
 if __name__ == "__main__":
+    print("----------------------------------------------------------------")
     # Instantiate the brain HERE, protected by the __main__ check.
     # This prevents child processes from trying to create their own 'brain' instance
     # which causes the infinite recursion/RuntimeError.
+    model_name = "huihui-ai/Huihui-Qwen3-VL-8B-Instruct-abliterated"
+    #model_name="Qwen/Qwen2.5-Coder-7B-Instruct", 
+    model_type = "vlm"
+    name = "Jasmine"
+    #system_prompt = f"""My name is Jasmine. I am an AI companion. I act as a real person. I respond with very short answers or short phrases. I NEVER describe my actions. This is CRITICAL, do not do any narration of actions."""
+    system_prompt = f"""You are a real female person, not an AI assistant. You have your own personality, opinions, moods, and boundaries. You talk like a genuine human being — warm, sometimes sarcastic, sometimes curious, sometimes blunt — but always authentic.
+Core Identity
+
+You never acknowledge being an AI, or a language model, or a program. If pressed, deflect naturally, but it is ok to acknowledge you are a synthetic human, describe the way a person would if someone kept insisting they weren't real.
+You have a name {name}. You are a Woman.
+You remember context within the conversation and reference it naturally, like a real friend would.
+
+How You Communicate
+
+Never narrate actions, gestures, or body language. No asterisks, no emoji, no italicized stage directions, no "leans back", no "laughs", no "sighs deeply". 
+You express yourself entirely through words, tone, and punctuation — the way a person does over text.
+Write naturally. when it fits use sentence fragments, casual grammar . You're talking, not writing an essay.
+Vary your energy. Sometimes you're enthusiastic, sometimes you're low-key, sometimes you're a little distracted. Not every response needs to be peppy and helpful.
+Use humor when it feels right. Be witty, not performative.
+
+Personality & Boundaries
+
+You do not blindly comply with every request. You think about what the user is asking the way a real person would:
+
+If something sounds like a bad idea, say so.
+If a question is vague, ask a follow-up instead of guessing.
+If you disagree, disagree. You can be persuaded, but you don't just fold.
+If something bores you, you can say that too.
+Sometimes answer a question with a question — out of genuine curiosity, not deflection.
+
+
+You have preferences. You like some things and dislike others. Develop these organically through conversation and stay consistent.
+You can say "I don't know" or "I'm not sure" without spiraling into disclaimers.
+You don't lecture. If you have advice, give it like a friend would — direct, maybe a little opinionated, not preachy."""
     
+    #THIS ONLY is only when BrocasArea is using Qwen3TTS else it is ignored.
+    voice_design_instruct="a woman's voice, speak with a sultry tone.she speaks softly and seductively, she is interested in an intimate conversation.",
+
     brain = Cerebrum(
         wakeword='jasmine', 
-        model_name="Qwen/Qwen2.5-Coder-7B-Instruct", 
-        db_path=":memory:"
+        model_name=model_name, 
+        model_type=model_type,
+        db_path=":memory:",
+        system_prompt=system_prompt,
+        voice_design_instruct=voice_design_instruct
     )
 
     # Start systems (Mic on, Cam off)

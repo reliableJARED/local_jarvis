@@ -43,7 +43,7 @@ class Cerebrum:
     
     It serves as the backend controller for the Flask UI.
     """
-    def __init__(self, wakeword='jarvis', model_name="Qwen/Qwen2.5-Coder-7B-Instruct", db_path=":memory:"):
+    def __init__(self, wakeword='jarvis', model_name="Qwen/Qwen2.5-Coder-7B-Instruct", db_path=":memory:",model_type="llm", system_prompt=None, voice_design_instruct=None):
         print("----------------------------------------------------------------")
         print(" INITIALIZING CEREBRUM... ")
         print("----------------------------------------------------------------")
@@ -65,7 +65,6 @@ class Cerebrum:
         self.wakeword = wakeword
         breakword=f"enough {self.wakeword}"
         exitword=f"goodbye {self.wakeword}"
-        
 
 
         # Initialize Auditory Cortex
@@ -76,7 +75,8 @@ class Cerebrum:
                 wakeword_name=wakeword,
                 breakword=breakword,
                 exitword=exitword,
-                database_path=db_path
+                database_path=db_path,
+                voice_design_instruct=voice_design_instruct,
             )
         else:
             logger.critical("Auditory Cortex failed to load.")
@@ -114,10 +114,12 @@ class Cerebrum:
                 
             self.prefrontal_cortex = PrefrontalCortex(
                     model_name=model_name,
+                    model_type=model_type,
                     external_temporallobe_to_prefrontalcortex=self.temporal_lobe.external_temporallobe_to_prefrontalcortex,
                     interrupt_dict=PrefrontalCortex_interrupt_dict,
                     audio_cortex=audio_cortex,
-                    status_dict=self.PrefrontalCortex_status_dict
+                    status_dict=self.PrefrontalCortex_status_dict,
+                    base_system_prompt=system_prompt
                 )
         else:
             logger.critical("Prefrontal Cortex failed to load.")
@@ -352,7 +354,8 @@ if __name__ == "__main__":
     brain = Cerebrum(
         wakeword='jarvis',
         model_name="Qwen/Qwen2.5-Coder-7B-Instruct",
-        db_path=":memory:"
+        db_path=":memory:",
+        system_prompt=None,
     )
     brain.start_systems(start_mic=True, start_cam=True)
 

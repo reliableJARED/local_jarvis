@@ -193,10 +193,11 @@ def BrocasArea_playback(internal_play_queue, stop_dict, shutdown_event, status_d
 
 
 class BrocasArea():
-    def __init__(self,brocas_area_interrupt_dict,lang_code = 'a',voice='af_sky,af_jessica') -> None:
+    def __init__(self,brocas_area_interrupt_dict,lang_code = 'a',voice='af_sky,af_jessica', design_instruct=None) -> None:
         print("----------------------------------------------------------------")
-        print(" INITIALIZING BROCA'S AREA... ")
+        print(" INITIALIZING BROCA'S AREA... kokoro")
         print("----------------------------------------------------------------")
+        #design_instruct is ignored for kokoro powered BrocasArea, it is only for Qwen3TTS powered BrocasArea, but it is accepted as an argument for consistency and future-proofing.
         # Check for internet connection
         _ = self.check_internet()
         self.KPipeline = KPipeline
@@ -281,7 +282,7 @@ class BrocasArea():
             raise
 
 
-    def synthesize_speech(self, text: str, auto_play: bool = False, voice: str = None) -> Optional[dict]:
+    def synthesize_speech(self, text: str, auto_play: bool = False, voice: str = None, emotion: str = None) -> Optional[dict]:
         """Synthesize speech from text and optionally play it.
         
         Args:
@@ -297,6 +298,9 @@ class BrocasArea():
                 'num_channels': int
             }
         """
+        if emotion is None:
+            logging.warning("Emotion parameter is currently not supported in Kokoro, only Qwen3TTS brocasArea uses it. Ignoring emotion.")
+            
         if voice is None:
             voice = self.voice
 

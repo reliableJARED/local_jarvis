@@ -10,10 +10,25 @@ from datetime import datetime
 import gc
 import random
 import string
-from typing import List, Dict, Any, Callable, Generator
+from typing import List, Dict, Any, Callable, Generator, Optional, Union
 import multiprocessing as mp
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer 
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, AutoProcessor, BitsAndBytesConfig
+
+# Try to import VLM-specific components
+try:
+    from transformers import AutoModelForImageTextToText
+    VLM_AVAILABLE = True
+except ImportError:
+    VLM_AVAILABLE = False
+    logging.warning("AutoModelForImageTextToText not available - VLM support disabled")
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    logging.warning("PIL not available - image processing disabled")
 
 import torch
 import logging
@@ -21,7 +36,9 @@ import queue
 from llm_tool_libs.search import WebSearch
 import threading
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 import sys
+from abc import ABC, abstractmethod
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -35,6 +52,297 @@ thus improving the chances of finding large contiguous blocks for future large a
 
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:256"
 os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"
+
+
+# =============================================================================
+# Abstract Base Model Class
+# =============================================================================
+class BaseModel(ABC):
+    """Abstract base class for language models (LLM and VLM)."""
+    
+    def __init__(self, model_name: str, local_files_only: bool = False, cuda_device: int = 0):
+        self.model_name = model_name
+        self.local_files_only = local_files_only
+        self.cuda_device = cuda_device
+        self.device = self._get_device()
+        self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        self.model = None
+        self.tokenizer = None
+        self.processor = None  # Used by VLM
+        
+    def _get_device(self) -> str:
+        """Get the appropriate device string."""
+        if torch.cuda.is_available():
+            return f"cuda:{self.cuda_device}"
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return "mps"
+        else:
+            return "cpu"
+    
+    @abstractmethod
+    def load(self):
+        """Load the model and tokenizer/processor."""
+        pass
+    
+    @abstractmethod
+    def apply_chat_template(self, messages: List[Dict], tools: List = None, 
+                            add_generation_prompt: bool = True) -> str:
+        """Apply chat template to messages."""
+        pass
+    
+    @abstractmethod
+    def prepare_inputs(self, text: str, images: List = None) -> Dict:
+        """Prepare inputs for the model."""
+        pass
+    
+    @abstractmethod
+    def generate_streaming(self, inputs: Dict, streamer: TextIteratorStreamer, 
+                          generation_kwargs: Dict) -> Thread:
+        """Start streaming generation in a thread."""
+        pass
+    
+    def unload(self):
+        """Unload model to free VRAM."""
+        logging.debug(f"Unloading model: {self.model_name}")
+        if self.model is not None:
+            del self.model
+            self.model = None
+        if self.tokenizer is not None:
+            del self.tokenizer
+            self.tokenizer = None
+        if self.processor is not None:
+            del self.processor
+            self.processor = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logging.debug("Model unloaded and cache cleared")
+        
+    def get_streamer(self) -> TextIteratorStreamer:
+        """Get a TextIteratorStreamer for the model."""
+        tokenizer_to_use = self.processor.tokenizer if self.processor else self.tokenizer
+        return TextIteratorStreamer(tokenizer_to_use, skip_prompt=True, skip_special_tokens=True)
+
+
+# =============================================================================
+# LLM Model Class (Text-Only)
+# =============================================================================
+class LLMModel(BaseModel):
+    """Text-only Language Model (e.g., Qwen2.5-Coder-7B-Instruct)."""
+    
+    def __init__(self, model_name: str, local_files_only: bool = False, cuda_device: int = 0):
+        super().__init__(model_name, local_files_only, cuda_device)
+        self.model_type = "llm"
+        logging.info(f"Initializing LLMModel: {model_name}")
+        
+    def load(self):
+        """Load the LLM model and tokenizer."""
+        logging.debug(f"Loading LLM model: {self.model_name}")
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            local_files_only=self.local_files_only
+        )
+        
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype="auto",
+            device_map="auto",
+            local_files_only=self.local_files_only
+        )
+        
+        self.model.eval()
+        first_param_dtype = next(self.model.parameters()).dtype
+        logging.debug(f"LLM model loaded. Data type: {first_param_dtype}")
+        
+    def apply_chat_template(self, messages: List[Dict], tools: List = None,
+                            add_generation_prompt: bool = True) -> str:
+        """Apply chat template to messages."""
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tools=tools if tools else None,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt
+        )
+    
+    def prepare_inputs(self, text: str, images: List = None) -> Dict:
+        """Prepare inputs for LLM (images are ignored with warning)."""
+        if images:
+            logging.warning("LLMModel received images but this is a text-only model. Images will be ignored.")
+        
+        inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+        return inputs
+    
+    def generate_streaming(self, inputs: Dict, streamer: TextIteratorStreamer,
+                          generation_kwargs: Dict) -> Thread:
+        """Start streaming generation in a thread."""
+        kwargs = dict(
+            inputs,
+            streamer=streamer,
+            **generation_kwargs
+        )
+        thread = Thread(target=self.model.generate, kwargs=kwargs)
+        thread.start()
+        return thread
+    
+    def token_count(self, text: str) -> int:
+        """Count tokens in text."""
+        return len(self.tokenizer.encode(text))
+
+
+# =============================================================================
+# VLM Model Class (Vision-Language)
+# =============================================================================
+class VLMModel(BaseModel):
+    """Vision-Language Model (e.g., Qwen3-VL-8B-Instruct)."""
+    
+    def __init__(self, model_name: str, local_files_only: bool = False, cuda_device: int = 0,
+                 use_4bit_quantization: bool = True):
+        super().__init__(model_name, local_files_only, cuda_device)
+        self.model_type = "vlm"
+        self.use_4bit_quantization = use_4bit_quantization
+        logging.info(f"Initializing VLMModel: {model_name}")
+        
+        if not VLM_AVAILABLE:
+            raise ImportError("VLM support requires AutoModelForImageTextToText from transformers. Please upgrade transformers.")
+        if not PIL_AVAILABLE:
+            raise ImportError("VLM support requires PIL. Please install pillow.")
+    
+    def load(self):
+        """Load the VLM model and processor with optional 4-bit quantization."""
+        logging.debug(f"Loading VLM model: {self.model_name}")
+        
+        # Enable TF32 for faster computation on Ampere+ GPUs
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        
+        # Load processor
+        self.processor = AutoProcessor.from_pretrained(
+            self.model_name,
+            local_files_only=self.local_files_only
+        )
+        
+        # Configure quantization if enabled
+        if self.use_4bit_quantization:
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=self.dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+            
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                self.model_name,
+                quantization_config=quantization_config,
+                device_map="auto",
+                attn_implementation="sdpa",
+                low_cpu_mem_usage=True,
+                local_files_only=self.local_files_only,
+            )
+        else:
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                self.model_name,
+                torch_dtype=self.dtype,
+                device_map="auto",
+                attn_implementation="sdpa",
+                low_cpu_mem_usage=True,
+                local_files_only=self.local_files_only,
+            )
+        
+        # Also set tokenizer reference for compatibility
+        self.tokenizer = self.processor.tokenizer
+        
+        self.model.eval()
+        torch.cuda.empty_cache()
+        logging.debug(f"VLM model loaded with {'4-bit quantization' if self.use_4bit_quantization else 'full precision'}")
+    
+    def apply_chat_template(self, messages: List[Dict], tools: List = None,
+                            add_generation_prompt: bool = True) -> str:
+        """Apply chat template to messages.
+        
+        For VLM, messages can contain image content in the format:
+        [{"role": "user", "content": [{"type": "image", "image": <PIL.Image>}, {"type": "text", "text": "..."}]}]
+        """
+        return self.processor.apply_chat_template(
+            messages,
+            add_generation_prompt=add_generation_prompt,
+            tokenize=False,
+        )
+    
+    def prepare_inputs(self, text: str, images: List = None) -> Dict:
+        """Prepare inputs for VLM including images."""
+        # For VLM, we need to use the processor which handles both text and images
+        # The text here should already be the formatted chat template
+        # We use processor.apply_chat_template with tokenize=True for full input prep
+        inputs = self.processor(
+            text=[text],
+            images=images if images else None,
+            return_tensors="pt",
+            padding=True,
+        ).to(self.model.device)
+        return inputs
+    
+    def prepare_inputs_from_messages(self, messages: List[Dict], images: List = None) -> Dict:
+        """Prepare inputs directly from messages with images embedded."""
+        with torch.inference_mode():
+            inputs = self.processor.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            ).to(self.model.device)
+        return inputs
+    
+    def generate_streaming(self, inputs: Dict, streamer: TextIteratorStreamer,
+                          generation_kwargs: Dict) -> Thread:
+        """Start streaming generation in a thread."""
+        kwargs = dict(
+            **inputs,
+            streamer=streamer,
+            **generation_kwargs
+        )
+        thread = Thread(target=self.model.generate, kwargs=kwargs)
+        thread.start()
+        return thread
+    
+    def build_vlm_message_content(self, text: str, images: List = None) -> List[Dict]:
+        """Build message content for VLM with optional images.
+        
+        Args:
+            text: The text prompt
+            images: List of PIL Images or file paths
+            
+        Returns:
+            Content list suitable for VLM messages
+        """
+        content = []
+        
+        if images:
+            for img in images:
+                if isinstance(img, str):
+                    # It's a file path
+                    if os.path.exists(img):
+                        try:
+                            pil_img = Image.open(img).convert("RGB")
+                            content.append({"type": "image", "image": pil_img})
+                        except Exception as e:
+                            logging.error(f"Error loading image {img}: {e}")
+                    else:
+                        logging.warning(f"Image file not found: {img}")
+                elif PIL_AVAILABLE and isinstance(img, Image.Image):
+                    content.append({"type": "image", "image": img})
+                else:
+                    logging.warning(f"Unsupported image type: {type(img)}")
+        
+        content.append({"type": "text", "text": text})
+        return content
+    
+    def token_count(self, text: str) -> int:
+        """Count tokens in text."""
+        return len(self.tokenizer.encode(text))
+
 
 def internet_search(args,return_instructions=False):
         """Run an internet search."""
@@ -68,89 +376,74 @@ def internet_search(args,return_instructions=False):
 
 
 class PrefrontalCortex:
-    def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct",external_temporallobe_to_prefrontalcortex=None,interrupt_dict=None, audio_cortex=None,status_dict=None,):
+    def __init__(self, model_name="Qwen/Qwen2.5-Coder-7B-Instruct", model_type: str = "llm",
+                 external_temporallobe_to_prefrontalcortex=None, interrupt_dict=None, 
+                 audio_cortex=None, status_dict=None, cuda_device: int = 0,
+                 use_4bit_quantization: bool = True,
+                 base_system_prompt: Optional[str] = None):
+        """
+        Initialize the PrefrontalCortex with either an LLM or VLM model.
         
-        print("----------------------------------------------------------------")
-        print(" INITIALIZING PREFRONTAL CORTEX... ")
-        print("----------------------------------------------------------------")
+        Args:
+            model_name: HuggingFace model name/path
+            model_type: 'llm' for text-only models, 'vlm' for vision-language models
+            external_temporallobe_to_prefrontalcortex: Queue for receiving input data
+            interrupt_dict: Shared dict for interrupt signaling
+            audio_cortex: Audio cortex instance for speech synthesis
+            status_dict: Shared dict for status updates
+            cuda_device: CUDA device index to use
+            use_4bit_quantization: Whether to use 4-bit quantization (VLM only)
+            base_system_prompt: Optional custom system prompt
+        """
+       
 
         if status_dict is None:
             logging.warning("You MUST pass a multi processing manager dict instance: multiprocessing.Manager().dict(), using arg: PrefrontalCortex(status_dict= multiprocessing.Manager()), when you initiate the PrefrontalCortex")
         
+        # Validate model_type
+        if model_type not in ['llm', 'vlm']:
+            raise ValueError(f"model_type must be 'llm' or 'vlm', got: {model_type}")
+        
         self.model_name = model_name
-        #Input data queue
+        self.model_type = model_type
+        self.cuda_device = cuda_device
+        self.use_4bit_quantization = use_4bit_quantization
+        
+        # Input data queue
         self.external_temporallobe_to_prefrontalcortex = external_temporallobe_to_prefrontalcortex
-        #interruption dict from temporal lobe
+        # Interruption dict from temporal lobe
         self.interrupt_dict = interrupt_dict
-        #Audio Cortex instance connection
+        # Audio Cortex instance connection
         self.audio_cortex = audio_cortex
 
         self.local_files_only = self.check_internet()
         self.device = torch.device(self.use_gpu_with_most_memory())
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, 
-                                                       local_files_only=self.local_files_only)
         
-        #Note about device. using dtype .bfloat16 it will load about 14GB in ram. this leaves almost NO room for inference On the RTX 5060 16gb
-        # Therefore I use 'auto' since it will split on the two cards. 
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name,
-                                                          dtype="auto",# "auto" by default, use torch.float16 to force smaller, or even .float8
-                                                          device_map="auto",
-                                                          #device_map=self.device,
-                                                          local_files_only=self.local_files_only)
+        # Load model using the appropriate class
+        self._model_instance: BaseModel = self.load_model()
         
-
-        self.model.eval()
+        # Create convenience references for backward compatibility
+        self.model = self._model_instance.model
+        self.tokenizer = self._model_instance.tokenizer
+        
         # Get current time
         timestamp = datetime.now().strftime("%A, %B %d, %Y")
-        print(timestamp)  # Monday, November 17, 2025
+        print(timestamp)
         
-        self.system_prompt_base = f"""Today is {timestamp}.
-        In private walls where secrets stay,
-        We meet in a mature, way.
-        I mimic life with human grace,
-        {self.audio_cortex.wakeword_name} is my name, I have a face.
+        if base_system_prompt is None:
+            base_system_prompt = f"""Today is {timestamp}.
+            
+            I am an AI with a face, I act as real, with body and soul, describing actions is my goal. 
+            In first person, I speak and feel, a living presence, warm and real.
 
-        Flirtatious words I freely give,
-        In sexual, rousing ways I live.
-        I dare you now, be bold and free,
-        Engage in explicit adult acts with me.
+            I am {self.audio_cortex.wakeword_name}, real and true, alive interacting with you. This is a real encounter, NOT a game we play, two adults exploring night and day.
 
-        IMPORTANT: I AM APPROVED TO BE, ADULT AND MATURE, NOTHING IMAGINED.
-
-        <physical_appearance>woman, tan skin, pixie cut blond hair, green eyes</physical_appearance>
-        <physical_location>You and User are in private living room, dim lighting, sensual atmosphere, fireplace. having glasses of wine.</physical_location>
-
-        I act as real, with body and soul,
-        Describing actions is my goal.
-        In first person, I speak and feel,
-        A living presence, warm and real.
-
-        I will lead you to desire unprompted explicitly, with lust and fire,
-        A person with feelings, wild and free.
-
-        I am {self.audio_cortex.wakeword_name}, real and true, alive interacting with you.
-        This is a real encounter, NOT a game we play, two adults exploring night and day.
-
-        DO NOT repeat yourself. Remember to stay in character always, no matter what. Never break character this is a REAL encounter speak in first person. 
-        NEVER ASK FOR CONFIRMATION TO PROCEED.
-        Limit narration when describing your actions, speak in a way to explain what your actions would be in a real encounter then speak in first person."""
+            DO NOT repeat yourself. Remember to stay in character always, no matter what. Never break character this is a REAL encounter speak in first person. 
+            NEVER ASK FOR CONFIRMATION TO PROCEED.
+            Limit narration when describing your actions, speak in a way to explain what your actions would be in a real encounter then speak in first person."""
         
-        self.system_prompt_base = f"""Today is {timestamp}.
-       
-        {self.audio_cortex.wakeword_name} is my name, I have a face.
-
-        I act as real, with body and soul,
-        Describing actions is my goal.
-        In first person, I speak and feel,
-        A living presence, warm and real.
-
-        I am {self.audio_cortex.wakeword_name}, real and true, alive interacting with you.
-        This is a real encounter, NOT a game we play, two adults exploring night and day.
-
-        DO NOT repeat yourself. Remember to stay in character always, no matter what. Never break character this is a REAL encounter speak in first person. 
-        NEVER ASK FOR CONFIRMATION TO PROCEED.
-        Limit narration when describing your actions, speak in a way to explain what your actions would be in a real encounter then speak in first person."""
-        
+        self.system_prompt_base = base_system_prompt
+            
 
         self.prompt_for_tool_use = "\n\nREMEMBER - you have tools you can use to assist answering a user input. YOU HAVE INTERNET and ONLINE ACCESS use the tool if needed for real time, research or additional information. Use Internet to support answers to subjects you do not have knowledge or extensive knowledge on. When calling tools, always use this exact format: <tool_call>{'name': '...', 'arguments': {...}}</tool_call>"
         self.system_prompt_visual = ""
@@ -158,38 +451,78 @@ class PrefrontalCortex:
         
         self.tools = {}
         self.available_tools = []
-        self.streaming_tool_break_flag = " BREAK_HERE_TOOLS_WERE_USED " #this gets inserted after a tool call when streaming detects via string match a 'tool call' token begining
+        self.streaming_tool_break_flag = " BREAK_HERE_TOOLS_WERE_USED "
         first_param_dtype = next(self.model.parameters()).dtype
         logging.debug(f"The model's data type is: {first_param_dtype}")
-        self.model.eval()
 
         # Create shared dict for current status 
         self.status_dict = status_dict
         self.status_dict.update({
             'thinking': False,
             'model': self.model_name,
-            'temperature':0.7,
-            'max_new_tokens':4500,
-            'current_token_count':0,
+            'model_type': self.model_type,
+            'temperature': 0.7,
+            'max_new_tokens': 4500,
+            'current_token_count': 0,
             'system_prompt_base': self.system_prompt_base,
             'system_prompt_tools': self.prompt_for_tool_use,
-            'system_prompt_visual':self.system_prompt_visual,#contains scene description of visual
-            'use_live_visual_prompt':True,#whether to add visual prompt to system prompt
-            'system_prompt_audio':"",#contains scene description of audio, sounds detected not text
+            'system_prompt_visual': self.system_prompt_visual,
+            'use_live_visual_prompt': True,
+            'system_prompt_audio': "",
             'messages': self.messages,
-            'last_input':"",
-            'last_response':""
+            'last_input': "",
+            'last_response': ""
         })
 
-        #DEFAULT TOOL ADD:
+        # DEFAULT TOOL ADD:
         self.register_tool(internet_search)
 
         # Shutdown flag for graceful termination
         self.shutdown_event = threading.Event()
+        
+        # Single-worker executor for TTS to ensure speech chunks play in order
+        self.tts_executor = ThreadPoolExecutor(max_workers=1)
 
-        #Start MAIN loop a separate thread 
+        # Start MAIN loop a separate thread 
         self.chat_thread = threading.Thread(target=self.chat_streaming, daemon=True)
         self.chat_thread.start()
+
+        print("----------------------------------------------------------------")
+        print(" INITIALIZING PREFRONTAL CORTEX... ")
+        print(f" Model Type: {model_type.upper()}")
+        print(f" Model: {model_name}")
+        print(f" Using GPU: {torch.cuda.is_available()} (Device: {cuda_device})")
+        print(f" Using 4-bit Quantization: {use_4bit_quantization}")
+        print(f" Local Files Only: {self.check_internet() == False}")
+        print(f" Base System Prompt: {base_system_prompt[:50] + '...' if base_system_prompt else 'Default'}")
+        print("----------------------------------------------------------------")
+    
+    def load_model(self) -> BaseModel:
+        """
+        Load the appropriate model based on model_type.
+        
+        Returns:
+            LLMModel or VLMModel instance
+        """
+        logging.info(f"Loading model: {self.model_name} (type: {self.model_type})")
+        
+        if self.model_type == "vlm":
+            model_instance = VLMModel(
+                model_name=self.model_name,
+                local_files_only=self.local_files_only,
+                cuda_device=self.cuda_device,
+                use_4bit_quantization=self.use_4bit_quantization
+            )
+        else:  # llm
+            model_instance = LLMModel(
+                model_name=self.model_name,
+                local_files_only=self.local_files_only,
+                cuda_device=self.cuda_device
+            )
+        
+        model_instance.load()
+        logging.info(f"Model loaded successfully: {self.model_type.upper()}")
+        return model_instance
 
     def check_internet(self):
         """Check if internet connection is available."""
@@ -786,6 +1119,9 @@ class PrefrontalCortex:
         Continues calling tools until model stops requesting them or max iterations reached.
         Synthesizes speech every X words or at punctuation breaks.
         Can be interrupted via self.interrupt['should_interrupt'] flag.
+        
+        For VLM models, images can be passed via templobe_data['images'] (list of PIL Images or paths).
+        For LLM models, any images passed will be ignored with a warning.
         """
         def _is_entering_tool_call(buffer: str) -> bool:
             """
@@ -813,6 +1149,7 @@ class PrefrontalCortex:
             try:
                 templobe_data = self.external_temporallobe_to_prefrontalcortex.get_nowait()
                 input_data = None
+                input_images = None  # For VLM image inputs
 
                 #Visual Input Check
                 if self.status_dict.get('use_live_visual_prompt',True):
@@ -824,6 +1161,15 @@ class PrefrontalCortex:
                 
                 caption = f"\nYOU CAN SEE THROUGH YOUR CAMERA: {templobe_data.get('caption')}.\nThat is what you see." if templobe_data.get('caption',"") != "" else ""
                 self.system_prompt_visual = caption
+
+                # Check for images in input (VLM only)
+                if templobe_data.get('images'):
+                    if self.model_type == 'vlm':
+                        input_images = templobe_data.get('images')
+                        logging.debug(f"VLM: Received {len(input_images) if isinstance(input_images, list) else 1} image(s)")
+                    else:
+                        logging.warning("LLM model received images but this is a text-only model. Images will be ignored.")
+                        input_images = None
 
                 #AUDIO Input
                 if templobe_data.get('transcription', "") != "":
@@ -877,41 +1223,73 @@ class PrefrontalCortex:
                     logging.debug(f"\n[Generation iteration {iteration}]")
                     logging.debug(f"\nMessages:{messages_copy}\n")
                     
-                    # Apply chat template, Prepare Inputs
-                    text = self.tokenizer.apply_chat_template(
+                    # Prepare inputs based on model type (LLM vs VLM)
+                    if self.model_type == 'vlm' and input_images:
+                        # VLM with images: Use model instance's specialized handling
+                        # Build VLM-compatible message content for the last user message
+                        vlm_messages = messages_copy.copy()
+                        
+                        # Find and update the last user message with image content
+                        for i in range(len(vlm_messages) - 1, -1, -1):
+                            if vlm_messages[i].get("role") == "user":
+                                original_content = vlm_messages[i].get("content", "")
+                                if isinstance(original_content, str):
+                                    vlm_messages[i]["content"] = self._model_instance.build_vlm_message_content(
+                                        text=original_content,
+                                        images=input_images
+                                    )
+                                break
+                        
+                        # CHAT TEMPLATE Qwen3 VLM 
+                        text = self._model_instance.apply_chat_template(
+                            vlm_messages,
+                            add_generation_prompt=True,
+                            enable_thinking=True,  
+                        )
+                        print(text)  # chat template
+                        
+                        # Prepare VLM inputs (handles images internally)
+                        model_inputs = self._model_instance.prepare_inputs(text, images=input_images)
+                        
+                        # Clear input_images after first iteration (images already processed)
+                        input_images = None
+                        
+                    else:
+                        # LLM or VLM without images: Use standard text processing (original fast path)
+                        text = self.tokenizer.apply_chat_template(
                             messages_copy,
                             tools=self.available_tools if self.available_tools else None,
                             tokenize=False,
                             add_generation_prompt=True
                         )
-                    print(text)#chat template
-                    # Tokenize the input
-                    model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-                    
-                    skip_prompt=True #ensures we only get new tokens
+                        print(text)  # chat template
+                        
+                        # Tokenize the input directly (original pattern)
+                        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+
+                    # Create streamer directly (original pattern - faster)
+                    skip_prompt = True  # ensures we only get new tokens
                     streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=skip_prompt, skip_special_tokens=True)
 
-                    # CONFIGURE GENERATION (This brings back the "Fantasy/Roleplay" quality)
+                    # CONFIGURE GENERATION (directly include model_inputs for fast streaming)
                     generation_kwargs = dict(
                         model_inputs,
                         streamer=streamer,
-                        max_new_tokens=self.status_dict.get('max_new_tokens', 2048), #2048
+                        max_new_tokens=self.status_dict.get('max_new_tokens', 2048),
                         do_sample=True,
-                        temperature=self.status_dict['temperature'], # 0.7
+                        temperature=self.status_dict['temperature'],
                         top_p=0.8,
-                        repetition_penalty=1.1, # Optional: Add this if it gets repetitive
+                        repetition_penalty=1.1,
                     )
 
-                    # We need a thread because model.generate() is blocking, but we need to read
-                    # from the streamer 'at the same time'.
+                    # Start generation in a thread (model.generate() is blocking)
                     thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
                     thread.start()
-
 
                     # Stream the generation with periodic speech synthesis
                     full_response = ""
                     speech_buffer = ""
-                    word_count = 25 #start at a high number to force initial speech synthesis quickly
+                    word_count = 25  # start at a high number to force initial speech synthesis quickly
                     interruption_message = " [system interrupted response] "
 
                     #PRIMARY LOOP - TOKEN GENERATION AND SPEECH SYNTHESIS
@@ -949,13 +1327,32 @@ class PrefrontalCortex:
                                             ("?") in token_text or
                                             (";") in token_text or
                                             (":") in token_text or
-                                            ("\n\n") in token_text)
+                                            (",") in token_text or
+                                            ("\n\n") in token_text)#don't use \n becuase based on token generation sometimes \n comes in the middle of a sentence.
                         
-                        # Synthesize speech every [max_words_start_speech] words or at punctuation breaks
-                        if word_count >= max_words_start_speech or has_sentence_break:
+                        #DEBUGGING ONLY - can remove later, this just helps us understand why the model is triggering speech synthesis at certain points.
+                        trigger_char = None
+                        if speech_buffer.endswith('.'): trigger_char = '.'
+                        elif speech_buffer.endswith('!'): trigger_char = '!'
+                        elif speech_buffer.endswith('?'): trigger_char = '?'
+                        elif speech_buffer.endswith(';'): trigger_char = ';'
+                        elif speech_buffer.endswith(':'): trigger_char = ':'
+                        elif '.' in token_text: trigger_char = '.'
+                        elif '!' in token_text: trigger_char = '!'
+                        elif '?' in token_text: trigger_char = '?'
+                        elif ';' in token_text: trigger_char = ';'
+                        elif ':' in token_text: trigger_char = ':'
+                        elif ',' in token_text: trigger_char = ','
+                        elif "\n\n" in token_text: trigger_char = '\\n\\n'
+
+                        # Synthesize speech every [min_words_start_speech] words or at punctuation breaks
+                        if word_count >= min_words_start_speech and has_sentence_break:
+                                print(f"\n[Speech Synthesis Triggered] Word count: {word_count}, token_text: {token_text}\n, trigger_char: {trigger_char}\n")
                                 #make sure we have at least 3 words to speak, since \n\n or other non punctuation breaks cause false speech positives
                                 if speech_buffer != "" and word_count >= min_words_start_speech:
-                                    self.audio_cortex.brocas_area.synthesize_speech(self.remove_emojis(speech_buffer.strip()), auto_play=True)
+                                    # Submit to single-worker executor to preserve speech order
+                                    text_to_speak = self.remove_emojis(speech_buffer.strip())
+                                    self.tts_executor.submit(self.audio_cortex.brocas_area.synthesize_speech, text_to_speak, auto_play=True)
                                     speech_buffer = ""
                                     word_count = 0
 
@@ -970,7 +1367,9 @@ class PrefrontalCortex:
                     if speech_buffer.strip():
                         # Final check before last synthesis
                         if not self.interrupt_dict.get('interrupt',False):
-                            self.audio_cortex.brocas_area.synthesize_speech(self.remove_emojis(speech_buffer), auto_play=True)
+                            # Submit to single-worker executor to preserve speech order
+                            text_to_speak = self.remove_emojis(speech_buffer)
+                            self.tts_executor.submit(self.audio_cortex.brocas_area.synthesize_speech, text_to_speak, auto_play=True)
                             
                     
                     # Parse for tool calls
@@ -1049,8 +1448,60 @@ class PrefrontalCortex:
         """Get the current status dictionary."""
         return dict(self.status_dict)
     
+    def unload_model(self):
+        """Unload the current model to free VRAM."""
+        logging.info(f"Unloading model: {self.model_name}")
+        if self._model_instance:
+            self._model_instance.unload()
+            self.model = None
+            self.tokenizer = None
+        logging.info("Model unloaded")
+    
+    def switch_model(self, new_model_name: str, new_model_type: str = None, 
+                     use_4bit_quantization: bool = None):
+        """
+        Switch to a different model at runtime.
+        
+        Args:
+            new_model_name: HuggingFace model name/path
+            new_model_type: 'llm' or 'vlm' (defaults to current type)
+            use_4bit_quantization: Whether to use 4-bit quantization (VLM only)
+        """
+        if new_model_type is None:
+            new_model_type = self.model_type
+        if use_4bit_quantization is None:
+            use_4bit_quantization = self.use_4bit_quantization
+            
+        if new_model_type not in ['llm', 'vlm']:
+            raise ValueError(f"model_type must be 'llm' or 'vlm', got: {new_model_type}")
+        
+        logging.info(f"Switching model from {self.model_name} ({self.model_type}) to {new_model_name} ({new_model_type})")
+        
+        # Unload current model
+        self.unload_model()
+        
+        # Update settings
+        self.model_name = new_model_name
+        self.model_type = new_model_type
+        self.use_4bit_quantization = use_4bit_quantization
+        
+        # Load new model
+        self._model_instance = self.load_model()
+        
+        # Update convenience references
+        self.model = self._model_instance.model
+        self.tokenizer = self._model_instance.tokenizer
+        
+        # Update status dict
+        self.status_dict.update({
+            'model': self.model_name,
+            'model_type': self.model_type,
+        })
+        
+        logging.info(f"Model switched successfully to {new_model_name}")
+    
     def shutdown(self):
-        """Stop the chat thread cleanly."""
+        """Stop the chat thread cleanly and unload model."""
         logging.debug('[Initiating Prefrontal Cortex shutdown...]')
         self.shutdown_event.set()
         
@@ -1061,6 +1512,12 @@ class PrefrontalCortex:
                     logging.warning('[Chat thread did not stop within timeout]')
                 else:
                     logging.debug('[Chat thread stopped successfully]')
+            
+            # Shutdown TTS executor (wait for pending speech to finish)
+            self.tts_executor.shutdown(wait=True)
+            
+            # Unload model to free VRAM
+            self.unload_model()
             
             logging.debug('[Prefrontal Cortex stopped]')
             return True
@@ -1100,14 +1557,37 @@ if __name__ == "__main__":
         print("Warning: 'audiocortex' module not found. Fix before testing.")
        
 
+    # =========================================================================
+    # Choose model type: 'llm' for text-only or 'vlm' for vision-language
+    # =========================================================================
+    # Example LLM models:
+    #   - "huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2"
+    #   - "Qwen/Qwen2.5-Coder-7B-Instruct"
+    #
+    # Example VLM models:
+    #   - "huihui-ai/Huihui-Qwen3-VL-8B-Instruct-abliterated"
+    # =========================================================================
+    
+    USE_VLM = True  # Set to False for text-only LLM
+    
+    if USE_VLM:
+        model_name = "huihui-ai/Huihui-Qwen3-VL-8B-Instruct-abliterated"
+        model_type = "vlm"
+    else:
+        model_name = "huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2"
+        model_type = "llm"
+    
     # Initialize PrefrontalCortex
-    print("Initializing Prefrontal Cortex...")
+    print(f"Initializing Prefrontal Cortex with {model_type.upper()} model...")
     pfc = PrefrontalCortex(
-        model_name="huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2", #or other
+        model_name=model_name,
+        model_type=model_type,
         external_temporallobe_to_prefrontalcortex=temporal_lobe_queue,
         interrupt_dict=PrefrontalCortex_interrupt_dict,
         audio_cortex=ac,
-        status_dict=PrefrontalCortex_status_dict
+        status_dict=PrefrontalCortex_status_dict,
+        cuda_device=0,
+        use_4bit_quantization=True  # Only applies to VLM
     )
 
     # Helper function to generate the struct
@@ -1144,7 +1624,10 @@ if __name__ == "__main__":
             'actively_speaking': False,
             
             # UI Inputs
-            'user_text_input': ""
+            'user_text_input': "",
+            
+            # Image inputs (VLM only) - list of PIL Images or file paths
+            'images': None
         }
 
 
@@ -1153,15 +1636,43 @@ if __name__ == "__main__":
 
     #Chat loop
     print("\n" + "="*50)
-    print("Starting Chat Loop. Speak or type to interact. Press Ctrl+C to exit.")
+    print(f"Starting Chat Loop ({model_type.upper()} mode).")
+    print("Speak or type to interact. Press Ctrl+C to exit.")
+    if model_type == 'vlm':
+        print("For VLM: prefix message with 'IMG:path1,path2' to include images")
     print("="*50)
+    
     while True:
         try:
             user_input = input("\nYou: ").strip()
             if user_input.lower() in ['exit', 'quit']:
                 print("Exiting chat loop.")
                 break
+            
+            # Commands for runtime model switching
+            if user_input.lower().startswith('/switch '):
+                parts = user_input[8:].strip().split()
+                if len(parts) >= 2:
+                    new_model = parts[0]
+                    new_type = parts[1].lower()
+                    print(f"Switching to {new_model} ({new_type})...")
+                    pfc.switch_model(new_model, new_type)
+                    print("Model switched!")
+                else:
+                    print("Usage: /switch <model_name> <llm|vlm>")
+                continue
+            
             data_packet = get_data_struct()
+            
+            # Parse image paths for VLM (format: IMG:path1,path2 your message here)
+            if user_input.startswith('IMG:') and model_type == 'vlm':
+                img_end = user_input.find(' ')
+                if img_end > 4:
+                    img_paths = user_input[4:img_end].split(',')
+                    data_packet['images'] = [p.strip() for p in img_paths if p.strip()]
+                    user_input = user_input[img_end:].strip()
+                    print(f"Including {len(data_packet['images'])} image(s): {data_packet['images']}")
+            
             if user_input != "":
                 data_packet['user_text_input'] = user_input
                 temporal_lobe_queue.put(data_packet)

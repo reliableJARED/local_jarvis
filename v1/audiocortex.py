@@ -796,7 +796,7 @@ class AuditoryCortex():
     with sound input device 0
     """
     def __init__(self,cortex=auditory_cortex_core,stt=auditory_cortex_worker_speechToText,nerve=auditory_nerve_connection,vr=auditory_cortex_worker_voiceRecognition,ba=BrocasArea,mpm=False,
-                 wakeword_name='jarvis',breakword="enough jarvis",exitword="goodbye jarvis",database_path=":memory:",
+                 wakeword_name='jarvis',breakword="enough jarvis",exitword="goodbye jarvis",database_path=":memory:",voice_design_instruct=None,
                  nerve_from_input_to_cortex=None,gpu_device=0):
         logging.info("Starting Auditory Cortex. This will run at separte processes via multiprocess (nerve,cortex,stt,vr)")
         
@@ -837,7 +837,7 @@ class AuditoryCortex():
                         'unlock_speaker':False
                     }
 
-        
+    
         #stat tracker
         self.external_stats_queue = mpm.Queue(maxsize=5)
 
@@ -910,7 +910,9 @@ class AuditoryCortex():
 
         #Flag to connect assistant speaker embedding to audio output
         self.my_voice_id = 'my_voice_id'
-        self.brocas_area = ba(self.brocas_area_interrupt_dict)
+        #voice_design_instruct is a text prompt that describes what the voice should sound like for the TTS. if None will be default.
+        self.brocas_area = ba(self.brocas_area_interrupt_dict,
+                              design_instruct=voice_design_instruct)
         """self.brocas_area.status = {
                 'is_playing': True,
                 'transcript': audio_template['transcript'],
